@@ -657,12 +657,9 @@ def create_llm_provider(
         )
 
     elif provider_lower == "claude-code":
-        return providers.ClaudeCodeLLM(
-            provider=provider,
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            reasoning_effort=reasoning_effort,
+        raise ValueError(
+            "The built-in 'claude-code' provider (Claude Agent SDK) has been removed in this private build. "
+            "Use provider 'anthropic' with HINDSIGHT_API_LLM_API_KEY for the Anthropic API."
         )
 
     elif provider_lower == "github-copilot":
@@ -722,54 +719,10 @@ def create_llm_provider(
             timeout=timeout,
         )
 
-    elif provider_lower == "litellm":
-        return providers.LiteLLMLLM(
-            provider=provider,
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            extra_body=extra_body,
-            default_headers=default_headers,
-            timeout=timeout,
-            structured_output_in_prompt=structured_output_in_prompt,
-        )
-
-    elif provider_lower == "litellmrouter":
-        if not litellmrouter_config:
-            raise ValueError(
-                "Provider 'litellmrouter' requires a config object. "
-                "Set HINDSIGHT_API_LLM_LITELLMROUTER_CONFIG (or the per-op variant) "
-                "to a JSON object accepted by litellm.Router. "
-                "See https://docs.litellm.ai/docs/routing."
-            )
-        return providers.LiteLLMRouterLLM(
-            provider=provider,
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            config=litellmrouter_config,
-            reasoning_effort=reasoning_effort,
-            extra_body=extra_body,
-            default_headers=default_headers,
-            timeout=timeout,
-            structured_output_in_prompt=structured_output_in_prompt,
-        )
-
-    elif provider_lower == "bedrock":
-        # Bedrock is a first-class alias backed by LiteLLM with auto-prefixed model names
-        bedrock_model = model if model.startswith("bedrock/") else f"bedrock/{model}"
-        return providers.LiteLLMLLM(
-            provider=provider,
-            api_key=api_key,
-            base_url=base_url,
-            model=bedrock_model,
-            reasoning_effort=reasoning_effort,
-            extra_body=extra_body,
-            default_headers=default_headers,
-            bedrock_service_tier=bedrock_service_tier,
-            timeout=timeout,
-            structured_output_in_prompt=structured_output_in_prompt,
+    elif provider_lower in ("litellm", "litellmrouter", "bedrock"):
+        raise ValueError(
+            f"LLM provider '{provider}' (LiteLLM-backed) has been removed in this private build. "
+            "Use a native provider such as 'openai', 'deepseek', 'anthropic', 'gemini', or 'openai-codex'."
         )
 
     elif provider_lower == "llamacpp":
@@ -1079,9 +1032,6 @@ class LLMProvider:
             "none",
             "minimax",
             "deepseek",
-            "litellm",
-            "litellmrouter",
-            "bedrock",
             "volcano",
             "openrouter",
             "requesty",
@@ -1923,33 +1873,6 @@ class LLMProvider:
             raise ValueError("No access_token found in Codex auth file. Run 'codex auth login' again.")
 
         return access_token, account_id
-
-    def _verify_claude_code_available(self) -> None:
-        """
-        Verify that Claude Agent SDK can be imported and is properly configured.
-
-        Raises:
-            ImportError: If Claude Agent SDK is not installed.
-            RuntimeError: If Claude Code is not authenticated.
-        """
-        try:
-            # Import Claude Agent SDK
-            # Reduce Claude Agent SDK logging verbosity
-            import logging as sdk_logging
-
-            from claude_agent_sdk import query  # noqa: F401  # type: ignore[unresolved-import]
-
-            sdk_logging.getLogger("claude_agent_sdk").setLevel(sdk_logging.WARNING)
-            sdk_logging.getLogger("claude_agent_sdk._internal").setLevel(sdk_logging.WARNING)
-
-            logger.debug("Claude Agent SDK imported successfully")
-        except ImportError as e:
-            raise ImportError(
-                "Claude Agent SDK not installed. Run: uv add claude-agent-sdk or pip install claude-agent-sdk"
-            ) from e
-
-        # SDK will automatically check for authentication when first used
-        # No need to verify here - let it fail gracefully on first call with helpful error
 
     def with_config(
         self,

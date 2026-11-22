@@ -4,24 +4,25 @@ Hindsight provides comprehensive observability through Prometheus metrics, OpenT
 
 ## Local Development
 
-For local observability, use the Grafana LGTM (Loki, Grafana, Tempo, Mimir) all-in-one stack:
+This branch ships no Docker packaging, so the bundled compose stack that used to be started with
+`./scripts/dev/start-monitoring.sh` is gone. Point the API at any OTLP-compatible backend you
+already run, and import the dashboards from [`monitoring/grafana/dashboards/`](https://github.com/vectorize-io/hindsight/tree/main/monitoring/grafana/dashboards)
+into your own Grafana instance:
 
 ```bash
-./scripts/dev/start-monitoring.sh
+# Enable tracing; the endpoint is your own collector
+export HINDSIGHT_API_OTEL_TRACES_ENABLED=true
+export HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-This starts a single Docker container providing:
+A Grafana LGTM (Loki, Grafana, Tempo, Mimir) container is the usual choice for local work; it
+provides, at the ports listed below:
+
 - **Grafana UI**: http://localhost:3000 (anonymous admin access)
 - **Traces (Tempo)**: OTLP endpoint at http://localhost:4318 (HTTP) and http://localhost:4317 (gRPC)
 - **Metrics (Prometheus/Mimir)**: Scrapes http://localhost:8888/metrics automatically
 - **Logs (Loki)**: Available for log aggregation
 - **Pre-built Dashboards**: Hindsight Operations, LLM Metrics, API Service
-
-**Enable tracing in your API:**
-```bash
-export HINDSIGHT_API_OTEL_TRACES_ENABLED=true
-export HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-```
 
 :::note Production Deployment
 The local monitoring stack is for development only. In production, deploy Grafana LGTM separately or use commercial platforms (Grafana Cloud, DataDog, New Relic, etc.).
@@ -348,8 +349,7 @@ See [Configuration - OpenTelemetry Tracing](./configuration#opentelemetry-tracin
 export HINDSIGHT_API_OTEL_TRACES_ENABLED=true
 export HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
-# View traces with Grafana LGTM (local dev)
-./scripts/dev/start-monitoring.sh
+# View traces in your own Grafana (see Local Development)
 # Open http://localhost:3000 → Explore → Tempo
 ```
 

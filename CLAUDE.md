@@ -115,7 +115,7 @@ uv run run-amb --dataset longmemeval --split s -- --category single-session-user
 - **hindsight-clients/**: Generated SDK clients (Python, TypeScript, Rust, Go)
 - **hindsight-docs/**: Docusaurus documentation site
 - **hindsight-integrations/**: Framework integrations (LiteLLM, CrewAI, LangGraph, Pydantic AI, AG2, Claude Code, coding-agents, etc.)
-- **hindsight-embed/**: Embedded Python CLI and local daemon manager (connects to local API or falls back to uvx hindsight-api)
+- **hindsight-embed/**: Embedded Python CLI and local daemon manager (connects to local API or falls back to uvx hindsight-api). Its `ops` subcommand is the machine-readable management surface (`hindsight-embed ops <command>`, one JSON document per invocation); the control plane's `/local` page calls it for profile/`.env`/daemon operations. The embed's own control center (port 7878) was removed — see [ADR-006](hindsight-docs/docs-private/architecture-decisions.md).
 - **hindsight-system-tests/**: Blackbox end-to-end integration test suite driven through SDK against local stubs
 - **hindsight-system-evals/**: End-to-end quality evaluation suites scored by independent LLM judges against real providers
 - **hindsight-integration-tests/**: E2E and integration test suites requiring a running server (live API or docker-compose)
@@ -335,6 +335,26 @@ When adding or modifying parameters in the dataplane API (hindsight-api), you mu
    - Update the client type definition in `lib/api.ts`
    - Update any UI components that need to use the new parameter
 
+### Local Management Routes (`/api/local/*`)
+
+These are a different surface from the dataplane proxies above: they write the
+profile `.env` (which holds the LLM API key) and start or kill local processes.
+They are gated twice in `src/lib/local-access.ts` — the request must come from a
+loopback `Host` **and** carry the ops token from `~/.hindsight/ops.token` — and
+refusals answer 404 so an unprivileged caller learns nothing about the surface.
+
+They are NOT dataplane proxies: the implementation is `hindsight-embed ops`
+(`hindsight-embed/hindsight_embed/ops/cli.py`), run as a subprocess through
+`src/lib/ops.ts`. Keep it that way. `daemon_embed_manager.py` carries platform
+behaviour with no Node equivalent (Windows kernel queries for the owning PID of a
+port, the detached-process flag combination, the cross-profile file lock) and its
+regressions only reproduce on real hosts, so a TypeScript reimplementation would
+reintroduce bugs CI cannot catch. A new local operation means a new `ops`
+subcommand plus a route that calls it — not new lifecycle logic in the route.
+
+The token is read server-side (`src/lib/ops-token.ts`) and passed to the `/local`
+page as a prop; never expose it through a fetchable GET response.
+
 ### Harness Attribution (which coding agent wrote a document)
 
 `hindsight-integrations/coding-agents/` stamps the coding agent on every
@@ -367,19 +387,20 @@ ordinary metadata.
 
 ### Coding-agents docs are generated from one README
 
-`hindsight-integrations/coding-agents/README.md` is the single source for that package's
-configuration. **Never edit `skill/SKILL.md` or the docs page by hand** — both are generated:
+The coding-agents README is the configuration source of truth. Its companion
+skill is generated; do not edit the skill by hand:
 
-```bash
-cd hindsight-integrations/coding-agents && npm run skill:build   # README -> skill/SKILL.md
-node hindsight-docs/scripts/sync-coding-agents-doc.mjs           # README -> docs page
-```
+    cd hindsight-integrations/coding-agents
+    npm run skill:build
 
-The regions the skill copies are marked `<!-- skill:begin -->` / `<!-- skill:end -->` in the README;
-the agent-only half (tools, crediting, corrections) lives in `skill-src/preamble.md`.
-`src/docs-freshness.test.ts` fails on a stale skill or an undocumented `RawConfig` field. Run
-`./scripts/hooks/lint.sh` BEFORE regenerating — prettier re-pads the README's tables, and a
-generated file built from unformatted source fails the byte comparison in CI.
+This trimmed distribution does not ship the upstream documentation-site generator
+or its harness-logo roster. README install sections are checked directly against
+the harness registry instead. The skill extraction regions use skill:begin and
+skill:end comments; the agent-only preamble lives in skill-src/preamble.md.
+
+Run scripts/hooks/lint.sh before regenerating the skill, then use npm test in the
+coding-agents package to check freshness. The generator normalizes CRLF input;
+its own executable module uses LF via .gitattributes for Vite imports on Windows.
 
 ### Hermes docs are generated from one README
 

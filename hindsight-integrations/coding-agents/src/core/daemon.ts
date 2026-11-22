@@ -111,9 +111,7 @@ interface ProviderProbe {
 }
 
 /**
- * Providers the daemon can use for local fact extraction, most-specific first. Mirrors the old
- * plugin's list. `claude-code` needs no key — it drives the Claude Code CLI the user already has,
- * which is why it is the last resort rather than an error.
+ * Providers the daemon can use for local fact extraction, most-specific first.
  */
 const PROVIDER_PROBES: ProviderProbe[] = [
   { provider: "openai", keyEnv: "OPENAI_API_KEY" },
@@ -149,23 +147,7 @@ export function detectLlm(env: NodeJS.ProcessEnv = process.env): LlmChoice | und
     const key = env[probe.keyEnv]?.trim();
     if (key) return { provider: probe.provider, apiKey: key, source: probe.keyEnv };
   }
-  if (onPath("claude")) {
-    return { provider: "claude-code", source: "the Claude Code CLI on PATH (no API key needed)" };
-  }
   return undefined;
-}
-
-function onPath(bin: string): boolean {
-  try {
-    execFileSync("which", [bin], {
-      stdio: "pipe",
-      timeout: 5_000,
-      windowsHide: true,
-    });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Environment handed to the daemon: the LLM choice, the idle timeout, and any HINDSIGHT_API_* the
@@ -360,7 +342,7 @@ export function preflightDaemon(cfg: Config, harness: string): boolean {
     log.warn(
       harness,
       "daemon mode needs an LLM for fact extraction — set OPENAI_API_KEY (or ANTHROPIC_API_KEY / " +
-        "GEMINI_API_KEY / HINDSIGHT_API_LLM_PROVIDER), or install the Claude Code CLI"
+        "GEMINI_API_KEY / HINDSIGHT_API_LLM_PROVIDER)"
     );
     return false;
   }

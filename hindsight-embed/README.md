@@ -139,6 +139,53 @@ hindsight-embed daemon logs -f   # Follow logs in real-time
 hindsight-embed daemon logs -n 100  # View last 100 lines
 ```
 
+### ui
+
+The management UI is the control plane. Its `/local` page edits this machine's
+profiles, their `.env`, and the daemon:
+
+```bash
+hindsight-embed ui start     # Start it (starts the daemon first), then open <ui-url>/local
+hindsight-embed ui status    # Is it running, and on which URL
+hindsight-embed ui logs -f   # Why it failed, if it did
+hindsight-embed ui stop      # Stop it; the daemon keeps running
+```
+
+`hindsight-embed configure --web` starts the control plane and opens that page in
+one step.
+
+### ops
+
+Machine-readable equivalents of everything the `/local` page does. Each prints one
+JSON document on stdout; writes take a JSON request document on stdin. This is what
+the control plane calls, and it works the same from a script:
+
+```bash
+hindsight-embed ops profiles                  # every profile with daemon status
+hindsight-embed ops settings -p coding-agent  # grouped settings catalog + values
+hindsight-embed ops config                    # editable config (API key masked)
+hindsight-embed ops env                       # raw .env, verbatim
+hindsight-embed ops paths                     # files, database URL, addresses
+hindsight-embed ops health                    # live daemon health
+hindsight-embed ops logs -n 200 --source daemon
+hindsight-embed ops daemon-status             # is the daemon up, and on which URL
+hindsight-embed ops ui-status                 # is the control plane up (reports only)
+hindsight-embed ops daemon-start|daemon-stop|daemon-restart
+hindsight-embed ops token                     # access token, created on first use
+
+echo '{"values":{"HINDSIGHT_API_LLM_PROVIDER":"groq"}}' | hindsight-embed ops save-settings
+echo '{"content":"HINDSIGHT_API_LLM_PROVIDER=openai\n"}' | hindsight-embed ops write-env
+echo '{"api_port":"9200"}' | hindsight-embed ops save-config
+hindsight-embed ops delete-profile -p staging
+```
+
+Exit codes: `0` for a result (including `{"ok": false}` for a domain failure), `1`
+for an exception, `2` for a rejected value or usage error. A non-zero exit still
+prints `{"error": "..."}`.
+
+The embed's own control center (port 7878) was removed; `hindsight-embed control`
+prints where those settings went.
+
 ## Configuration
 
 ### Interactive Setup
@@ -158,6 +205,7 @@ Run `hindsight-embed configure` for a guided setup that saves to `~/.hindsight/e
 | `HINDSIGHT_EMBED_API_DATABASE_URL` | Database URL for daemon (`HINDSIGHT_API_DATABASE_URL` is used when this is unset) | `pg0://hindsight-embed` |
 | `HINDSIGHT_EMBED_DAEMON_LOG_MAX_BYTES` | Rotate the daemon log at startup at this size; `0` disables rotation | `10485760` (10 MiB) |
 | `HINDSIGHT_EMBED_DAEMON_LOG_BACKUP_COUNT` | Retained backups; `0` truncates a full log at startup | `3` |
+| `HINDSIGHT_EMBED_OPS_TOKEN` | Access token for `hindsight-embed ops` and the control plane's `/api/local/*` routes | generated, `~/.hindsight/ops.token` |
 
 The size is checked only when a daemon starts, so a single uninterrupted run is never truncated and can
 grow past `MAX_BYTES` — and at the next start that whole file is kept as the first backup. Retained size

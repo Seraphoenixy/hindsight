@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildRetainStamp } from "./retain-stamp";
 
@@ -39,7 +39,7 @@ describe("buildRetainStamp", () => {
       { retainTags: ["project:{gitProject}"], retainMetadata: { repo: "{gitProject}" } },
       ctx()
     );
-    const name = repo.split("/").pop()!;
+    const name = basename(repo);
     expect(tags).toEqual([`project:${name}`]);
     expect(metadata).toEqual({ repo: name });
   });
@@ -56,7 +56,7 @@ describe("buildRetainStamp", () => {
         ctx({ directory: sub, sessionRoot: plain })
       );
       // {project} stays on the live working directory — it is documented as exactly that.
-      expect(tags).toEqual([`project:${plain.split("/").pop()!}`, "dir:analysis"]);
+      expect(tags).toEqual([`project:${basename(plain)}`, "dir:analysis"]);
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
@@ -82,7 +82,7 @@ describe("buildRetainStamp", () => {
 
   it("resolves {project} from the directory basename, without git", () => {
     const { tags } = buildRetainStamp({ retainTags: ["p:{project}"] }, ctx());
-    expect(tags).toEqual([`p:${repo.split("/").pop()}`]);
+    expect(tags).toEqual([`p:${basename(repo)}`]);
   });
 
   it("stamps a literal tag with no placeholders unchanged", () => {

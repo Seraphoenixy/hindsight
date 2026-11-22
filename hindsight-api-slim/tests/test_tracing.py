@@ -30,7 +30,8 @@ def test_provider_name_mapping():
     assert PROVIDER_NAME_MAPPING["groq"] == "groq"
     assert PROVIDER_NAME_MAPPING["ollama"] == "ollama"
     assert PROVIDER_NAME_MAPPING["openai-codex"] == "openai"
-    assert PROVIDER_NAME_MAPPING["claude-code"] == "anthropic"
+    assert PROVIDER_NAME_MAPPING["chatgpt"] == "openai"
+    assert PROVIDER_NAME_MAPPING["cursor"] == "cursor"
     assert PROVIDER_NAME_MAPPING["github-copilot"] == "github"
 
 

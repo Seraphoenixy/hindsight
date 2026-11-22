@@ -138,6 +138,8 @@ describe.skipIf(!sqlite)("readDevinTranscript", () => {
 
 describe("devinSessionDb", () => {
   it("resolves under the given home", () => {
-    expect(devinSessionDb("/home/x")).toBe("/home/x/.local/share/devin/cli/sessions.db");
+    expect(devinSessionDb("/home/x")).toBe(
+      join("/home/x", ".local", "share", "devin", "cli", "sessions.db")
+    );
   });
 });

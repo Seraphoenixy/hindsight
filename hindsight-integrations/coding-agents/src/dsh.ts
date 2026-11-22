@@ -24,6 +24,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { resolveHostMemory } from "./core/host-client";
+import type { Config } from "./core/config";
 import { diag } from "./core/diag";
 import type { ToolSpec } from "./core/page-tools";
 import { log } from "./core/log";
@@ -97,7 +98,21 @@ interface DshContext {
     event: "agent/disposed",
     listener: (payload: { agent: DshAgent }) => void
   ): (() => void) | void;
-  inject(names: string[], callback: (ctx: DshToolContext) => void): void;
+  inject(names: string[], callback: (ctx: DshInjectedContext) => void): void;
+}
+
+/** Tools are optional in a headless assembly. */
+interface DshInjectedContext {
+  tools?: {
+    register(spec: {
+      name: string;
+      description: string;
+      parameters: unknown;
+      output?: unknown;
+      execute(args: Record<string, unknown>, exec: DshToolRunContext): Promise<string>;
+    }): (() => void) | void;
+    schemas?(): { name?: string }[];
+  };
 }
 
 interface DshToolContext {
@@ -117,6 +132,7 @@ interface DshToolRunContext {
 
 export interface Workspace {
   core: RuntimeCore;
+  cfg: Config;
   root: string;
   /** Started by the first SESSION in this repo, then shared by every later one. */
   seeded?: Promise<void>;
@@ -191,7 +207,7 @@ function workspaceFor(root: string): Workspace | undefined {
     const agent = liveAgents.get(sessionId);
     return agent ? readDshEvents(ownEvents(agent.session)) : [];
   });
-  const workspace: Workspace = { core, root };
+  const workspace: Workspace = { core, cfg, root };
   workspaces.set(root, workspace);
   return workspace;
 }
@@ -354,26 +370,40 @@ export function toDshParameters(spec: ToolSpec): Record<string, unknown> {
   const required: string[] = [];
   for (const [key, schema] of Object.entries(spec.inputSchema)) {
     const zod = schema as {
-      def?: { type?: string; innerType?: { def?: { type?: string } } };
+      def?: {
+        type?: string;
+        innerType?: { def?: { type?: string; format?: string } };
+        format?: string;
+      };
       description?: string;
       isOptional?: () => boolean;
     };
     // `.optional()` wraps the real type, so unwrap before checking it — otherwise every optional
     // parameter would pass the guard below whatever it actually holds.
-    const inner = zod.def?.type === "optional" ? zod.def.innerType?.def?.type : zod.def?.type;
-    if (inner !== undefined && inner !== "string") {
+    const unwrapped = zod.def?.type === "optional" ? zod.def.innerType?.def : zod.def;
+    const inner = unwrapped?.type;
+    // The host compiles string/number/integer/boolean/null (dsh-tools `compilePropertyMap`);
+    // anything else is refused here rather than registered as a mis-typed tool. Zod v4 spells an
+    // integer as `type: "number"` plus a format check, and `enum` is left out because it would
+    // need its member list carried across, which no current spec uses.
+    if (inner !== undefined && !DSH_PARAM_TYPES.has(inner)) {
       throw new Error(
-        `hindsight tool ${spec.name}: dsh projection supports string parameters only`
+        `hindsight tool ${spec.name}: dsh projection cannot express a "${inner}" parameter`
       );
     }
+    const type =
+      inner === "number" && unwrapped?.format !== undefined ? "integer" : (inner ?? "string");
     properties[key] = {
-      type: "string",
+      type,
       ...(zod.description ? { description: zod.description } : {}),
     };
     if (typeof zod.isOptional !== "function" || !zod.isOptional()) required.push(key);
   }
   return { type: "object", properties, ...(required.length ? { required } : {}) };
 }
+
+/** JSON Schema types the host's parameter compiler accepts, per dsh-tools' `compilePropertyMap`. */
+const DSH_PARAM_TYPES = new Set(["string", "number", "integer", "boolean", "null"]);
 
 /** The tool bodies return MCP-shaped results and never throw; dsh wants a value or a throw. */
 async function runSpec(spec: ToolSpec, args: Record<string, unknown>): Promise<string> {
@@ -428,18 +458,12 @@ function registerTools(toolCtx: DshToolContext, fallbackRoot: string): void {
   });
 }
 
-/** The tool specs for one workspace, built once (each closes over that bank's client and root). */
+/** Management is owned by Magpie; DSH exposes memory tools only. */
 function specsOf(workspace: Workspace): ToolSpec[] {
   workspace.tools ??= workspace.core.toolSpecs();
   return workspace.tools;
 }
 
-// ── cordis entrypoint ───────────────────────────────────────────────────────────
-
-/**
- * Bind the memory lifecycle for the lifetime of `ctx`. Every listener is fail-open: RuntimeCore
- * never throws, and a workspace we cannot resolve simply leaves that session unmemoried.
- */
 export function apply(ctx: DshContext): void {
   const hooks = createDshHooks(workspaceForAgent);
   ctx.on("agent/session-start", hooks.sessionStart);
@@ -450,8 +474,10 @@ export function apply(ctx: DshContext): void {
   ctx.on("agent/disposed", hooks.disposed);
   // The tools registry is optional: a composition without it (a bare headless assembly) still gets
   // recall, injection and write-back.
-  ctx.inject(["tools"], (toolCtx) => {
-    registerTools(toolCtx, process.cwd());
+  ctx.inject(["tools"], (injected) => {
+    // `inject` only runs when the service exists; the narrow type is asserted here so
+    // `registerTools` keeps its precise contract rather than accepting an optional.
+    registerTools(injected as DshToolContext, process.cwd());
   });
 }
 

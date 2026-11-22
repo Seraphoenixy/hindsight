@@ -17,6 +17,7 @@ from hindsight_embed._http_probe import ProbeResponse
 from hindsight_embed.daemon_embed_manager import (
     DaemonEmbedManager,
     _detach_popen_kwargs,
+    _resolve_uv_tool,
     _runs_a_foreign_interpreter,
     _strip_parent_interpreter_env,
     _terminate_startup_process,
@@ -25,6 +26,13 @@ from hindsight_embed.daemon_embed_manager import (
 
 def _mock_sentence_transformers_present(monkeypatch):
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.find_spec", lambda name: object())
+
+
+# The uvx fallback launches the RESOLVED executable, not the bare name: a GUI host
+# (the desktop app) inherits no shell PATH, so `uvx` alone fails to spawn. Resolved
+# through the same helper the manager uses, so the assertion tracks that contract
+# instead of re-encoding a lookup rule that has to change with it.
+_UVX = _resolve_uv_tool("uvx")
 
 
 # Process groups and SIGKILL do not exist on Windows.
@@ -390,7 +398,7 @@ def test_find_api_command_skips_slim_binary_without_local_ml(tmp_path, monkeypat
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.platform.system", lambda: "Linux")
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.find_spec", lambda name: None)
 
-    assert manager._find_api_command("1.2.3", env={}) == ["uvx", "hindsight-api@1.2.3"]
+    assert manager._find_api_command("1.2.3", env={}) == [_UVX, "hindsight-api@1.2.3"]
 
 
 def test_find_api_command_allows_slim_binary_with_external_providers(tmp_path, monkeypatch):
@@ -536,7 +544,7 @@ def test_find_api_command_uses_venv_of_module_on_posix(tmp_path, monkeypatch):
 
     # Missing local ML deps keep the #2676 uvx fallback, as for a standard venv.
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.find_spec", lambda name: None)
-    assert manager._find_api_command("1.2.3", env={}) == ["uvx", "hindsight-api@1.2.3"]
+    assert manager._find_api_command("1.2.3", env={}) == [_UVX, "hindsight-api@1.2.3"]
 
 
 def test_find_api_command_target_bundle_inside_venv_keeps_its_sibling(tmp_path, monkeypatch):
@@ -580,7 +588,7 @@ def test_find_api_command_falls_back_to_uvx_when_no_binary(tmp_path, monkeypatch
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.sysconfig.get_path", lambda key: str(scripts_dir))
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.platform.system", lambda: "Linux")
 
-    assert manager._find_api_command("1.2.3") == ["uvx", "hindsight-api@1.2.3"]
+    assert manager._find_api_command("1.2.3") == [_UVX, "hindsight-api@1.2.3"]
 
 
 def test_find_api_command_windows_uses_exe_suffix(tmp_path, monkeypatch):
@@ -733,7 +741,7 @@ def test_register_profile_preserves_existing_embed_keys(tmp_path, monkeypatch):
     # Daemon start passes only HINDSIGHT_API_* config to _register_profile.
     manager._register_profile("p", 9100, {"HINDSIGHT_API_LLM_PROVIDER": "openai", "HINDSIGHT_API_LLM_API_KEY": "sk-x"})
 
-    env = (tmp_path / ".hindsight" / "profiles" / "p.env").read_text()
+    env = (tmp_path / ".hindsight" / "profiles" / "p.env").read_text(encoding="utf-8")
     assert "HINDSIGHT_EMBED_CP_PORT=25000" in env  # preserved, not wiped
     assert "HINDSIGHT_API_LLM_API_KEY=sk-x" in env
 
@@ -1014,8 +1022,55 @@ def test_windows_daemon_descendants_inherit_console(tmp_path: Path) -> None:
                 process.wait()
                 raise
 
-    output = log.read_text()
+    output = log.read_text(encoding="utf-8")
     assert returncode == 0, output
     console_pids = {int(pid) for pid in output.split()}
     assert process.pid in console_pids
     assert os.getpid() not in console_pids
+
+
+@pytest.mark.parametrize("override", [None, '"C:/custom embed/embed.exe"'])
+@pytest.mark.parametrize("job_bound", [False, True])
+def test_start_ui_passes_its_interpreter_to_local_ops(tmp_path, monkeypatch, override, job_bound):
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.in_windows_job", lambda: job_bound)
+    manager = DaemonEmbedManager()
+    paths = SimpleNamespace(ui_port=19077, ui_log=tmp_path / "ui.log")
+    manager._profile_manager = MagicMock()
+    manager._profile_manager.resolve_profile_paths.return_value = paths
+    monkeypatch.setattr(manager, "is_ui_running", lambda *a: False)
+    monkeypatch.setattr(manager, "get_url", lambda *a: "http://127.0.0.1:9077")
+    monkeypatch.setattr(manager, "_component_version", lambda *a: "latest")
+    monkeypatch.setattr(manager, "_find_ui_command", lambda *a: ["node", "cli.js"])
+    monkeypatch.setattr(manager, "_reachable_ui_host", lambda *a: "127.0.0.1")
+    monkeypatch.setattr(manager, "_record_ui_port", lambda *a: None)
+    monkeypatch.setattr(sys, "executable", "C:/venv with spaces/python.exe")
+    if override:
+        monkeypatch.setenv("HINDSIGHT_CP_EMBED_COMMAND", override)
+    else:
+        monkeypatch.delenv("HINDSIGHT_CP_EMBED_COMMAND", raising=False)
+    with (
+        patch("subprocess.Popen") as launch,
+        patch("hindsight_embed.daemon_embed_manager.launch_independent_ui") as broker,
+    ):
+        assert manager.start_ui("coding-agent")
+    assert broker.called == job_bound
+    assert launch.called != job_bound
+    env = broker.call_args.args[0].env if job_bound else launch.call_args.kwargs["env"]
+    assert env["HINDSIGHT_CP_EMBED_COMMAND"] == (override or '"C:/venv with spaces/python.exe" -m hindsight_embed.cli')
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native process handles")
+def test_kill_process_waits_for_windows_child_without_pid_zero_probe():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], creationflags=0x08000000)
+    try:
+        assert DaemonEmbedManager._kill_process(child.pid)
+        assert child.wait(timeout=3) != 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=3)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native process handles")
+def test_kill_process_accepts_already_exited_windows_pid():
+    assert DaemonEmbedManager._kill_process(2147483647)

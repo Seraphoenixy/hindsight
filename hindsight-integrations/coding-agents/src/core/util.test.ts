@@ -38,7 +38,8 @@ describe("binOnPath", () => {
     const posix = { platform: "linux" as const, env: { PATH: dir } };
     file("plain", 0o644);
     file("codex.exe");
-    expect(binOnPath("plain", posix)).toBeUndefined();
+    // Windows ignores chmod executable bits, even with a simulated POSIX platform.
+    if (process.platform !== "win32") expect(binOnPath("plain", posix)).toBeUndefined();
     expect(binOnPath("codex", posix)).toBeUndefined();
     file("codex");
     expect(binOnPath("codex", posix)).toBe(join(dir, "codex"));

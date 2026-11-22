@@ -2,29 +2,29 @@
 
 A provider content-policy (AUP) refusal is a deterministic response to the
 content, not a transient fault. Before this fix it was treated as an ordinary
-error: the Claude Code provider replayed it through its full transport retry
-budget, ``extract_facts_from_text`` wrapped it in a generic ``RuntimeError``,
-and the worker rescheduled the whole task — which replayed the identical
-refusal all over again before finally failing the operation.
+error: the provider replayed it through its full transport retry budget,
+``extract_facts_from_text`` wrapped it in a generic ``RuntimeError``, and the
+worker rescheduled the whole task — which replayed the identical refusal all
+over again before finally failing the operation.
 
-These tests pin the permanence at all three layers:
+These tests pin the permanence at the two layers that outlive any one provider:
 
-1. the provider raises ``ProviderContentPolicyError`` on the first attempt and
-   does not retry it (while ordinary errors are still retried),
-2. ``extract_facts_from_text`` re-raises the permanent type when any chunk was
+1. ``extract_facts_from_text`` re-raises the permanent type when any chunk was
    refused, instead of flattening it into ``RuntimeError``,
-3. ``_is_non_retryable_task_error`` classifies it, so ``execute_task`` marks the
+2. ``_is_non_retryable_task_error`` classifies it, so ``execute_task`` marks the
    operation failed instead of raising ``RetryTaskAt``.
+
+The layer-1 tests (a provider not retrying its own refusal) were removed with the
+``claude-code`` provider in this private build; ``test_gemini_content_block.py``
+and the Anthropic suite cover the same permanence for the providers that remain.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,113 +39,10 @@ REFUSAL_TEXT = (
     "Learn more: https://www.anthropic.com/legal/aup\n\n"
     "Request ID: req_011CeEwAh8ESFmbMGca7ZkrG"
 )
-TRANSIENT_TEXT = "API Error: 500 Internal Server Error"
 
 
 # ---------------------------------------------------------------------------
-# Layer 1: the provider does not retry a refusal
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _FakeOptions:
-    """Stand-in for ClaudeAgentOptions; captures kwargs without importing the SDK."""
-
-    system_prompt: str | None = None
-    max_turns: int | None = None
-    allowed_tools: list[str] = field(default_factory=list)
-    tools: list[str] = field(default_factory=list)
-    env: dict[str, str] = field(default_factory=dict)
-    mcp_servers: dict[str, Any] = field(default_factory=dict)
-    model: str | None = None
-    cwd: str | None = None
-    setting_sources: list[str] | None = None
-
-
-class _FakeAssistantMessage:
-    def __init__(self, content: list[Any]) -> None:
-        self.content = content
-
-
-class _FakeTextBlock:
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-
-class _FakeResultMessage:
-    def __init__(self, subtype: str, is_error: bool, result: str | None) -> None:
-        self.subtype = subtype
-        self.is_error = is_error
-        self.result = result
-
-
-def _install_fake_sdk(monkeypatch, error_text: str, attempts: list[int]) -> None:
-    """Patch the Agent SDK so every query yields one is_error ResultMessage."""
-    import claude_agent_sdk
-
-    async def fake_query(prompt: str, options: _FakeOptions):
-        attempts.append(1)
-        yield _FakeResultMessage(subtype="success", is_error=True, result=error_text)
-
-    monkeypatch.setattr(claude_agent_sdk, "ClaudeAgentOptions", _FakeOptions)
-    monkeypatch.setattr(claude_agent_sdk, "AssistantMessage", _FakeAssistantMessage)
-    monkeypatch.setattr(claude_agent_sdk, "TextBlock", _FakeTextBlock)
-    monkeypatch.setattr(claude_agent_sdk, "ResultMessage", _FakeResultMessage)
-    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
-
-
-def _instantiate_provider():
-    from hindsight_api.engine.providers.claude_code_llm import ClaudeCodeLLM
-
-    return ClaudeCodeLLM(
-        provider="claude-code",
-        api_key="",
-        base_url="",
-        model="claude-haiku-4-5",
-        reasoning_effort="low",
-    )
-
-
-@pytest.mark.asyncio
-async def test_call_raises_permanent_error_without_retrying(monkeypatch):
-    """A refusal must fail on attempt 1 with the permanent type, not burn the budget."""
-    attempts: list[int] = []
-    _install_fake_sdk(monkeypatch, REFUSAL_TEXT, attempts)
-
-    with pytest.raises(ProviderContentPolicyError) as excinfo:
-        await _instantiate_provider().call(
-            messages=[{"role": "user", "content": "hi"}],
-            max_retries=3,
-            initial_backoff=0.0,
-            max_backoff=0.0,
-            scope="retain_extract_facts",
-        )
-
-    assert "anthropic.com/legal/aup" in str(excinfo.value)
-    assert len(attempts) == 1, f"refusal must not be retried, but the SDK was queried {len(attempts)} times"
-
-
-@pytest.mark.asyncio
-async def test_call_still_retries_ordinary_errors(monkeypatch):
-    """The permanence guard must be narrow: transient errors keep their retries."""
-    attempts: list[int] = []
-    _install_fake_sdk(monkeypatch, TRANSIENT_TEXT, attempts)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        await _instantiate_provider().call(
-            messages=[{"role": "user", "content": "hi"}],
-            max_retries=2,
-            initial_backoff=0.0,
-            max_backoff=0.0,
-            scope="retain_extract_facts",
-        )
-
-    assert not isinstance(excinfo.value, ProviderContentPolicyError)
-    assert len(attempts) == 3, f"expected 1 initial attempt + 2 retries, got {len(attempts)}"
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: extract_facts_from_text keeps the permanent type
+# Layer 1: extract_facts_from_text keeps the permanent type
 # ---------------------------------------------------------------------------
 
 
@@ -223,7 +120,7 @@ async def test_transient_chunk_failure_stays_retryable():
 
 
 # ---------------------------------------------------------------------------
-# Layer 3: the worker fails the operation instead of rescheduling it
+# Layer 2: the worker fails the operation instead of rescheduling it
 # ---------------------------------------------------------------------------
 
 

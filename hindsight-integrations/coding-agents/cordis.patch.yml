@@ -6,6 +6,10 @@
 # where the pre-step/session-start/turn-stopping events and the layered tools registry all reach
 # every session, including the Web surface's per-session agent presets.
 #
+# The row loads only the native memory host entry; management lives in Magpie.
+# Relative names are anchored to a file URL beside this patch file by the loader, so this works both
+# from a linked checkout and from a published install inside the profile's node_modules.
+#
 # Memory itself is configured OUTSIDE dsh, in ~/.hindsight/coding-agent.json (server URL, token,
 # bank naming, opt-outs) — the same file every other Hindsight coding-agent harness reads. To turn
 # it off for one profile without uninstalling, patch this row in the profile's own
@@ -15,4 +19,4 @@
 #     disabled: true
 - insert:
     - id: hindsight
-      name: "@vectorize-io/hindsight-coding-agents/dsh"
+      name: "./dist/dsh.js"

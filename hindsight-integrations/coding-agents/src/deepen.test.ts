@@ -59,7 +59,10 @@ function runDeepen(): {
     process.execPath,
     [deepen, "--repo", __dirname, "--bank", "lease-test", "--api-url", apiUrl],
     // TMPDIR holds the lease root, HOME the config/logs: both isolated per test.
-    { env: { ...process.env, TMPDIR: home, HOME: home }, stdio: ["ignore", "pipe", "pipe"] }
+    {
+      env: { ...process.env, TMPDIR: home, TEMP: home, TMP: home, HOME: home, USERPROFILE: home },
+      stdio: ["ignore", "pipe", "pipe"],
+    }
   );
   children.push(child);
   child.stdout.on("data", (d) => (out += d));

@@ -43,6 +43,7 @@ describe("paths.<prefix> overrides", () => {
 
   it("sends one directory to a local daemon and another to Cloud in the same config", () => {
     const raw = {
+      serverMode: "cloud" as const,
       apiToken: "cloud-key",
       paths: {
         [join(root, "oss")]: { serverMode: "daemon" as const, apiPort: 9177, apiToken: "" },

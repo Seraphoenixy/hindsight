@@ -10,7 +10,8 @@ describe("appendLogLine", () => {
     try {
       const file = join(root, "logs", "diag.jsonl");
       appendLogLine(file, "first\n");
-      expect(statSync(join(root, "logs")).mode & 0o777).toBe(0o700);
+      if (process.platform !== "win32")
+        expect(statSync(join(root, "logs")).mode & 0o777).toBe(0o700);
 
       writeFileSync(file, "x".repeat(LOG_MAX_BYTES));
       appendLogLine(file, "after\n");

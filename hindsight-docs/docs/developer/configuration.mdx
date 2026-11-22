@@ -2698,13 +2698,12 @@ Knowledge banks hold documents (PDF, Office, images, audio, video, text) for sea
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `HINDSIGHT_API_ENABLE_KB` | Turn knowledge banks on. Off, their HTTP routes answer 404, reflect ignores linked knowledge banks and the control plane hides them. | `false` |
-| `HINDSIGHT_API_KB_EMBEDDINGS_PROVIDER` | The one embedder for every knowledge bank; what it embeds decides which media types can be ingested. `local` (EmbeddingGemma 2 in-process: text, image, audio, video), `gemini` / `vertex` (Gemini Embedding 2), `voyage` (text, image, video), `cohere` (text, image), `openai` (any OpenAI-compatible `/v1/embeddings` server), `text` (a memory-bank embeddings provider, text only). | `local` |
+| `HINDSIGHT_API_KB_EMBEDDINGS_PROVIDER` | The one embedder for every knowledge bank; what it embeds decides which media types can be ingested. `gemini` / `vertex` (Gemini Embedding 2), `voyage` (text, image, video), `cohere` (text, image), `openai` (any OpenAI-compatible `/v1/embeddings` server), `text` (a memory-bank embeddings provider, text only). | `text` |
 | `HINDSIGHT_API_KB_EMBEDDINGS_MODEL` | The model. Unset uses the provider's: `google/embeddinggemma-2`, `gemini-embedding-2`, `voyage-multimodal-3.5`, `embed-v4.0`. Required for `openai`. | - |
 | `HINDSIGHT_API_KB_EMBEDDINGS_API_KEY` | API key for the remote providers. | - |
 | `HINDSIGHT_API_KB_EMBEDDINGS_BASE_URL` | Server URL: the `/v1` URL for `openai` (required), or a proxy for `voyage` / `cohere`. | - |
 | `HINDSIGHT_API_KB_EMBEDDINGS_DIMENSIONS` | Vector size, for a model that can shorten its vectors. Unset keeps the model's own. | - |
 | `HINDSIGHT_API_KB_EMBEDDINGS_MODALITIES` | For `openai`: what the remote model embeds, comma-separated (`text`, `image`, `audio`, `video`). | `text,image` |
-| `HINDSIGHT_API_KB_EMBEDDINGS_DEVICE` | For `local`: the torch device (`cpu`, `cuda`, `mps`). Unset picks one. | - |
 | `HINDSIGHT_API_KB_EMBEDDINGS_BATCH_SIZE` | Passages per embedder request. | `32` |
 | `HINDSIGHT_API_KB_EMBEDDINGS_MAX_IN_FLIGHT` | Requests to a remote embedder in flight at once from this process, across every ingest and search. `0` removes the cap. | `16` |
 | `HINDSIGHT_API_KB_TEXT_EMBEDDINGS_*` | For the `text` provider: its own embeddings setup, any `HINDSIGHT_API_EMBEDDINGS_*` setting with this prefix (e.g. `HINDSIGHT_API_KB_TEXT_EMBEDDINGS_PROVIDER`). Unset uses the memory banks' embedder. | - |

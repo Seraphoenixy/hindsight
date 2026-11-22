@@ -1341,7 +1341,9 @@ describe("codex installer", () => {
     const toml = readFileSync(tomlPath(ctx), "utf8");
     expect(toml).toContain("[features]\nhooks = true");
     expect(toml).toContain("[mcp_servers.hindsight]");
-    expect(toml).toContain(join(ctx.dist, "mcp-server.js"));
+    expect(parseToml(toml)).toHaveProperty("mcp_servers.hindsight.args", [
+      join(ctx.dist, "mcp-server.js"),
+    ]);
     expect(toml).toContain('env = { HINDSIGHT_MCP_HARNESS = "codex" }');
   });
 
@@ -1448,6 +1450,24 @@ describe("dsh installer", () => {
     // the plugin silently, which is exactly the Kilo trap this asserts against.
     expect(patch).toContain(`name: "${pathToFileURL(join(ctx.dist, "dsh.js")).href}"`);
     expect(patch).toContain("- id: hindsight");
+  });
+
+  it("also installs into and uninstalls from existing profile layers such as desktop", () => {
+    const ctx = makeCtx();
+    const desktopPatch = join(ctx.home, ".dsh", "profiles", "desktop", "cordis.patch.yml");
+    mkdirSync(dirname(desktopPatch), { recursive: true });
+    writeFileSync(desktopPatch, "- id: ui-chat\n  config: {}\n");
+
+    expect(run(["install", "dsh"], ctx)).toBe(0);
+    const installed = readFileSync(desktopPatch, "utf8");
+    expect(installed).toContain("- id: ui-chat");
+    expect(installed).toContain("- id: hindsight");
+    expect(installed).toContain(`name: "${pathToFileURL(join(ctx.dist, "dsh.js")).href}"`);
+
+    expect(run(["uninstall", "dsh"], ctx)).toBe(0);
+    const uninstalled = readFileSync(desktopPatch, "utf8");
+    expect(uninstalled).toContain("- id: ui-chat");
+    expect(uninstalled).not.toContain("- id: hindsight");
   });
 
   it("replaces its own block on re-install and preserves the user's other patches", () => {
@@ -2097,12 +2117,16 @@ describe("grok-build installer", () => {
     run(["install", "grok-build"], moved);
 
     const toml = readFileSync(configPath(ctx), "utf8");
-    expect(toml).toContain(join("/opt", MARKER, "moved-dist"));
+    expect(parseToml(toml)).toHaveProperty("mcp_servers.hindsight.args", [
+      join(moved.dist, "mcp-server.js"),
+    ]);
     expect(toml).not.toContain(ctx.dist); // the old path is gone, not merely appended past
     // Exactly one block — a replace, not an accumulation.
     expect(toml.match(/HINDSIGHT_CODING_AGENTS_GROK_START/g)).toHaveLength(1);
     const hooks = readFileSync(hooksPath(ctx), "utf8");
-    expect(hooks).toContain(join("/opt", MARKER, "moved-dist"));
+    expect(JSON.parse(hooks).hooks.SessionStart[0].hooks[0].command).toContain(
+      join("/opt", MARKER, "moved-dist")
+    );
     expect(hooks).not.toContain(ctx.dist);
     expect(readJson(hooksPath(ctx)).hooks.Stop).toHaveLength(1);
   });
@@ -2154,7 +2178,9 @@ describe("grok-build installer", () => {
     const config = readFileSync(configPath(ctx), "utf8");
     expect(parseToml(config)).not.toHaveProperty("hooks");
     expect(config).toContain("[mcp_servers.hindsight]");
-    expect(config).toContain(join(ctx.dist, "mcp-server.js"));
+    expect(parseToml(config)).toHaveProperty("mcp_servers.hindsight.args", [
+      join(ctx.dist, "mcp-server.js"),
+    ]);
     expect(config).toContain('env = { HINDSIGHT_MCP_HARNESS = "grok-build" }');
     expect(existsSync(join(ctx.home, ".claude"))).toBe(false);
   });
@@ -2181,7 +2207,9 @@ describe("grok-build installer", () => {
     expect(toml.match(/\[mcp_servers\.hindsight\]/g)).toHaveLength(1);
     expect(parsed).not.toHaveProperty("hooks");
     expect(toml).not.toContain(join("/opt", MARKER, "old-dist"));
-    expect(toml).toContain(join(ctx.dist, "mcp-server.js"));
+    expect(parseToml(toml)).toHaveProperty("mcp_servers.hindsight.args", [
+      join(ctx.dist, "mcp-server.js"),
+    ]);
     expect(toml).toContain('[ui]\ntheme = "dark"'); // foreign config preserved
   });
 
@@ -2402,9 +2430,13 @@ describe("dcode installer", () => {
     const ctx = makeCtx();
     const binDir = mkdtempSync(join(tmpdir(), "hindsight-installer-bin-"));
     homes.push(binDir);
-    writeFileSync(join(binDir, "dcode"), "", { mode: 0o755 });
-    writeFileSync(join(binDir, "claude"), "", { mode: 0o755 });
-    vi.stubEnv("PATH", `${binDir}:/usr/bin:/bin`);
+    writeFileSync(join(binDir, process.platform === "win32" ? "dcode.exe" : "dcode"), "", {
+      mode: 0o755,
+    });
+    writeFileSync(join(binDir, process.platform === "win32" ? "claude.exe" : "claude"), "", {
+      mode: 0o755,
+    });
+    vi.stubEnv("PATH", binDir);
     ctx.dcodePlugin.mockReturnValue(false);
 
     expect(run(["install", "all"], ctx)).toBe(1);

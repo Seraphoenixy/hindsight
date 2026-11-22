@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from hindsight_embed.profile_manager import DEFAULT_PORT
+
 
 def strip_ansi(text):
     """Remove ANSI escape sequences from text."""
@@ -28,8 +30,24 @@ def temp_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def hindsight_embed_cmd():
-    """Get the hindsight-embed command."""
-    return ["uv", "run", "hindsight-embed"]
+    """Command that runs the CLI as a subprocess.
+
+    Preferred form runs the INSTALLED package with the interpreter running the tests
+    (`sys.executable -m hindsight_embed.cli`). Requiring `uv` instead made these
+    tests fail on any machine without uv on PATH — a missing toolchain, not a broken
+    profile workflow — and it also made the subprocess use whichever environment uv
+    resolved rather than the one under test. `uv run` stays as a fallback for checking
+    the packaged entry point explicitly via HINDSIGHT_EMBED_TEST_CMD.
+    """
+    import shutil
+    import sys
+
+    override = os.environ.get("HINDSIGHT_EMBED_TEST_CMD")
+    if override:
+        return override.split()
+    if shutil.which("uv"):
+        return ["uv", "run", "hindsight-embed"]
+    return [sys.executable, "-m", "hindsight_embed.cli"]
 
 
 class TestProfileIntegration:
@@ -53,6 +71,8 @@ class TestProfileIntegration:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "HOME": str(temp_home)},
         )
 
@@ -63,7 +83,7 @@ class TestProfileIntegration:
         profile_path = temp_home / ".hindsight" / "profiles" / "test-app.env"
         assert profile_path.exists()
 
-        config_content = profile_path.read_text()
+        config_content = profile_path.read_text(encoding="utf-8")
         assert "HINDSIGHT_API_LLM_PROVIDER=openai" in config_content
         assert "HINDSIGHT_API_LLM_API_KEY=sk-test" in config_content
 
@@ -72,6 +92,8 @@ class TestProfileIntegration:
             hindsight_embed_cmd + ["profile", "list"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "HOME": str(temp_home)},
         )
 
@@ -90,6 +112,8 @@ class TestProfileIntegration:
             hindsight_embed_cmd + ["profile", "show"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "HOME": str(temp_home)},
         )
 
@@ -97,7 +121,11 @@ class TestProfileIntegration:
         output = strip_ansi(result.stdout)
         assert "Active profile: default" in output
         assert "Source: Default" in output
-        assert "Port: 8888" in output
+        # The profile default port is owned by ProfileManager.DEFAULT_PORT, not by
+        # this test. Hardcoding 8888 broke the moment that value moved to 9077;
+        # reading it here keeps the assertion about "a port is reported", which is
+        # what the CLI contract actually promises.
+        assert f"Port: {DEFAULT_PORT}" in output
 
     def test_profile_show_with_env_var(self, temp_home, hindsight_embed_cmd):
         """Test profile resolution with HINDSIGHT_EMBED_PROFILE env var."""
@@ -119,7 +147,14 @@ class TestProfileIntegration:
 
         # Show profile with env var
         env = {**os.environ, "HOME": str(temp_home), "HINDSIGHT_EMBED_PROFILE": "test-app"}
-        result = subprocess.run(hindsight_embed_cmd + ["profile", "show"], capture_output=True, text=True, env=env)
+        result = subprocess.run(
+            hindsight_embed_cmd + ["profile", "show"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
 
         assert result.returncode == 0
         output = strip_ansi(result.stdout)
@@ -149,6 +184,8 @@ class TestProfileIntegration:
             hindsight_embed_cmd + ["profile", "set-active", "test-app"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "HOME": str(temp_home)},
         )
 
@@ -159,13 +196,15 @@ class TestProfileIntegration:
         # Verify active_profile file
         active_file = temp_home / ".hindsight" / "active_profile"
         assert active_file.exists()
-        assert active_file.read_text() == "test-app"
+        assert active_file.read_text(encoding="utf-8") == "test-app"
 
         # Show profile (should show as active)
         result = subprocess.run(
             hindsight_embed_cmd + ["profile", "show"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "HOME": str(temp_home)},
         )
 
@@ -196,6 +235,8 @@ class TestProfileIntegration:
             input="y\n",
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         assert result.returncode == 0 or "deleted" in result.stdout.lower()
@@ -238,7 +279,7 @@ class TestProfileIntegration:
 
         # Ports now live in each profile's .env (HINDSIGHT_API_PORT)
         def _env_port(name):
-            env = (temp_home / ".hindsight" / "profiles" / f"{name}.env").read_text()
+            env = (temp_home / ".hindsight" / "profiles" / f"{name}.env").read_text(encoding="utf-8")
             for line in env.splitlines():
                 if line.startswith("HINDSIGHT_API_PORT="):
                     return int(line.split("=", 1)[1])
@@ -256,7 +297,14 @@ class TestProfileIntegration:
         """Test that using non-existent profile fails."""
         # Try to use non-existent profile
         env = {**os.environ, "HOME": str(temp_home), "HINDSIGHT_EMBED_PROFILE": "nonexistent"}
-        result = subprocess.run(hindsight_embed_cmd + ["profile", "show"], capture_output=True, text=True, env=env)
+        result = subprocess.run(
+            hindsight_embed_cmd + ["profile", "show"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
 
         assert result.returncode == 1
         assert "Profile 'nonexistent' not found" in result.stderr
@@ -277,13 +325,15 @@ class TestProfileIntegration:
             hindsight_embed_cmd + ["profile", "show"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "HOME": str(temp_home)},
         )
 
         assert result.returncode == 0
         output = strip_ansi(result.stdout)
         assert "Active profile: default" in output
-        assert "Port: 8888" in output
+        assert f"Port: {DEFAULT_PORT}" in output
 
     def test_configure_without_profile_flag(self, temp_home, hindsight_embed_cmd):
         """Test that configure without --profile still works (backward compatibility)."""
@@ -297,7 +347,14 @@ class TestProfileIntegration:
             "HINDSIGHT_API_LLM_MODEL": "gpt-4o-mini",
         }
 
-        result = subprocess.run(hindsight_embed_cmd + ["configure"], capture_output=True, text=True, env=env)
+        result = subprocess.run(
+            hindsight_embed_cmd + ["configure"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
 
         # Should succeed
         assert result.returncode == 0
@@ -333,6 +390,8 @@ class TestProfileIntegration:
             hindsight_embed_cmd + ["profile", "set-active", "--none"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         assert result.returncode == 0
@@ -363,7 +422,7 @@ class TestProfileIntegration:
         env_path = temp_home / ".hindsight" / "profiles" / "test-app.env"
 
         def _env_port():
-            for line in env_path.read_text().splitlines():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
                 if line.startswith("HINDSIGHT_API_PORT="):
                     return int(line.split("=", 1)[1])
             raise AssertionError("no HINDSIGHT_API_PORT in test-app.env")

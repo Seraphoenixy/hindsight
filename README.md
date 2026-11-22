@@ -85,12 +85,9 @@ Hindsight works with **25+ LLM providers** via `HINDSIGHT_API_LLM_PROVIDER` — 
 
 #### Docker (external PostgreSQL)
 
-```bash
-export OPENAI_API_KEY=sk-xxx
-export HINDSIGHT_DB_PASSWORD=choose-a-password
-cd docker/docker-compose
-docker compose up
-```
+This branch ships no Docker packaging: the `docker/` directory and its compose recipes were removed.
+Run the server directly (see below) against an external PostgreSQL with `pgvector`, and set
+`HINDSIGHT_API_DATABASE_URL` to its connection string.
 
 > Oracle AI Database is also supported for enterprise deployments with full feature parity. See the [storage documentation](https://hindsight.vectorize.io/developer/storage) for details.
 

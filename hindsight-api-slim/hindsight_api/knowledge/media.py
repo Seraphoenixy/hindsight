@@ -534,7 +534,7 @@ def _open(data: Source) -> Any:
     try:
         import av
     except ImportError as exc:
-        raise MediaError("audio and video need the local-ml extra (PyAV)") from exc
+        raise MediaError("audio and video need PyAV (pip install av); the private build no longer ships it") from exc
     try:
         return av.open(_readable(data), metadata_errors="replace")
     except av.FFmpegError as exc:

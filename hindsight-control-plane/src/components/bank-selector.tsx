@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Suspense } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useBank } from "@/lib/bank-context";
@@ -73,6 +74,7 @@ import {
   Copy,
   Globe,
   MoreHorizontal,
+  ServerCog,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
@@ -131,6 +133,7 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
   const searchParams = useSearchParams();
   const tNav = useTranslations("nav");
   const tNavBank = useTranslations("nav.bank");
+  const tLocal = useTranslations("local");
   const tKb = useTranslations("knowledgeBanks.selector");
   const tCommon = useTranslations("common");
   const tAddDocument = useTranslations("addDocument");
@@ -993,6 +996,19 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
         {/* Spacer */}
         <div className="hidden sm:block flex-1" />
 
+        {/* Local management: this machine's profiles, their .env and their
+            daemon. A separate page rather than a bank view because it is not
+            about one bank — it is about the stack serving all of them, and it is
+            where the retired embed control center's settings now live. */}
+        <Link
+          href="/local"
+          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+          title={tLocal("title")}
+        >
+          <ServerCog className="h-5 w-5" />
+          <span className="text-sm font-medium">{tLocal("title")}</span>
+        </Link>
+
         {/* Phones: GitHub, theme, language and logout fold into one menu. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -1016,6 +1032,12 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
                 <Github className="h-4 w-4 mr-2" />
                 GitHub
               </a>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/local">
+                <ServerCog className="h-4 w-4 mr-2" />
+                {tLocal("title")}
+              </Link>
             </DropdownMenuItem>
             <DropdownMenuItem onClick={toggleTheme}>
               {theme === "light" ? (

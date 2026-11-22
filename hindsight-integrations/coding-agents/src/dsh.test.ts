@@ -33,7 +33,12 @@ const pluginMessage = (text: string) => ({
 });
 
 function fakeWorkspace(core: Partial<Workspace["core"]>): Workspace {
-  return { core: core as Workspace["core"], root: "/repo", seeded: Promise.resolve() };
+  return {
+    core: core as Workspace["core"],
+    cfg: { serverMode: "self-hosted" } as Workspace["cfg"],
+    root: "/repo",
+    seeded: Promise.resolve(),
+  };
 }
 
 const enter = (messages: unknown[]) => async () => ({ kind: "enter" as const, messages }) as never;
@@ -185,7 +190,11 @@ describe("dsh write-back", () => {
 describe("dsh session start", () => {
   it("starts the repo seed exactly once, however many sessions open", () => {
     const core = { seedIfCold: vi.fn(async () => {}) };
-    const workspace = { core: core as never, root: "/repo" } as Workspace;
+    const workspace: Workspace = {
+      core: core as never,
+      cfg: { serverMode: "self-hosted" } as Workspace["cfg"],
+      root: "/repo",
+    };
     const hooks = createDshHooks(() => workspace);
 
     hooks.sessionStart({ agent: agentWith("s-1") });
@@ -311,12 +320,30 @@ describe("toDshParameters", () => {
   });
 
   it("refuses a parameter shape the projection cannot express", () => {
-    expect(() => toDshParameters(spec({ limit: z.number() as never }))).toThrow(
-      /string parameters only/
+    expect(() => toDshParameters(spec({ when: z.date() as never }))).toThrow(
+      /cannot express a "date" parameter/
     );
     // The guard must see THROUGH `.optional()`, not treat every optional as a string.
-    expect(() => toDshParameters(spec({ limit: z.number().optional() as never }))).toThrow(
-      /string parameters only/
+    expect(() => toDshParameters(spec({ when: z.date().optional() as never }))).toThrow(
+      /cannot express a "date" parameter/
     );
+  });
+
+  // The control-plane tool declares a BOOLEAN `open`. Projecting it as a string — or throwing on
+  // it, as the previous string-only projection did — made plugin load throw from the tools
+  // registry and took the whole Hindsight panel and tool suite with it.
+  it("carries a boolean parameter through as a boolean", () => {
+    expect(toDshParameters(spec({ open: z.boolean().optional().describe("open it") }))).toEqual({
+      type: "object",
+      properties: { open: { type: "boolean", description: "open it" } },
+    });
+  });
+
+  it("carries number and integer parameters through by type", () => {
+    expect(toDshParameters(spec({ limit: z.number(), page: z.int() }))).toEqual({
+      type: "object",
+      properties: { limit: { type: "number" }, page: { type: "integer" } },
+      required: ["limit", "page"],
+    });
   });
 });

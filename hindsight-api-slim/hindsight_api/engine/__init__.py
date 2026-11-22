@@ -8,9 +8,9 @@ This package contains all the implementation details of the memory engine:
 """
 
 from ..schema_context import get_current_schema
-from .cross_encoder import CrossEncoderModel, LocalSTCrossEncoder, RemoteTEICrossEncoder
+from .cross_encoder import CrossEncoderModel, RemoteTEICrossEncoder
 from .db_utils import acquire_with_retry
-from .embeddings import Embeddings, LocalSTEmbeddings, RemoteTEIEmbeddings
+from .embeddings import Embeddings, RemoteTEIEmbeddings
 from .llm_wrapper import LLMConfig
 from .memory_engine import MemoryEngine, UnqualifiedTableError, validate_sql_schema
 from .response_models import MemoryFact, RecallResult, ReflectResult
@@ -30,10 +30,8 @@ __all__ = [
     "MemoryEngine",
     "acquire_with_retry",
     "Embeddings",
-    "LocalSTEmbeddings",
     "RemoteTEIEmbeddings",
     "CrossEncoderModel",
-    "LocalSTCrossEncoder",
     "RemoteTEICrossEncoder",
     "SearchTrace",
     "SearchTracer",

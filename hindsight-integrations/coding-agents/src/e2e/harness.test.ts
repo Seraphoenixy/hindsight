@@ -43,14 +43,14 @@ it("creates host-owned, owner-only diagnostics before Docker starts and collects
     const diagnosticsPath = join(resultDir, "diagnostics.jsonl");
     const before = statSync(diagnosticsPath);
     expect(before.uid).toBe(statSync(resultDir).uid);
-    expect(before.mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(before.mode & 0o777).toBe(0o600);
     expect(readFileSync(diagnosticsPath, "utf8")).toBe("");
 
     appendLogLine(diagnosticsPath, diagnostics);
     const after = statSync(diagnosticsPath);
     expect(after.uid).toBe(before.uid);
     expect(after.ino).toBe(before.ino);
-    expect(after.mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(after.mode & 0o777).toBe(0o600);
 
     const child = new ChildProcess();
     child.stdout = new PassThrough();

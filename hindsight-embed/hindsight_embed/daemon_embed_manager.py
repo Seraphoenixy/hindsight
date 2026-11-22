@@ -10,6 +10,7 @@ import math
 import os
 import platform
 import re
+import shutil
 import signal
 import socket
 import struct
@@ -29,6 +30,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ._http_probe import ProbeResponse, probe_get
+from ._ui_broker import UiLaunch, in_windows_job, launch_independent_ui
 from .embed_manager import EmbedManager
 from .profile_manager import ProfileLockTimeout, ProfileManager, ProfilePaths, lock_file, unlock_file
 
@@ -160,6 +162,19 @@ def _probe(url: str, read: float) -> ProbeResponse | None:
 _PARENT_INTERPRETER_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSAFEPATH", "VIRTUAL_ENV")
 
 
+def _resolve_uv_tool(name: str) -> str:
+    """Resolve `uv` or `uvx` on PATH, falling back to ~/.local/bin or ~/.cargo/bin for GUI hosts."""
+    found = shutil.which(name)
+    if found:
+        return found
+    suffix = ".exe" if sys.platform == "win32" else ""
+    for base in (Path.home() / ".local" / "bin", Path.home() / ".cargo" / "bin"):
+        candidate = base / f"{name}{suffix}"
+        if candidate.is_file():
+            return str(candidate)
+    return name
+
+
 def _runs_a_foreign_interpreter(cmd: list[str]) -> bool:
     """Whether *cmd* launches hindsight-api on an interpreter that is not ours.
 
@@ -275,7 +290,7 @@ def _signal_startup_process(process: subprocess.Popen, *, force: bool) -> None:
     also its process group id. On Windows there is no group to signal, and
     ``terminate()`` is already an alias for ``kill()``.
     """
-    if platform.system() == "Windows":
+    if sys.platform == "win32":
         process.kill()
     else:
         os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
@@ -287,17 +302,18 @@ def _kill_process_tree(pid: int) -> None:
     Like `_signal_startup_process`: the pid may be the ``uvx`` launcher, and
     killing only it would leave the real API holding the embedded Postgres.
     """
-    if platform.system() == "Windows":
+    if sys.platform == "win32":
         DaemonEmbedManager._run_probe(["taskkill", "/T", "/F", "/PID", str(pid)])
         return
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except OSError:
-        # Not a group leader after all: kill what there is.
+    else:
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except OSError:
-            pass
+            # Not a group leader after all: kill what there is.
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 def _terminate_startup_process(process: subprocess.Popen) -> None:
@@ -381,7 +397,8 @@ class DaemonEmbedManager(EmbedManager):
         """
         if db_url and db_url != "pg0":
             return db_url
-        safe_profile = self._sanitize_profile_name(profile)
+        effective_profile = "coding-agent" if profile in ("", "default") else profile
+        safe_profile = self._sanitize_profile_name(effective_profile)
         return f"pg0://hindsight-embed-{safe_profile}"
 
     def resolve_database_url(self, profile: str, config: Mapping[str, str] | None = None) -> str:
@@ -433,7 +450,15 @@ class DaemonEmbedManager(EmbedManager):
         """Return the dev-mode launch command when running inside the monorepo."""
         dev_api_path = Path(__file__).parent.parent.parent / "hindsight-api-slim"
         if dev_api_path.exists() and (dev_api_path / "pyproject.toml").exists():
-            return ["uv", "run", "--project", str(dev_api_path), "--extra", "all", "hindsight-api"]
+            return [
+                _resolve_uv_tool("uv"),
+                "run",
+                "--project",
+                str(dev_api_path),
+                "--extra",
+                "embedded-db",
+                "hindsight-api",
+            ]
         return None
 
     @staticmethod
@@ -607,7 +632,7 @@ class DaemonEmbedManager(EmbedManager):
                 return [str(candidate)]
 
         # Fall back to uvx for the installed version (resolved by the caller).
-        return ["uvx", f"hindsight-api@{api_version}"]
+        return [_resolve_uv_tool("uvx"), f"hindsight-api@{api_version}"]
 
     @staticmethod
     def _is_port_in_use(port: int) -> bool:
@@ -916,9 +941,41 @@ class DaemonEmbedManager(EmbedManager):
         return None
 
     @staticmethod
+    def _kill_windows_process(pid: int) -> bool:
+        """Terminate and wait on one native handle, avoiding PID probe races.
+
+        CPython on Windows can raise SystemError from os.kill(pid, 0) after
+        TerminateProcess has succeeded. Waiting on the handle also avoids
+        mistaking a reused PID for the process we just stopped.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateProcess.restype = wintypes.BOOL
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x00100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+        if not handle:
+            return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: already exited
+        try:
+            kernel.TerminateProcess(handle, 1)
+            return kernel.WaitForSingleObject(handle, 5000) == 0  # WAIT_OBJECT_0
+        finally:
+            kernel.CloseHandle(handle)
+
+    @staticmethod
     def _kill_process(pid: int) -> bool:
         """Kill a process by PID and wait for it to exit. Returns True if process is gone."""
         import signal
+
+        if sys.platform == "win32":
+            return DaemonEmbedManager._kill_windows_process(pid)
 
         try:
             os.kill(pid, signal.SIGTERM)
@@ -1501,6 +1558,11 @@ class DaemonEmbedManager(EmbedManager):
         env["PORT"] = str(ui_port)
         env["HOSTNAME"] = hostname
         env["HINDSIGHT_CP_DATAPLANE_API_URL"] = api_url
+        # The standalone UI runs from its own directory, often outside the venv
+        # and without the GUI launcher's PATH. Keep ops on this exact interpreter
+        # rather than asking Node to rediscover an installed CLI shim.
+        if not env.get("HINDSIGHT_CP_EMBED_COMMAND", "").strip():
+            env["HINDSIGHT_CP_EMBED_COMMAND"] = f'"{sys.executable}" -m hindsight_embed.cli'
 
         # Create log directory
         ui_log.parent.mkdir(parents=True, exist_ok=True)
@@ -1516,8 +1578,11 @@ class DaemonEmbedManager(EmbedManager):
         ]
 
         try:
-            with open(ui_log, "wb") as log_file:
-                subprocess.Popen(cmd, env=env, **_detach_popen_kwargs(log_file))
+            if in_windows_job():
+                launch_independent_ui(UiLaunch(command=cmd, env=env, log_path=str(ui_log), cwd=os.getcwd()))
+            else:
+                with open(ui_log, "wb") as log_file:
+                    subprocess.Popen(cmd, env=env, **_detach_popen_kwargs(log_file))
 
             # Wait for UI to be ready
             start_time = time.time()

@@ -24,9 +24,11 @@ async function main(): Promise<void> {
   setLogLevel(cfg.logLevel);
 
   if (cfg.serverMode !== "daemon") return;
-  // Several sessions can race to start one daemon; whoever loses simply finds it healthy.
-  if (await isServerHealthy(cfg.apiUrl)) return;
   if (!preflightDaemon(cfg, harness)) return;
+  // Several sessions can race to start one daemon; whoever loses simply finds it healthy.
+  if (await isServerHealthy(cfg.apiUrl)) {
+    return;
+  }
 
   const { HindsightServer } = await import("@vectorize-io/hindsight-all");
   const server = new HindsightServer({

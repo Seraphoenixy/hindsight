@@ -28,6 +28,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   mkdtempSync,
   readFileSync,
   readSync,
@@ -45,7 +46,7 @@ import { HOOK_HARNESSES, type HookHarnessName } from "./harness/hook-lifecycle";
 import { importLocalHistory } from "./core/history";
 import { detectLlm, hasRustToolchain, hasUvx, type LlmChoice } from "./core/daemon";
 import { readLegacyEndpoint } from "./core/legacy";
-import { hookNode, hookNodeShell, isOurMcpEntry, nodeBinary } from "./core/util";
+import { binOnPath, hookNode, hookNodeShell, isOurMcpEntry, nodeBinary } from "./core/util";
 import { SKILL_DIRS, resolveSkillDirs, traecodeDotDirName } from "./core/skill-dirs";
 import {
   enableWorkspaceMcpSetting,
@@ -351,12 +352,8 @@ export interface HarnessInstaller {
 }
 
 function onPath(bin: string): boolean {
-  try {
-    execFileSync("which", [bin], { stdio: "pipe" });
-    return true;
-  } catch {
-    return false;
-  }
+  // Windows has no system which; reuse PATHEXT-aware discovery without a subprocess.
+  return binOnPath(bin) !== undefined;
 }
 
 function runClinePlugin(args: string[]): boolean {
@@ -989,7 +986,7 @@ function promptServerMode(c: InstallCtx): ServerMode | undefined {
     const picked = c.selectPrompt(
       "Where should memory live?",
       SERVER_CHOICES.map(({ label, hint }) => ({ label, hint })),
-      0
+      2
     );
     if (picked === null) {
       c.log?.("no server chosen — leaving the server config unchanged");
@@ -1002,8 +999,8 @@ function promptServerMode(c: InstallCtx): ServerMode | undefined {
       SERVER_CHOICES.map((o, i) => `  ${i + 1}) ${o.label.padEnd(28)}— ${o.hint}`).join("\n") +
       `\n`
   );
-  const answer = readLineSync(c, "Choose [1-3] (default 1): ").trim();
-  if (answer === "") return "cloud";
+  const answer = readLineSync(c, "Choose [1-3] (default 3): ").trim();
+  if (answer === "") return "daemon";
   const digit = Number.parseInt(answer, 10);
   if (digit >= 1 && digit <= SERVER_CHOICES.length) return SERVER_CHOICES[digit - 1].mode;
   c.log?.(`unrecognised choice "${answer}" — leaving the server config unchanged`);
@@ -1081,14 +1078,14 @@ function configureServer(c: InstallCtx, args: string[], installing: readonly str
       return true;
     }
     if (!c.interactive) {
+      mode = "daemon";
       c.log?.(
-        `\nserver: defaulting to Hindsight Cloud. Re-run with --server self-hosted|daemon to change,\n` +
-          `        or edit ${configPath}.`
+        `\nserver: defaulting to local daemon (on-device) in ${configPath}. Re-run with --server cloud|self-hosted to change.`
       );
-      return true;
+    } else {
+      mode = promptServerMode(c);
+      if (!mode) return true;
     }
-    mode = promptServerMode(c);
-    if (!mode) return true;
   }
 
   const next: Record<string, unknown> = { ...existing, serverMode: mode };
@@ -1770,14 +1767,40 @@ function dshHome(c: InstallCtx): string {
 }
 
 /**
+ * All `cordis.patch.yml` files to patch for DeepSeek Harness:
+ *   1. `$DSH_HOME/cordis.patch.yml` (home-level patch layer)
+ *   2. `$DSH_HOME/profiles/<name>/cordis.patch.yml` (per-profile layers such as `desktop`, `web`, `headless`),
+ *      because DSH Desktop and profile-scoped runs compose their own profile `cordis.patch.yml`.
+ */
+function dshPatchPaths(c: InstallCtx): string[] {
+  const home = dshHome(c);
+  const paths = [join(home, "cordis.patch.yml")];
+  const profilesDir = join(home, "profiles");
+  if (existsSync(profilesDir)) {
+    for (const ent of readdirSync(profilesDir, { withFileTypes: true })) {
+      if (!ent.isDirectory()) continue;
+      const profileDir = join(profilesDir, ent.name);
+      if (
+        existsSync(join(profileDir, "cordis.yml")) ||
+        existsSync(join(profileDir, "cordis.patch.yml"))
+      ) {
+        paths.push(join(profileDir, "cordis.patch.yml"));
+      }
+    }
+  }
+  return paths;
+}
+
+/**
  * DeepSeek Harness — a native Cordis plugin, wired through the HOME-level patch layer
- * (`$DSH_HOME/cordis.patch.yml`), which every profile composes after its bundles.
+ * (`$DSH_HOME/cordis.patch.yml`) and each installed profile (`$DSH_HOME/profiles/<name>/cordis.patch.yml`,
+ * including `desktop` for DSH Desktop).
  *
  * The alternative is `dsh plugin --profile <name> add @vectorize-io/hindsight-coding-agents`, which
  * pnpm-installs the package into ONE profile and picks up the `dsh.bundle.patch` this package
  * ships. That is the right route for a published install and is what the docs recommend, but it
  * needs pnpm, a network, and a repeat per profile — so the installer takes the path that always
- * works: patch the home layer to load the dist entry that is already on this machine.
+ * works: patch the home and profile layers to load the dist entry that is already on this machine.
  *
  * The row's `name` MUST be a `file://` URL. Cordis resolves it as an ES module specifier, and a
  * bare absolute path is not one — the same trap Kilo has, where it fails to resolve and the plugin
@@ -1785,13 +1808,11 @@ function dshHome(c: InstallCtx): string {
  */
 const dsh: HarnessInstaller = {
   name: "dsh",
-  detect: (c) => onPath("dsh") || existsSync(dshHome(c)),
+  detect: (c) =>
+    onPath("dsh") ||
+    existsSync(dshHome(c)) ||
+    (process.env.APPDATA ? existsSync(join(process.env.APPDATA, "DSH Desktop")) : false),
   install(c) {
-    const path = join(dshHome(c), "cordis.patch.yml");
-    const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
-    // REPLACE any previous block rather than skipping: a re-install after the package moved must
-    // repair the now-dead path, which is exactly what `install` is for.
-    const others = dshUserPatches(existing);
     const entry = pathToFileURL(join(c.dist, "dsh.js")).href;
     const block =
       `${DSH_MARKER_START}\n` +
@@ -1799,28 +1820,47 @@ const dsh: HarnessInstaller = {
       `    - id: hindsight\n` +
       `      name: ${JSON.stringify(entry)}\n` +
       `${DSH_MARKER_END}\n`;
-    if (existsSync(path) && !existsSync(`${path}.hindsight-backup`))
-      copyFileSync(path, `${path}.hindsight-backup`);
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, others ? `${others}\n\n${block}` : block);
+    const targets = dshPatchPaths(c);
+    for (const path of targets) {
+      const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+      // REPLACE any previous block rather than skipping: a re-install after the package moved must
+      // repair the now-dead path, which is exactly what `install` is for.
+      const others = dshUserPatches(existing);
+      if (existsSync(path) && !existsSync(`${path}.hindsight-backup`))
+        copyFileSync(path, `${path}.hindsight-backup`);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, others ? `${others}\n\n${block}` : block);
+    }
+    // Invalidate DSH Desktop's compiled client module cache so updated `dsh-client.js` is picked up.
+    const profilesDir = join(dshHome(c), "profiles");
+    if (existsSync(profilesDir)) {
+      for (const ent of readdirSync(profilesDir, { withFileTypes: true })) {
+        if (!ent.isDirectory()) continue;
+        const clientStateDir = join(profilesDir, ent.name, "work", "dsh-client-state");
+        if (existsSync(clientStateDir)) {
+          rmSync(clientStateDir, { recursive: true, force: true });
+        }
+      }
+    }
     // dsh's skill provider scans the shared agentskills root, the same one Codex reads.
     installSkill(c, "dsh");
     // A running `dsh web` hot-loads the new patch entry, so its open sessions gain the hindsight_*
     // tools mid-conversation — a tool-set change that invalidates the provider prompt cache (#4317).
     c.log?.(
-      `dsh: plugin registered in ${path} (applies to every dsh profile; start new sessions — ones already open would gain the tools mid-conversation)`
+      `dsh: plugin registered in ${targets.join(", ")} (start new sessions — ones already open would gain the tools mid-conversation)`
     );
   },
   uninstall(c) {
-    const path = join(dshHome(c), "cordis.patch.yml");
-    if (existsSync(path)) {
-      const existing = readFileSync(path, "utf8");
-      const others = existing.replace(DSH_BLOCK_RE, "\n").trim();
-      // `DSH_EMPTY_LIST`, not an empty file: dsh requires this file to parse to a top-level ARRAY
-      // and fails BOOT on anything else, so removing the last block must leave an empty list
-      // behind. `install` knows that placeholder is not user content — see `dshUserPatches`.
-      if (others !== existing.trim())
-        writeFileSync(path, others ? `${others}\n` : `${DSH_EMPTY_LIST}\n`);
+    for (const path of dshPatchPaths(c)) {
+      if (existsSync(path)) {
+        const existing = readFileSync(path, "utf8");
+        const others = existing.replace(DSH_BLOCK_RE, "\n").trim();
+        // `DSH_EMPTY_LIST`, not an empty file: dsh requires this file to parse to a top-level ARRAY
+        // and fails BOOT on anything else, so removing the last block must leave an empty list
+        // behind. `install` knows that placeholder is not user content — see `dshUserPatches`.
+        if (others !== existing.trim())
+          writeFileSync(path, others ? `${others}\n` : `${DSH_EMPTY_LIST}\n`);
+      }
     }
     uninstallSkill(c, "dsh");
     c.log?.("dsh: plugin entry + skill removed");

@@ -1,6 +1,22 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { formatWatermark } from "@/lib/relative-time";
+
+// The formatter renders in the viewer's local zone on purpose — a watermark is a
+// wall-clock position, so "today" must mean the reader's today. That makes these
+// assertions depend on the machine's zone: 12:38Z and 18:00Z fall on different
+// local days east of UTC+6, and the "today" case then prints a date. Pin UTC so
+// the today/this-year/earlier-year branches are decided by the fixture instead of
+// by wherever the suite runs. (Same reason as date-range-preset.test.ts.)
+const originalTz = process.env.TZ;
+
+beforeAll(() => {
+  process.env.TZ = "UTC";
+});
+
+afterAll(() => {
+  process.env.TZ = originalTz;
+});
 
 afterEach(() => {
   vi.useRealTimers();

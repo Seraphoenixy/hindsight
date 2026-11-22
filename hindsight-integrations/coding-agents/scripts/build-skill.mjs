@@ -45,7 +45,7 @@ const END = /^<!--\s*skill:end\s*-->$/;
 export function regions(src) {
   const out = [];
   let current = null;
-  for (const line of src.split("\n")) {
+  for (const line of src.replace(/\r\n/g, "\n").split("\n")) {
     const begin = BEGIN.exec(line);
     if (begin) {
       if (current) throw new Error("nested <!-- skill:begin -->");
@@ -81,7 +81,7 @@ function render({ title, lines }) {
 }
 
 export function build() {
-  const head = readFileSync(preamble, "utf8").trimEnd();
+  const head = readFileSync(preamble, "utf8").replace(/\r\n/g, "\n").trimEnd();
   const marker =
     "<!-- GENERATED from README.md (its skill:begin regions) + skill-src/preamble.md.\n" +
     "     Edit those, then run: npm run skill:build -->";
@@ -97,7 +97,7 @@ export function build() {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const generated = build();
   if (process.argv.includes("--check")) {
-    if (readFileSync(skill, "utf8") !== generated) {
+    if (readFileSync(skill, "utf8").replace(/\r\n/g, "\n") !== generated) {
       console.error(
         "[coding-agents] ❌ skill/SKILL.md is out of date with the README.\n" +
           "  Run: npm run skill:build"

@@ -209,10 +209,13 @@ export function isWithin(
   platform: NodeJS.Platform = process.platform
 ): boolean {
   if (platform === "win32") {
-    directory = directory.toLowerCase();
-    configured = configured.toLowerCase();
+    directory = directory.replace(/\\/g, "/").toLowerCase();
+    configured = configured.replace(/\\/g, "/").toLowerCase();
   }
-  return directory === configured || directory.startsWith(configured + sep);
+  return (
+    directory === configured ||
+    directory.startsWith(configured + (platform === "win32" ? "/" : sep))
+  );
 }
 
 /** Longest-prefix match of `directory` against the map's absolute paths (exact or ancestor). */

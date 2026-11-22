@@ -27,13 +27,17 @@ let lockDir: string;
 beforeEach(() => {
   lockDir = mkdtempSync(join(tmpdir(), "hindsight-survey-test-"));
   vi.mocked(resolveHostConfig).mockReturnValue({
-    cfg: resolveConfig({ apiUrl: "https://api.example.test", apiToken: "test-token" }),
+    cfg: resolveConfig({
+      serverMode: "self-hosted",
+      apiUrl: "https://api.example.test",
+      apiToken: "test-token",
+    }),
     bankId: "bank-1",
   });
 });
 afterEach(() => {
   vi.restoreAllMocks();
-  rmSync(lockDir, { recursive: true, force: true });
+  rmSync(lockDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 function startCodebaseSurvey(repoDir: string, opts: Parameters<typeof startSurvey>[1] = {}) {
   return startSurvey(repoDir, {
@@ -449,7 +453,7 @@ describe("startCodebaseSurvey", () => {
       ["https://api.example.test", "test-token", "bank-2"],
     ]) {
       vi.mocked(resolveHostConfig).mockReturnValue({
-        cfg: resolveConfig({ apiUrl, apiToken }),
+        cfg: resolveConfig({ serverMode: "self-hosted", apiUrl, apiToken }),
         bankId,
       });
       await expect(startCodebaseSurvey("/repo-a", { spawn, resolveBin: yes })).resolves.toBe(true);
@@ -563,6 +567,9 @@ describe("startCodebaseSurvey", () => {
       expect(await runHook()).toBe(false); // not stale yet
       await sleep(staleMs * 2);
       expect(await race()).toBe(1);
+      // Admission resolves before the new agent writes its PID. Wait for that record
+      // so cleanup also kills the last supervisor, whose cwd pins this dir on Windows.
+      await vi.waitFor(() => expect(agents()).toHaveLength(3), { timeout: 5000 });
     } finally {
       for (const { pid, ppid } of agents()) {
         for (const p of [pid, ppid]) {

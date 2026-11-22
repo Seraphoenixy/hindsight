@@ -4,7 +4,6 @@ One embedder per server (``HINDSIGHT_API_KB_EMBEDDINGS_PROVIDER``). What it embe
 which media types can be ingested: a model without video simply refuses video files, and a PDF is
 embedded from its text layer alone when the model has no images.
 
-* ``local`` — EmbeddingGemma 2 in-process (Apache-2.0, 768 dims, text/image/audio/video).
 * ``gemini`` — Gemini Embedding 2 over the Gemini API (text/image/audio/video).
 * ``vertex`` — the same model on Vertex AI, with the memory banks' Vertex project, region and key.
 * ``voyage`` — Voyage multimodal (text/image/video).
@@ -94,183 +93,6 @@ class KnowledgeEmbedder(ABC):
         they go to the model as one interleaved input and come back as one vector, the way these models
         embed a mixed query, rather than weighing separately embedded parts by hand. EmbeddingGemma 2
         takes one medium per input, so there an image and a video are embedded apart (``_one_medium_each``)."""
-
-
-class LocalGemmaEmbedder(KnowledgeEmbedder):
-    """EmbeddingGemma 2 through sentence-transformers, loaded on first use."""
-
-    provider = "local"
-    modalities = frozenset(ALL_MODALITIES)
-
-    def __init__(
-        self,
-        model: str,
-        *,
-        dimensions: int | None,
-        device: str | None,
-        batch_size: int,
-        image_tokens: int,
-    ) -> None:
-        self.model = model
-        self.dimension = dimensions or 768
-        self._truncate = dimensions
-        self._device = device
-        self._batch_size = batch_size
-        self._image_tokens = image_tokens
-        self._st: Any = None
-        # The model is not safe to call from two threads at once (MPS/CUDA state), and it is
-        # big enough that one copy per process is the budget.
-        self._lock = threading.Lock()
-
-    def _load(self) -> Any:
-        if self._st is None:
-            import torch
-            from sentence_transformers import SentenceTransformer
-
-            # float16 returns NaN embeddings on this model (model card); bfloat16 only on CUDA.
-            dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-            st = SentenceTransformer(self.model, device=self._device, model_kwargs={"torch_dtype": dtype})
-            processor = st[0].processor
-            processor.image_processor.max_soft_tokens = self._image_tokens
-            processor.image_processor.image_seq_length = self._image_tokens
-            native = st.get_sentence_embedding_dimension()
-            if native and not self._truncate:
-                self.dimension = native
-            self._st = st
-            logger.info(f"Knowledge embedder loaded: {self.model} on {st.device} ({self.dimension} dims)")
-        return self._st
-
-    def _model_input(self, item: EmbedInput) -> Any:
-        if item.modality == "text":
-            return _document_text(item.text or "", item.title)
-        assert item.data is not None
-        model_input: dict[str, Any]
-        if item.modality == "image":
-            model_input, placeholders = {"image": media.open_image(item.data)}, "<|image|>"
-        elif item.modality == "audio":
-            pcm = media.decode_audio_pcm(item.data)
-            model_input, placeholders = {"audio": {"array": pcm, "sampling_rate": media.PCM_RATE}}, "<|audio|>"
-        else:
-            # Picture and soundtrack in one vector, so speech in a clip is findable too.
-            model_input, placeholders = {"video": media.decode_video_frames(item.data)}, "<|video|>"
-            pcm = media.decode_audio_pcm(item.data, required=False)
-            if pcm is not None and pcm.size:
-                model_input["audio"] = {"array": pcm, "sampling_rate": media.PCM_RATE}
-                placeholders += "<|audio|>"
-        prompt = _media_prompt(item, placeholders)
-        if prompt:
-            model_input["text"] = prompt
-        return model_input
-
-    def _encode(self, inputs: list[Any], image_tokens: int | None = None) -> list[list[float]]:
-        out: list[list[float]] = []
-        # The lock is taken per model batch, not per call, so a search arriving during a long
-        # ingest waits for one batch rather than the whole document.
-        for batch in _model_batches(inputs, self._batch_size):
-            with self._lock:
-                st = self._load()
-                processor = st[0].processor.image_processor
-                processor.max_soft_tokens = processor.image_seq_length = image_tokens or self._image_tokens
-                vectors = st.encode(
-                    batch,
-                    batch_size=len(batch),
-                    normalize_embeddings=True,
-                    truncate_dim=self._truncate,
-                    show_progress_bar=False,
-                )
-                if any(_is_clip(i) for i in batch):
-                    # Every clip length allocates differently sized blocks and the caching allocator
-                    # keeps them all: video ingest grew past 26GB on an M3 Max without this.
-                    _release_device_cache()
-            out.extend(v.tolist() for v in vectors)
-        return out
-
-    def ensure_loaded(self) -> None:
-        with self._lock:
-            self._load()
-
-    async def embed_documents(self, items: list[EmbedInput]) -> list[list[float]]:
-        def run() -> list[list[float]]:
-            # One encode per vision-token budget: the processor setting applies to a whole batch.
-            out: list[list[float] | None] = [None] * len(items)
-            for budget in {item.image_tokens for item in items}:
-                group = [i for i, item in enumerate(items) if item.image_tokens == budget]
-                for i, vector in zip(
-                    group, self._encode([self._model_input(items[i]) for i in group], budget), strict=True
-                ):
-                    out[i] = vector
-            return [v for v in out if v is not None]
-
-        return await asyncio.to_thread(run)
-
-    async def embed_query(
-        self, text: str | None, image: bytes | None = None, video: bytes | None = None
-    ) -> list[float]:
-        if image is not None and video is not None:
-            return await _one_medium_each(self, text, image, video)
-        if image is None and video is None:
-            inp: Any = f"{_QUERY_PREFIX}{text or ''}"
-        else:
-            inp = {}
-            placeholders = ""
-            if image is not None:
-                inp["image"], placeholders = media.open_image(image), "<|image|>"
-            if video is not None:
-                # Picture and soundtrack, as a video passage is embedded (see _model_input).
-                inp["video"] = media.decode_video_frames(video)
-                placeholders += "<|video|>"
-                pcm = media.decode_audio_pcm(video, required=False)
-                if pcm is not None and pcm.size:
-                    inp["audio"] = {"array": pcm, "sampling_rate": media.PCM_RATE}
-                    placeholders += "<|audio|>"
-            if text:
-                inp["text"] = f"{_QUERY_PREFIX}{text} {placeholders}"
-        vectors = await asyncio.to_thread(self._encode, [inp])
-        return vectors[0]
-
-
-def _is_clip(model_input: Any) -> bool:
-    return isinstance(model_input, dict) and ("video" in model_input or "audio" in model_input)
-
-
-#: Characters of text in one model batch. A batch's memory grows with its tokens, not its count: 32 windows of
-#: a 43 KB census table (5,000 digits each, thousands of tokens) ran past 10 GB on CPU, where 8 took 3.4 GB.
-_TEXT_BATCH_CHARS = 16_000
-
-
-def _model_batches(inputs: list[Any], size: int) -> Iterator[list[Any]]:
-    """``inputs`` in order: ``size`` at a time and at most ``_TEXT_BATCH_CHARS`` of text, an audio or video
-    clip alone. One 30 s clip took 2 GB on CPU, so the 32 a batch held ran a server to 42 GB and the machine
-    out of memory."""
-    batch: list[Any] = []
-    chars = 0
-    for model_input in inputs:
-        if _is_clip(model_input):
-            if batch:
-                yield batch
-                batch, chars = [], 0
-            yield [model_input]
-            continue
-        length = len(model_input) if isinstance(model_input, str) else 0
-        if batch and chars + length > _TEXT_BATCH_CHARS:
-            yield batch
-            batch, chars = [], 0
-        batch.append(model_input)
-        chars += length
-        if len(batch) == size:
-            yield batch
-            batch, chars = [], 0
-    if batch:
-        yield batch
-
-
-def _release_device_cache() -> None:
-    import torch
-
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif torch.backends.mps.is_available():
-        torch.mps.empty_cache()
 
 
 @dataclass(frozen=True)
@@ -785,14 +607,10 @@ def _require(embedder: KnowledgeEmbedder, *, image: bytes | None, video: bytes |
 def create_knowledge_embedder(config: ConfigLike, memory_embeddings: Embeddings) -> KnowledgeEmbedder:
     provider = config.kb_embeddings_provider
     if provider == "local":
-        from ..config import DEFAULT_KB_EMBEDDINGS_LOCAL_MODEL
-
-        return LocalGemmaEmbedder(
-            config.kb_embeddings_model or DEFAULT_KB_EMBEDDINGS_LOCAL_MODEL,
-            dimensions=config.kb_embeddings_dimensions,
-            device=config.kb_embeddings_device,
-            batch_size=config.kb_embeddings_batch_size,
-            image_tokens=config.kb_image_tokens,
+        raise ValueError(
+            "HINDSIGHT_API_KB_EMBEDDINGS_PROVIDER='local' (EmbeddingGemma 2 in-process) has been removed in "
+            "this private build along with the built-in Python inference stack. Use 'text' to reuse the memory "
+            "banks' embeddings, or a remote multimodal provider: gemini, vertex, voyage, cohere or openai."
         )
     dimensions = config.kb_embeddings_dimensions
     batch_size = config.kb_embeddings_batch_size
@@ -859,7 +677,7 @@ def create_knowledge_embedder(config: ConfigLike, memory_embeddings: Embeddings)
         return _text_embedder(config.kb_text_embeddings, memory_embeddings)
     raise ValueError(
         f"Unknown HINDSIGHT_API_KB_EMBEDDINGS_PROVIDER '{provider}'. "
-        "Expected local, gemini, vertex, voyage, cohere, openai or text."
+        "Expected gemini, vertex, voyage, cohere, openai or text."
     )
 
 

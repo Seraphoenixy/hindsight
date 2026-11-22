@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
 import {
   DAEMON_CONFIG_ENV,
@@ -22,6 +22,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("connection modes", () => {
@@ -38,10 +39,10 @@ describe("connection modes", () => {
     );
   });
 
-  it("defaults to cloud, leaving today's behaviour unchanged", () => {
+  it("defaults to daemon when serverMode is unset", () => {
     const cfg = resolveConfig({});
-    expect(cfg.serverMode).toBe("cloud");
-    expect(cfg.apiUrl).toBe("https://api.hindsight.vectorize.io");
+    expect(cfg.serverMode).toBe("daemon");
+    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
   });
 
   it("self-hosted keeps the configured apiUrl", () => {
@@ -104,9 +105,10 @@ describe("daemonEnv", () => {
 });
 
 describe("ensureDaemon", () => {
+  beforeEach(() => vi.stubEnv("HINDSIGHT_API_LLM_PROVIDER", "openai"));
   // Cloud and self-hosted must not so much as probe a local port.
   it("touches nothing outside daemon mode", async () => {
-    const cfg = resolveConfig({ apiUrl: "https://cloud.example" });
+    const cfg = resolveConfig({ serverMode: "self-hosted", apiUrl: "https://cloud.example" });
     const spawnFn = vi.fn(() => {
       throw new Error("must not spawn");
     });
@@ -119,7 +121,7 @@ describe("ensureDaemon", () => {
   // Side effect only: callers proceed either way, so a down daemon fails through the same client
   // error path as a down Cloud/self-hosted server rather than being skipped.
   it("resolves without reporting usability", async () => {
-    const cfg = resolveConfig({ apiUrl: "https://cloud.example" });
+    const cfg = resolveConfig({ serverMode: "self-hosted", apiUrl: "https://cloud.example" });
     expect(await ensureDaemon(cfg, "claude-code", {})).toBeUndefined();
   });
 

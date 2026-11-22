@@ -37,7 +37,12 @@ describe("resolveHostMemory", () => {
   it("forwards every client setting the hosts used to pass by hand", async () => {
     // dsh and Prime Agent each hand-built their ClientOpts and both omitted maxParallelRetains, so
     // those two hosts silently ignored the setting. One builder is what stops that recurring.
-    writeConfig({ apiUrl: "http://server", apiToken: "k", maxParallelRetains: 3 });
+    writeConfig({
+      serverMode: "self-hosted",
+      apiUrl: "http://server",
+      apiToken: "k",
+      maxParallelRetains: 3,
+    });
     const { resolveHostMemory } = await loadFactory();
 
     const { client } = resolveHostMemory("dsh", root);
@@ -84,13 +89,13 @@ describe("resolveHostMemory", () => {
   });
 
   it("re-resolves the token from the live config, so a rotation does not need a restart", async () => {
-    writeConfig({ apiUrl: "http://server", apiToken: "old-key" });
+    writeConfig({ serverMode: "self-hosted", apiUrl: "http://server", apiToken: "old-key" });
     const { resolveHostMemory } = await loadFactory();
     const { client } = resolveHostMemory("dsh", root);
     expect(client.apiToken).toBe("old-key");
 
     // The operator rotates the credential while the host keeps running; the next 401 picks it up.
-    writeConfig({ apiUrl: "http://server", apiToken: "new-key" });
+    writeConfig({ serverMode: "self-hosted", apiUrl: "http://server", apiToken: "new-key" });
     const calls: (string | null)[] = [];
     vi.stubGlobal(
       "fetch",
@@ -113,7 +118,7 @@ describe("resolveHostMemory", () => {
     // `banks.<id>.apiToken` is a legitimate override (it is not stripped by BANK_OVERRIDE_EXCLUDED),
     // so a provider that re-read only the top level would hand back the wrong credential.
     const { resolveHostMemory: probe } = await loadFactory();
-    writeConfig({ apiUrl: "http://server", apiToken: "global" });
+    writeConfig({ serverMode: "self-hosted", apiUrl: "http://server", apiToken: "global" });
     const bankId = probe("dsh", root).bankId;
 
     writeConfig({
@@ -126,12 +131,12 @@ describe("resolveHostMemory", () => {
   });
 
   it("keeps a token re-read from reaching the old server after the config moved the directory", async () => {
-    writeConfig({ apiUrl: "http://server-a", apiToken: "key-a" });
+    writeConfig({ serverMode: "self-hosted", apiUrl: "http://server-a", apiToken: "key-a" });
     const { resolveHostMemory } = await loadFactory();
     const { client } = resolveHostMemory("dsh", root);
 
     // The directory now points at another server: its key belongs there, not on server-a.
-    writeConfig({ apiUrl: "http://server-b", apiToken: "key-b" });
+    writeConfig({ serverMode: "self-hosted", apiUrl: "http://server-b", apiToken: "key-b" });
     const calls: (string | null)[] = [];
     vi.stubGlobal(
       "fetch",

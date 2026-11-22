@@ -86,6 +86,11 @@ describe("configuration reference", () => {
 describe("skill region extraction", () => {
   const extract = (src: string): string[] => regions(src) as string[];
 
+  it("extracts the same regions from Windows and Unix line endings", () => {
+    const source = ["<!-- skill:begin -->", "## Settings", "body", "<!-- skill:end -->"].join("\n");
+    expect(extract(source.replace(/\n/g, "\r\n"))).toEqual(extract(source));
+  });
+
   it("normalises a region's headings so its top level becomes the skill's ##", () => {
     const [out] = extract(
       [

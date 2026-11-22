@@ -17,6 +17,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { type Config } from "./core/config";
+import { ensureControlPlaneStarted } from "./core/control-plane";
 import { resolveHostMemory } from "./core/host-client";
 import { HindsightClient } from "./core/hindsight";
 import { buildPageTools, type ToolSpec } from "./core/page-tools";
@@ -132,6 +133,7 @@ async function main() {
   // `{harness}` bank template, so both routes into a repo land in ONE bank.
   const harness = resolveHarness();
   const { cfg, bankId, client } = resolveHostMemory(harness, cwd);
+  void ensureControlPlaneStarted(cfg, harness);
 
   const server = buildMcpServer(selectTools(cfg, client, bankId, { cwd, harness }));
 

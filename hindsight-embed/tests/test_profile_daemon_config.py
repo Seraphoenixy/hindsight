@@ -25,6 +25,19 @@ def temp_home(tmp_path, monkeypatch):
     return temp_home
 
 
+@pytest.fixture
+def local_ml_available(monkeypatch):
+    """Pretend the local ML extras are installed.
+
+    `_find_api_command` refuses an installed binary when the config would load the
+    local sentence-transformers providers but the package is missing them, falling
+    back to uvx. These tests are about which ENTRYPOINT launches the daemon, not
+    about that guard, so they must satisfy it explicitly — otherwise the result
+    depends on whether the test machine happens to have the extras.
+    """
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.find_spec", lambda name: object())
+
+
 def test_profile_config_is_loaded_for_daemon(temp_home):
     """Test that profile .env config is loaded when preparing daemon startup.
 
@@ -617,7 +630,7 @@ def test_configure_from_env_omits_model_when_unset(temp_home, monkeypatch):
     rc = cli._do_configure_from_env()
     assert rc == 0
 
-    contents = (config_dir / "embed").read_text()
+    contents = (config_dir / "embed").read_text(encoding="utf-8")
     assert "HINDSIGHT_API_LLM_PROVIDER=gemini" in contents
     # The config is seeded from .env.example, which carries a commented
     # `# HINDSIGHT_API_LLM_MODEL=gpt-4o-mini` reference line. What must not
@@ -651,7 +664,7 @@ def test_configure_from_env_accepts_providers_outside_interactive_menu(temp_home
     rc = cli._do_configure_from_env()
     assert rc == 0, "anthropic must be accepted — the daemon validates providers, not the CLI"
 
-    contents = (config_dir / "embed").read_text()
+    contents = (config_dir / "embed").read_text(encoding="utf-8")
     assert "HINDSIGHT_API_LLM_PROVIDER=anthropic" in contents
 
 
@@ -671,7 +684,7 @@ def test_configure_from_env_accepts_github_copilot_without_api_key(temp_home, mo
     assert cli._has_non_interactive_env() is True
     assert cli._do_configure_from_env() == 0
 
-    contents = (config_dir / "embed").read_text()
+    contents = (config_dir / "embed").read_text(encoding="utf-8")
     assert "HINDSIGHT_API_LLM_PROVIDER=github-copilot" in contents
     assert "HINDSIGHT_API_LLM_MODEL=gpt-5.6-terra" in contents
     active_lines = [line for line in contents.splitlines() if line and not line.startswith("#")]
@@ -694,7 +707,7 @@ def _windows_scripts_dir(tmp_path: Path, *, with_pythonw: bool) -> Path:
     return scripts_dir
 
 
-def test_windows_daemon_launches_via_gui_interpreter(temp_home, tmp_path, monkeypatch):
+def test_windows_daemon_launches_via_gui_interpreter(temp_home, tmp_path, monkeypatch, local_ml_available):
     """Regression test for issue #1885.
 
     On Windows the daemon must be launched through the GUI-subsystem
@@ -723,7 +736,7 @@ def test_windows_daemon_launches_via_gui_interpreter(temp_home, tmp_path, monkey
     assert cmd == [str(scripts_dir / "pythonw.exe"), "-m", "hindsight_api.main"]
 
 
-def test_windows_daemon_falls_back_to_console_exe_without_pythonw(temp_home, tmp_path, monkeypatch):
+def test_windows_daemon_falls_back_to_console_exe_without_pythonw(temp_home, tmp_path, monkeypatch, local_ml_available):
     """When pythonw.exe is missing the daemon still launches via the console exe.
 
     The GUI-interpreter swap is best-effort: an exotic install without
@@ -749,7 +762,7 @@ def test_windows_daemon_falls_back_to_console_exe_without_pythonw(temp_home, tmp
     assert cmd == [str(scripts_dir / "hindsight-api.exe")]
 
 
-def test_posix_daemon_uses_console_entrypoint(temp_home, tmp_path, monkeypatch):
+def test_posix_daemon_uses_console_entrypoint(temp_home, tmp_path, monkeypatch, local_ml_available):
     """On POSIX there's no pythonw substitution — run the console entry point."""
     from hindsight_embed.daemon_embed_manager import DaemonEmbedManager
 

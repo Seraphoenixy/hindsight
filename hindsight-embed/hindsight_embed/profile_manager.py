@@ -191,7 +191,7 @@ METADATA_FILE = PROFILES_DIR / "metadata.json"
 ACTIVE_PROFILE_FILE = CONFIG_DIR / "active_profile"
 
 # Port allocation
-DEFAULT_PORT = 8888
+DEFAULT_PORT = 9077
 PROFILE_PORT_BASE = 8889
 PROFILE_PORT_RANGE = 1000  # 8889-9888
 
@@ -558,7 +558,7 @@ class ProfileManager:
 
         # Named profile
         config_path = profiles_dir / f"{name}.env"
-        ports = self._resolve_ports(name, config_path, None)
+        ports = self._resolve_ports(name, config_path, DEFAULT_PORT if name == "coding-agent" else None)
 
         return ProfilePaths(
             config=config_path,

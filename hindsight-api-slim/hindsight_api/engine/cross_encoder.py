@@ -10,10 +10,8 @@ import asyncio
 import base64
 import contextvars
 import logging
-import os
 import threading
 import time
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -23,33 +21,21 @@ import aiohttp
 from pydantic import BaseModel
 
 from .._cross_loop import CrossLoopSemaphore
-from .._thread_limits import bound_onnx_session, onnx_intra_op_threads
 from ..config import (
     DEFAULT_LITELLM_API_BASE,
     DEFAULT_RERANKER_ALIBABA_MODEL,
     DEFAULT_RERANKER_COHERE_MAX_CONCURRENT,
     DEFAULT_RERANKER_COHERE_MODEL,
     DEFAULT_RERANKER_COHERE_TIMEOUT,
-    DEFAULT_RERANKER_FLASHRANK_BATCH_SIZE,
-    DEFAULT_RERANKER_FLASHRANK_CACHE_DIR,
-    DEFAULT_RERANKER_FLASHRANK_MODEL,
     DEFAULT_RERANKER_GOOGLE_MODEL,
     DEFAULT_RERANKER_HINDSIGHT_MODEL,
     DEFAULT_RERANKER_LITELLM_MODEL,
-    DEFAULT_RERANKER_LITELLM_SDK_MODEL,
-    DEFAULT_RERANKER_LOCAL_BATCH_SIZE,
+    DEFAULT_RERANKER_LOCAL_MAX_CONCURRENT,
     DEFAULT_RERANKER_LOCAL_MODEL,
-    DEFAULT_RERANKER_LOCAL_TIMEOUT,
     DEFAULT_RERANKER_NVIDIA_BASE_URL,
     DEFAULT_RERANKER_NVIDIA_BATCH_SIZE,
     DEFAULT_RERANKER_NVIDIA_MAX_CONCURRENT,
     DEFAULT_RERANKER_NVIDIA_MODEL,
-    DEFAULT_RERANKER_ONNX_BATCH_SIZE,
-    DEFAULT_RERANKER_ONNX_CPU_MEM_ARENA,
-    DEFAULT_RERANKER_ONNX_FILE,
-    DEFAULT_RERANKER_ONNX_MAX_CONCURRENT,
-    DEFAULT_RERANKER_ONNX_MAX_TOKENS,
-    DEFAULT_RERANKER_ONNX_THREADS,
     DEFAULT_RERANKER_SILICONFLOW_BASE_URL,
     DEFAULT_RERANKER_SILICONFLOW_MODEL,
     DEFAULT_RERANKER_TEI_BATCH_SIZE,
@@ -75,15 +61,6 @@ from .decision_model import (
 )
 from .decision_rerank_interface import EvidenceImage
 from .llm_trace import RERANK_SCOPE, trace_model_call
-from .local_device import (
-    LOCAL_MODEL_BUILD_LOCK,
-    align_local_model_weights,
-    assert_finite_local_output,
-    prefetch_local_model,
-    release_local_inference_memory,
-    resolve_model_device_type,
-    select_local_device,
-)
 from .remote_retry import RetryPolicy, acall_with_retry
 from .tei_retry import TEI_KEEPALIVE_EXPIRY_SECONDS, is_retryable_tei_transport_error, tei_retry_delay
 from .token_encoding import count_tokens, truncate_to_tokens
@@ -266,263 +243,6 @@ class CrossEncoderModel(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} must implement _predict() (or override predict() to opt out of retry)"
         )
-
-
-class LocalSTCrossEncoder(CrossEncoderModel):
-    """
-    Local cross-encoder implementation using SentenceTransformers.
-
-    Call initialize() during startup to load the model and avoid cold starts.
-
-    Default model is hindsight-ai/hs-rerank-1:
-    - Multilingual (en, es, fr, de, pt, ja, ko, zh)
-    - Small model (114M parameters, a 15M-parameter transformer per pass)
-    - Trained for Hindsight memory re-ranking
-
-    Uses a dedicated thread pool to limit concurrent CPU-bound work.
-    """
-
-    # Shared executor across all instances (one model loaded anyway)
-    _executor: ThreadPoolExecutor | None = None
-    _max_concurrent: int = 4  # Limit concurrent CPU-bound reranking calls
-
-    def __init__(
-        self,
-        model_name: str | None = None,
-        max_concurrent: int = 4,
-        force_cpu: bool = False,
-        trust_remote_code: bool = False,
-        fp16: bool = False,
-        bucket_batching: bool = False,
-        batch_size: int = DEFAULT_RERANKER_LOCAL_BATCH_SIZE,
-        timeout: float = DEFAULT_RERANKER_LOCAL_TIMEOUT,
-    ):
-        """
-        Initialize local SentenceTransformers cross-encoder.
-
-        Args:
-            model_name: Name of the CrossEncoder model to use.
-                       Default: hindsight-ai/hs-rerank-1
-            max_concurrent: Maximum concurrent reranking calls (default: 2).
-                           Higher values may cause CPU thrashing under load.
-            force_cpu: Force CPU mode for local inference.
-                      Default: False
-            trust_remote_code: Allow loading models with custom code (security risk).
-                              Required for some models like jina-reranker-v2-base-multilingual.
-                              Default: False (disabled for security)
-            fp16: Use FP16 (half precision) inference. Faster on CUDA; on CPU
-                  it halves memory but may not be faster. Default: False (opt-in via env var).
-            bucket_batching: Sort pairs by token length before batching to reduce
-                            padding waste. 36-54% speedup, quality-identical.
-                            Default: False (opt-in via env var).
-            batch_size: Batch size for predict() calls. Optimal values vary by
-                       hardware and model (CPU: 32, CUDA: 128+). Default: 32.
-            timeout: Wall-clock ceiling for scoring one call's pairs. On expiry
-                    predict() raises RerankTimeoutError with the partial scores
-                    instead of running to completion. 0 disables. Default: 300.
-        """
-        self.model_name = model_name or DEFAULT_RERANKER_LOCAL_MODEL
-        self.force_cpu = force_cpu
-        self.trust_remote_code = trust_remote_code
-        self.fp16 = fp16
-        self.bucket_batching = bucket_batching
-        self.batch_size = batch_size
-        self.timeout = timeout
-        self._model = None
-        self._device_type: str = "cpu"
-        LocalSTCrossEncoder._max_concurrent = max_concurrent
-
-    @property
-    def provider_name(self) -> str:
-        return "local"
-
-    @property
-    def blocking_init(self) -> bool:
-        return True
-
-    async def initialize(self) -> None:
-        """Load the cross-encoder model and initialize the executor."""
-        if self._model is not None:
-            return
-
-        # Imports transformers; see LOCAL_MODEL_BUILD_LOCK.
-        with LOCAL_MODEL_BUILD_LOCK:
-            try:
-                from sentence_transformers import CrossEncoder
-            except ImportError:
-                raise ImportError(
-                    "sentence-transformers is required for LocalSTCrossEncoder. "
-                    "Install it with: pip install sentence-transformers"
-                )
-
-        logger.info(f"Reranker: initializing local provider with model {self.model_name}")
-
-        # Determine device based on hardware availability. We always set
-        # low_cpu_mem_usage=False to prevent lazy loading (meta tensors) which can
-        # cause issues when accelerate is installed but no GPU is available. Only
-        # transformers 4.x honours it: 5.x drops the kwarg and always builds on meta.
-        # Note: We do NOT use device_map because CrossEncoder internally calls .to(device)
-        # after loading, which conflicts with accelerate's device_map handling.
-        # MPS is never used — see engine/local_device.py for why.
-        device = select_local_device(self.force_cpu)
-
-        # Patch transformers 5.x compatibility for models using XLM-RoBERTa
-        # (e.g., jina-reranker-v2-base-multilingual). transformers 5.x removed
-        # create_position_ids_from_input_ids as a module-level function; the custom
-        # code in these models still references it. This monkey-patch restores it.
-        # Imports transformers; see LOCAL_MODEL_BUILD_LOCK.
-        with LOCAL_MODEL_BUILD_LOCK:
-            try:
-                import transformers.models.xlm_roberta.modeling_xlm_roberta as xlm_module
-                from transformers.models.xlm_roberta.modeling_xlm_roberta import XLMRobertaEmbeddings
-
-                if not hasattr(xlm_module, "create_position_ids_from_input_ids"):
-                    setattr(
-                        xlm_module,
-                        "create_position_ids_from_input_ids",
-                        XLMRobertaEmbeddings.create_position_ids_from_input_ids,
-                    )
-                    logger.info("Reranker: applied transformers 5.x compatibility patch for XLM-RoBERTa")
-            except Exception:
-                pass
-
-        # Download outside the lock; build and smoke-test under it, because a
-        # transformers build flips process-global state (see LOCAL_MODEL_BUILD_LOCK).
-        # sentence-transformers caches under SENTENCE_TRANSFORMERS_HOME when it is set.
-        prefetch_local_model(self.model_name, cache_dir=os.getenv("SENTENCE_TRANSFORMERS_HOME"))
-        with LOCAL_MODEL_BUILD_LOCK:
-            # Suppress verbose transformers warnings during model loading
-            # This suppresses the "UNEXPECTED" warnings from CrossEncoder which are harmless
-            # but look alarming to users (e.g., "embeddings.position_ids | UNEXPECTED")
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=UserWarning)
-                warnings.filterwarnings("ignore", message=".*was not found in model state dict.*")
-                warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
-
-                # Also suppress transformers library logging temporarily
-                transformers_logger = logging.getLogger("transformers")
-                original_level = transformers_logger.level
-                transformers_logger.setLevel(logging.ERROR)
-
-                try:
-                    import torch
-
-                    # Raw logits, as the other providers return: recall applies the sigmoid.
-                    # sentence-transformers otherwise defaults single-label models to Sigmoid,
-                    # and the second sigmoid squashes every score into 0.5..0.73.
-                    self._model = CrossEncoder(
-                        self.model_name,
-                        device=device,
-                        model_kwargs={"low_cpu_mem_usage": False},
-                        trust_remote_code=self.trust_remote_code,
-                        activation_fn=torch.nn.Identity(),
-                    )
-                finally:
-                    # Restore original logging level
-                    transformers_logger.setLevel(original_level)
-
-            # Safetensors weights are mapped zero-copy and can land on a byte offset that
-            # is not a multiple of the dtype size, which makes torch's vectorized CPU matmul
-            # return corrupt scores. See engine/local_device.py. ms-marco-MiniLM-L-6-v2 is
-            # one of the affected files.
-            align_local_model_weights(self._model.model, label=f"Reranker[{self.model_name}]")
-
-            self._device_type = resolve_model_device_type(self._model)
-
-            # FP16 inference: convert model weights to half precision. On CUDA it is
-            # faster. It used to be skipped on CPU because it is not faster there, but
-            # it still halves the weights' RAM, and #6453 measured identical top-10
-            # rankings for bge-reranker-v2-m3, so the opt-in now applies on CPU too.
-            # The smoke test below catches a CPU that cannot run it.
-            if self.fp16:
-                self._model.model.half()
-                if self._device_type == "cpu":
-                    logger.info("Reranker: FP16 inference enabled on CPU (halves memory, may not be faster)")
-                else:
-                    logger.info("Reranker: FP16 inference enabled")
-
-            # Smoke-test the fully configured model (after any FP16 conversion). NaN logits
-            # are sanitized to 0.0 downstream, so startup is the last point at which a model
-            # that computes garbage is still observable.
-            assert_finite_local_output(
-                self._model.predict([("hindsight startup probe", "hindsight startup probe")]),
-                label=f"Reranker[{self.model_name}]",
-            )
-
-        # Initialize shared executor (limited workers naturally limits concurrency)
-        if LocalSTCrossEncoder._executor is None:
-            LocalSTCrossEncoder._executor = ThreadPoolExecutor(
-                max_workers=LocalSTCrossEncoder._max_concurrent,
-                thread_name_prefix="reranker",
-            )
-            logger.info(
-                f"Reranker: local provider initialized "
-                f"(device: {self._device_type}, max_concurrent={LocalSTCrossEncoder._max_concurrent})"
-            )
-        else:
-            logger.info(f"Reranker: local provider initialized (device: {self._device_type}, using existing executor)")
-
-    def _predict_sync(self, pairs: list[tuple[str, str]], cancelled: threading.Event | None = None) -> list[float]:
-        """Synchronous prediction wrapper for thread pool execution.
-
-        Scores in explicit batches rather than one `predict()` call so the wall-clock
-        budget can be enforced between them — a blocking call already inside torch
-        cannot be cancelled from the event loop, and abandoning it with `wait_for`
-        would leave it burning the executor's only worker (#4696). ``cancelled`` is
-        checked at the same point (see ``_run_batches_in_executor``).
-
-        Supports two optimizations (controlled via .env):
-        - bucket_batching: sort pairs by token length to reduce padding waste (36-54% speedup)
-        - batch_size: explicit batch size for predict() calls (MPS optimal: 32)
-        """
-
-        try:
-            order = list(range(len(pairs)))
-            if self.bucket_batching and len(pairs) > 1:
-                # Sort pairs by approximate token length to create homogeneous batches.
-                # This eliminates padding waste — short pairs aren't padded to the length
-                # of the longest pair in the batch. Quality-identical by construction.
-                order.sort(key=lambda i: len(pairs[i][0]) + len(pairs[i][1]))
-
-            scores: list[float | None] = [None] * len(pairs)
-            # ponytail: the deadline is checked between batches, so one pathological
-            # batch can overshoot it. Bounded by a single batch, which is the point —
-            # cutting mid-batch would mean reaching inside the model's forward pass.
-            deadline = time.monotonic() + self.timeout if self.timeout > 0 else None
-
-            for start in range(0, len(order), self.batch_size):
-                if cancelled is not None and cancelled.is_set():
-                    raise asyncio.CancelledError()
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise RerankTimeoutError(scores, self.timeout, self.model_name)
-                batch = order[start : start + self.batch_size]
-                batch_pairs = [pairs[i] for i in batch]
-                batch_scores = self._model.predict(batch_pairs, batch_size=self.batch_size, show_progress_bar=False)
-                batch_scores = batch_scores.tolist() if hasattr(batch_scores, "tolist") else list(batch_scores)
-                for i, score in zip(batch, batch_scores):
-                    scores[i] = float(score)
-
-            return [0.0 if score is None else score for score in scores]
-        finally:
-            release_local_inference_memory(self._device_type)
-
-    async def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-        """
-        Score query-document pairs for relevance.
-
-        Uses a dedicated thread pool with limited workers to prevent CPU thrashing.
-
-        Args:
-            pairs: List of (query, document) tuples to score
-
-        Returns:
-            List of relevance scores (raw logits from the model)
-        """
-        if self._model is None:
-            raise RuntimeError("Reranker not initialized. Call initialize() first.")
-
-        # Use dedicated executor - limited workers naturally limits concurrency
-        return await _run_batches_in_executor(LocalSTCrossEncoder._executor, self._predict_sync, pairs)
 
 
 class RemoteTEICrossEncoder(CrossEncoderModel):
@@ -996,6 +716,40 @@ class CohereCrossEncoder(CrossEncoderModel):
         for result in response.results:
             scores[result.index] = result.relevance_score
         return scores
+
+
+class LlamaCppCrossEncoder(CohereCrossEncoder):
+    """Managed local GGUF reranker backed by ``llama-server --reranking``."""
+
+    def __init__(
+        self,
+        model: str = DEFAULT_RERANKER_LOCAL_MODEL,
+        *,
+        gpu_layers: int = -1,
+        timeout: float = 120.0,
+        max_concurrent: int = DEFAULT_RERANKER_LOCAL_MAX_CONCURRENT,
+    ) -> None:
+        from .llama_server import get_llama_server
+
+        self._server = get_llama_server("reranking", model, gpu_layers=gpu_layers)
+        super().__init__(
+            api_key="llama-server",
+            model=model,
+            base_url="http://127.0.0.1:8906/v1/rerank",
+            timeout=timeout,
+            max_concurrent=max_concurrent,
+        )
+
+    @property
+    def provider_name(self) -> str:
+        return "local"
+
+    async def initialize(self) -> None:
+        url = await self._server.ensure_started_async()
+        self.base_url = f"{url}/v1/rerank"
+        if self._http_client is not None:
+            self._http_client.rerank_url = self.base_url
+        await super().initialize()
 
 
 class ZeroEntropyCrossEncoder(CrossEncoderModel):
@@ -1797,388 +1551,6 @@ class RRFPassthroughCrossEncoder(CrossEncoderModel):
         return [0.5] * len(pairs)
 
 
-class FlashRankCrossEncoder(CrossEncoderModel):
-    """
-    FlashRank cross-encoder implementation.
-
-    FlashRank is an ultra-lite reranking library that runs on CPU without
-    requiring PyTorch or Transformers. It's ideal for serverless deployments
-    with minimal cold-start overhead.
-
-    Available models:
-    - ms-marco-TinyBERT-L-2-v2: Fastest, ~4MB
-    - ms-marco-MiniLM-L-12-v2: Best quality, ~34MB (default)
-    - rank-T5-flan: Best zero-shot, ~110MB
-    - ms-marco-MultiBERT-L-12: Multi-lingual, ~150MB
-    """
-
-    # Shared executor for CPU-bound reranking
-    _executor: ThreadPoolExecutor | None = None
-    _max_concurrent: int = 4
-
-    def __init__(
-        self,
-        model_name: str | None = None,
-        cache_dir: str | None = None,
-        max_length: int = 512,
-        max_concurrent: int = 4,
-        cpu_mem_arena: bool = False,
-        batch_size: int = DEFAULT_RERANKER_FLASHRANK_BATCH_SIZE,
-    ):
-        """
-        Initialize FlashRank cross-encoder.
-
-        Args:
-            model_name: FlashRank model name. Default: ms-marco-MiniLM-L-12-v2
-            cache_dir: Directory to cache downloaded models. Default: system cache
-            max_length: Maximum sequence length for reranking. Default: 512
-            max_concurrent: Maximum concurrent reranking calls. Default: 4
-            cpu_mem_arena: Enable ONNX Runtime CPU memory arena. Default: False.
-                          When True, ONNX pre-allocates a memory arena that never
-                          shrinks, causing RSS to grow monotonically. False trades
-                          slightly slower per-call allocation for bounded RSS.
-            batch_size: Passages per forward pass. Default: 32. See
-                        ``_predict_sync`` for why this must stay bounded.
-        """
-        self.model_name = model_name or DEFAULT_RERANKER_FLASHRANK_MODEL
-        self.cache_dir = cache_dir or DEFAULT_RERANKER_FLASHRANK_CACHE_DIR
-        self.max_length = max_length
-        self.cpu_mem_arena = cpu_mem_arena
-        # A non-positive size would mean "one pass for everything", which is the
-        # unbounded behaviour this batching exists to prevent.
-        self.batch_size = max(1, batch_size)
-        self._ranker = None
-        self._device_type: str = "cpu"  # FlashRank runs on CPU via ONNX Runtime
-        FlashRankCrossEncoder._max_concurrent = max_concurrent
-
-    @property
-    def provider_name(self) -> str:
-        return "flashrank"
-
-    async def initialize(self) -> None:
-        """Load the FlashRank model."""
-        if self._ranker is not None:
-            return
-
-        try:
-            from flashrank import Ranker
-        except ImportError:
-            raise ImportError("flashrank is required for FlashRankCrossEncoder. Install it with: pip install flashrank")
-
-        logger.info(
-            f"Reranker: initializing FlashRank provider with model {self.model_name}"
-            f" (cpu_mem_arena={self.cpu_mem_arena})"
-        )
-
-        # Configure ONNX session options before Ranker creates the session.
-        # When cpu_mem_arena=False (default), ONNX won't pre-allocate an arena
-        # that grows monotonically, keeping RSS bounded after rerank batches.
-        # The session is always rebuilt, not only when the arena is off: FlashRank's
-        # own session sizes its pool to every physical core with spinning on, which
-        # under a CPU quota throttled each recall for minutes (#5725).
-        import onnxruntime as ort
-
-        session_options = ort.SessionOptions()
-        session_options.enable_cpu_mem_arena = self.cpu_mem_arena
-        bound_onnx_session(session_options)
-
-        # Initialize ranker with optional cache directory
-        ranker_kwargs: dict = {"model_name": self.model_name, "max_length": self.max_length}
-        if self.cache_dir:
-            ranker_kwargs["cache_dir"] = self.cache_dir
-
-        self._ranker = Ranker(**ranker_kwargs)
-
-        # FlashRank's Ranker doesn't expose SessionOptions in its API,
-        # so we replace the session after initialization.
-        if hasattr(self._ranker, "session"):
-            model_file = None
-            model_dir = getattr(self._ranker, "model_dir", None)
-            if model_dir:
-                from pathlib import Path
-
-                for candidate in Path(model_dir).glob("*.onnx"):
-                    model_file = str(candidate)
-                    break
-            if model_file:
-                self._ranker.session = ort.InferenceSession(model_file, sess_options=session_options)
-                logger.info(
-                    "Reranker: replaced FlashRank ONNX session (cpu_mem_arena=%s, threads=%s)",
-                    self.cpu_mem_arena,
-                    session_options.intra_op_num_threads,
-                )
-
-        # Initialize shared executor
-        if FlashRankCrossEncoder._executor is None:
-            FlashRankCrossEncoder._executor = ThreadPoolExecutor(
-                max_workers=FlashRankCrossEncoder._max_concurrent,
-                thread_name_prefix="flashrank",
-            )
-            logger.info(
-                f"Reranker: FlashRank provider initialized (max_concurrent={FlashRankCrossEncoder._max_concurrent})"
-            )
-        else:
-            logger.info("Reranker: FlashRank provider initialized (using existing executor)")
-
-    def _predict_sync(self, pairs: list[tuple[str, str]], cancelled: threading.Event | None = None) -> list[float]:
-        """Synchronous predict — each query group, in bounded batches.
-
-        FlashRank scores every passage of a request in one ONNX forward pass, and
-        that pass allocates attention tensors sized ``batch * heads * seq^2``. At
-        the default reranker candidate cap that is gigabytes per call, which OOM-
-        killed containers on large banks (issue #3355): the burst scales with the
-        candidate pool the retrieval arms produce, not with how much work the
-        caller asked for. FlashRank also pads a request to its longest passage, so
-        one long candidate inflates the sequence length for every other one.
-
-        Splitting into ``batch_size`` chunks bounds the peak the same way the
-        local and TEI providers already do. Scores are identical either way —
-        passages are scored independently, so batching changes only the
-        allocation profile.
-        """
-        if not pairs:
-            return []
-
-        from flashrank import RerankRequest
-
-        try:
-            # Group pairs by query
-            query_groups: dict[str, list[tuple[int, str]]] = {}
-            for idx, (query, text) in enumerate(pairs):
-                if query not in query_groups:
-                    query_groups[query] = []
-                query_groups[query].append((idx, text))
-
-            all_scores = [0.0] * len(pairs)
-
-            for query, indexed_texts in query_groups.items():
-                global_indices = [idx for idx, _ in indexed_texts]
-
-                for start in range(0, len(indexed_texts), self.batch_size):
-                    if cancelled is not None and cancelled.is_set():
-                        raise asyncio.CancelledError()
-                    batch = indexed_texts[start : start + self.batch_size]
-
-                    # Build passages list for FlashRank. Ids are batch-local, so
-                    # `start` shifts them back onto the query group's indices.
-                    passages = [{"id": i, "text": text} for i, (_, text) in enumerate(batch)]
-
-                    # Create rerank request
-                    request = RerankRequest(query=query, passages=passages)
-                    results = self._ranker.rerank(request)
-
-                    # Map scores back to original positions
-                    for result in results:
-                        local_idx = result["id"]
-                        score = result["score"]
-                        global_idx = global_indices[start + local_idx]
-                        all_scores[global_idx] = score
-
-            return all_scores
-        finally:
-            release_local_inference_memory(self._device_type)
-
-    async def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-        """
-        Score query-document pairs using FlashRank.
-
-        Args:
-            pairs: List of (query, document) tuples to score
-
-        Returns:
-            List of relevance scores (higher = more relevant)
-        """
-        if self._ranker is None:
-            raise RuntimeError("Reranker not initialized. Call initialize() first.")
-
-        # Run in thread pool to avoid blocking event loop
-        return await _run_batches_in_executor(FlashRankCrossEncoder._executor, self._predict_sync, pairs)
-
-
-class OnnxCrossEncoder(CrossEncoderModel):
-    """Any cross-encoder exported to ONNX, run in-process with ONNX Runtime.
-
-    The reranking twin of ``OnnxEmbeddings``: an ``onnxruntime`` session for the graph
-    and ``AutoTokenizer`` for the tokenizer, so models outside FlashRank's catalog run
-    without PyTorch or a TEI sidecar. Scores are the model's raw logits, like the
-    ``local`` provider, so switching between the two keeps the ranking and the
-    downstream sigmoid unchanged.
-    """
-
-    # Shared executor across instances: its worker count is what caps concurrent passes.
-    _executor: ThreadPoolExecutor | None = None
-    _max_concurrent: int = DEFAULT_RERANKER_ONNX_MAX_CONCURRENT
-
-    def __init__(
-        self,
-        model_id: str = DEFAULT_RERANKER_LOCAL_MODEL,
-        model_path: str | None = None,
-        tokenizer_name_or_path: str | None = None,
-        onnx_file: str = DEFAULT_RERANKER_ONNX_FILE,
-        max_tokens: int = DEFAULT_RERANKER_ONNX_MAX_TOKENS,
-        batch_size: int = DEFAULT_RERANKER_ONNX_BATCH_SIZE,
-        threads: int = DEFAULT_RERANKER_ONNX_THREADS,
-        max_concurrent: int = DEFAULT_RERANKER_ONNX_MAX_CONCURRENT,
-        cpu_mem_arena: bool = DEFAULT_RERANKER_ONNX_CPU_MEM_ARENA,
-        timeout: float = DEFAULT_RERANKER_LOCAL_TIMEOUT,
-    ):
-        self.model_id = model_id
-        self.model_path = model_path
-        if model_path and tokenizer_name_or_path is None:
-            logger.warning(
-                "Reranker: ONNX model_path is set without tokenizer_name_or_path; falling back to tokenizer "
-                "from model_id %s. Set HINDSIGHT_API_RERANKER_ONNX_TOKENIZER_NAME_OR_PATH when using local files.",
-                model_id,
-            )
-        self.tokenizer_name_or_path = tokenizer_name_or_path or model_id
-        self.onnx_file = onnx_file
-        self.max_tokens = max_tokens
-        if batch_size < 1:
-            raise ValueError("ONNX reranker batch_size must be >= 1")
-        self.batch_size = batch_size
-        if threads < 0:
-            raise ValueError("ONNX reranker threads must be >= 0 (0 = the native thread cap)")
-        self.threads = threads
-        self.cpu_mem_arena = cpu_mem_arena
-        self.timeout = timeout
-        self._session = None
-        self._tokenizer = None
-        OnnxCrossEncoder._max_concurrent = max(1, max_concurrent)
-
-    @property
-    def provider_name(self) -> str:
-        return "onnx"
-
-    @property
-    def blocking_init(self) -> bool:
-        return True
-
-    async def initialize(self) -> None:
-        if self._session is not None:
-            return
-
-        # Imports transformers; see LOCAL_MODEL_BUILD_LOCK.
-        with LOCAL_MODEL_BUILD_LOCK:
-            try:
-                import onnxruntime as ort
-                from transformers import AutoTokenizer
-            except ImportError as exc:
-                raise ImportError(
-                    "onnxruntime and transformers are required for the 'onnx' reranker. "
-                    "Install with: pip install 'hindsight-api-slim[local-onnx]'"
-                ) from exc
-
-        model_path = self.model_path
-        if not model_path:
-            try:
-                from huggingface_hub import snapshot_download
-            except ImportError as exc:
-                raise ImportError(
-                    "huggingface-hub is required to download ONNX reranker models. "
-                    "Set HINDSIGHT_API_RERANKER_ONNX_MODEL_PATH or install local-onnx."
-                ) from exc
-            # Also fetch the conventional external-weights sidecar of large exports.
-            snapshot_dir = snapshot_download(
-                repo_id=self.model_id, allow_patterns=[self.onnx_file, f"{self.onnx_file}_data"]
-            )
-            model_path = os.path.join(snapshot_dir, self.onnx_file)
-
-        logger.info(
-            "Reranker: initializing ONNX provider with %s (threads=%s, max_concurrent=%s, batch_size=%s)",
-            model_path,
-            self.threads or onnx_intra_op_threads(),
-            OnnxCrossEncoder._max_concurrent,
-            self.batch_size,
-        )
-        # Imports transformers; see LOCAL_MODEL_BUILD_LOCK.
-        with LOCAL_MODEL_BUILD_LOCK:
-            self._tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name_or_path)
-        session_options = ort.SessionOptions()
-        # The arena caches freed activation blocks and never returns them, so RSS would
-        # hold the largest batch's high-water mark forever (same as FlashRank/OnnxEmbeddings).
-        session_options.enable_cpu_mem_arena = self.cpu_mem_arena
-        # Idle worker threads otherwise busy-wait for the next op; measured ~1 core of
-        # burn per pass for no latency gain on a 300-candidate rerank.
-        bound_onnx_session(session_options, self.threads)
-        self._session = ort.InferenceSession(
-            model_path, sess_options=session_options, providers=["CPUExecutionProvider"]
-        )
-
-        assert_finite_local_output(
-            self._predict_sync([("hindsight startup probe", "hindsight startup probe")]),
-            label=f"Reranker[{model_path}]",
-        )
-
-        if OnnxCrossEncoder._executor is None:
-            OnnxCrossEncoder._executor = ThreadPoolExecutor(
-                max_workers=OnnxCrossEncoder._max_concurrent, thread_name_prefix="onnx-reranker"
-            )
-        logger.info("Reranker: ONNX provider initialized")
-
-    def _predict_sync(self, pairs: list[tuple[str, str]], cancelled: threading.Event | None = None) -> list[float]:
-        """Score ``pairs`` in bounded forward passes, longest first.
-
-        Each pass pads to its longest pair and allocates ``batch * heads * seq^2``
-        attention, so batches stay small (#3355) and similar lengths share a batch.
-        Padding is masked, so grouping never changes a score. Shares the ``local``
-        provider's wall-clock budget (#4696), checked between passes: a model too big
-        for the CPU hands back what it scored instead of holding recall for minutes.
-        """
-        if self._session is None or self._tokenizer is None:
-            raise RuntimeError("Reranker not initialized. Call initialize() first.")
-        order = sorted(range(len(pairs)), key=lambda i: len(pairs[i][0]) + len(pairs[i][1]), reverse=True)
-        scores: list[float | None] = [None] * len(pairs)
-        deadline = time.monotonic() + self.timeout if self.timeout > 0 else None
-        for start in range(0, len(order), self.batch_size):
-            if cancelled is not None and cancelled.is_set():
-                raise asyncio.CancelledError()
-            if deadline is not None and time.monotonic() >= deadline:
-                raise RerankTimeoutError(scores, self.timeout, self.model_path or self.model_id)
-            window = order[start : start + self.batch_size]
-            batch = self._score_batch([pairs[i] for i in window])
-            for index, score in zip(window, batch, strict=True):
-                scores[index] = score
-        return [0.0 if score is None else score for score in scores]
-
-    def _score_batch(self, pairs: list[tuple[str, str]]) -> list[float]:
-        """Run one forward pass and reduce the logits to one raw score per pair."""
-        assert self._session is not None and self._tokenizer is not None
-
-        import numpy as np
-
-        encoded = self._tokenizer(
-            [query for query, _ in pairs],
-            [doc for _, doc in pairs],
-            padding=True,
-            truncation=True,
-            max_length=self.max_tokens,
-            return_tensors="np",
-        )
-        input_names = {inp.name for inp in self._session.get_inputs()}
-        ort_inputs = {name: value for name, value in encoded.items() if name in input_names}
-        if "token_type_ids" in input_names and "token_type_ids" not in ort_inputs:
-            ort_inputs["token_type_ids"] = np.zeros_like(encoded["input_ids"])
-
-        logits = np.asarray(self._session.run(None, ort_inputs)[0], dtype=np.float64)
-        logits = logits.reshape(len(pairs), -1)
-        if logits.shape[1] == 1:
-            return logits[:, 0].tolist()
-        if logits.shape[1] == 2:
-            # Binary [irrelevant, relevant] heads: the log-odds of "relevant", whose
-            # sigmoid (applied downstream) is exactly the model's softmax probability.
-            return (logits[:, 1] - logits[:, 0]).tolist()
-        raise ValueError(
-            f"ONNX reranker {self.model_path or self.model_id} returned {logits.shape[1]} logits per pair; expected 1 or 2"
-        )
-
-    async def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-        if self._session is None:
-            raise RuntimeError("Reranker not initialized. Call initialize() first.")
-        if not pairs:
-            return []
-        return await _run_batches_in_executor(OnnxCrossEncoder._executor, self._predict_sync, pairs)
-
-
 def _truncate_docs_to_tokens(texts: list[str], max_tokens: int) -> list[str]:
     """Truncate every candidate document to at most ``max_tokens``.
 
@@ -2299,248 +1671,6 @@ class LiteLLMCrossEncoder(CrossEncoderModel):
                 all_scores[indices[original_idx]] = score
 
         return all_scores
-
-
-class LiteLLMSDKCrossEncoder(CrossEncoderModel):
-    """
-    LiteLLM SDK cross-encoder for direct API integration.
-
-    Supports reranking via LiteLLM SDK without requiring a proxy server.
-    Supported providers: Cohere, DeepInfra, Together AI, HuggingFace, Jina AI, Voyage AI, AWS Bedrock.
-
-    Example model names:
-    - cohere/rerank-english-v3.0
-    - deepinfra/Qwen3-reranker-8B
-    - together_ai/Salesforce/Llama-Rank-V1
-    - huggingface/BAAI/bge-reranker-v2-m3
-    """
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str = DEFAULT_RERANKER_LITELLM_SDK_MODEL,
-        api_base: str | None = None,
-        timeout: float = 60.0,
-    ):
-        """
-        Initialize LiteLLM SDK cross-encoder client.
-
-        Args:
-            api_key: API key for the reranking provider (optional — omit for
-                     providers that use ambient credentials, e.g. AWS Bedrock with IAM)
-            model: Model name with provider prefix (e.g., "deepinfra/Qwen3-reranker-8B")
-            api_base: Custom base URL for API (optional)
-            timeout: Request timeout in seconds (default: 60.0)
-        """
-        self.api_key = api_key
-        self.model = model
-        self.api_base = api_base
-        self.timeout = timeout
-        self._initialized = False
-        self._litellm = None  # Will be set during initialization
-
-    @property
-    def provider_name(self) -> str:
-        return "litellm-sdk"
-
-    async def initialize(self) -> None:
-        """Initialize the LiteLLM SDK client."""
-        if self._initialized:
-            return
-
-        try:
-            import litellm
-
-            self._litellm = litellm  # Store reference
-        except ImportError:
-            raise ImportError("litellm is required for LiteLLMSDKCrossEncoder. Install it with: pip install litellm")
-
-        api_base_msg = f" at {self.api_base}" if self.api_base else ""
-        logger.info(f"Reranker: initializing LiteLLM SDK provider with model {self.model}{api_base_msg}")
-
-        self._initialized = True
-        logger.info("Reranker: LiteLLM SDK provider initialized")
-
-    async def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-        """
-        Score query-document pairs using the LiteLLM SDK.
-
-        Args:
-            pairs: List of (query, document) tuples to score
-
-        Returns:
-            List of relevance scores
-        """
-        if not self._initialized:
-            raise RuntimeError("Reranker not initialized. Call initialize() first.")
-
-        if not pairs:
-            return []
-
-        # Group pairs by query for efficient batching
-        # LiteLLM rerank expects one query with multiple documents
-        query_groups: dict[str, list[tuple[int, str]]] = {}
-        for idx, (query, text) in enumerate(pairs):
-            if query not in query_groups:
-                query_groups[query] = []
-            query_groups[query].append((idx, text))
-
-        all_scores = [0.0] * len(pairs)
-
-        for query, indexed_texts in query_groups.items():
-            texts = [text for _, text in indexed_texts]
-            indices = [idx for idx, _ in indexed_texts]
-
-            # Build kwargs for rerank call
-            rerank_kwargs: dict[str, Any] = {
-                "model": self.model,
-                "query": query,
-                "documents": texts,
-                "headers": reranker_bank_attribution_headers(),
-            }
-            if self.api_key:
-                rerank_kwargs["api_key"] = self.api_key
-            if self.api_base:
-                rerank_kwargs["api_base"] = self.api_base
-
-            response = await self._litellm.arerank(**rerank_kwargs)
-
-            for result in response.results:
-                original_idx = result["index"]
-                all_scores[indices[original_idx]] = result["relevance_score"]
-
-        return all_scores
-
-
-class JinaMLXCrossEncoder(CrossEncoderModel):
-    """
-    Jina Reranker v3 MLX implementation for Apple Silicon.
-
-    Uses jinaai/jina-reranker-v3-mlx — a 0.6B parameter multilingual listwise reranker
-    optimized for Apple Silicon via the MLX framework. No transformers/PyTorch dependency.
-
-    The model is downloaded automatically from HuggingFace Hub on first use.
-    Requires: mlx>=0.31.0, mlx-lm>=0.31.1, safetensors>=0.6.2
-    """
-
-    HF_REPO_ID = "jinaai/jina-reranker-v3-mlx"
-
-    def __init__(self, model_path: str | None = None):
-        """
-        Args:
-            model_path: Local path to the downloaded model directory.
-                        If None, the model is downloaded from HuggingFace Hub.
-        """
-        self.model_path = model_path
-        self._reranker = None
-
-    @property
-    def provider_name(self) -> str:
-        return "jina-mlx"
-
-    async def initialize(self) -> None:
-        if self._reranker is not None:
-            return
-
-        # Pre-warm transformers.AutoTokenizer to fully populate the transformers
-        # namespace before mlx_lm imports it. transformers 5.x uses _LazyModule,
-        # which has an unguarded window where `from transformers import AutoTokenizer`
-        # raises ImportError if another thread is concurrently initializing the
-        # namespace (e.g. embeddings init in an executor thread).
-        # See: https://github.com/vectorize-io/hindsight/issues/994 and #6069.
-        with LOCAL_MODEL_BUILD_LOCK:
-            import transformers
-
-            _ = transformers.AutoTokenizer
-
-        try:
-            import mlx.core  # noqa: F401  # ty: ignore[unresolved-import]
-            import mlx_lm  # noqa: F401  # ty: ignore[unresolved-import]
-        except ImportError as exc:
-            # Only swallow "package not installed" errors. Anything else (e.g. a
-            # transitive import failure inside mlx_lm) must surface verbatim so
-            # the real cause is debuggable instead of being masked by a generic
-            # "install mlx" message.
-            msg = str(exc)
-            if "mlx" not in msg and "mlx_lm" not in msg:
-                raise
-            # mlx is Apple's Metal/unified-memory framework, so the local-ml extra
-            # only installs it on macOS arm64 (see pyproject.toml). Missing here
-            # therefore usually means "wrong platform", not "forgot the extra" —
-            # say both, and name the way out.
-            raise ImportError(
-                "mlx and mlx-lm are required for the 'jina-mlx' reranker, and are only "
-                "installed on Apple Silicon — mlx is Apple's Metal framework, and its "
-                "Linux build is CPU-only and slower than the 'local' provider. Set "
-                "HINDSIGHT_API_RERANKER_PROVIDER=local (or a hosted provider), or install "
-                "them yourself: pip install mlx>=0.31.0 mlx-lm>=0.31.1 safetensors>=0.6.2"
-            ) from exc
-
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._load_model)
-
-    def _load_model(self) -> None:
-        """Download (if needed) and load the MLX reranker. Runs in a thread."""
-        import os
-        import threading
-
-        from huggingface_hub import snapshot_download
-
-        from .jina_mlx_reranker import MLXReranker
-
-        model_path = self.model_path
-        if model_path is None:
-            logger.info(f"Reranker: downloading {self.HF_REPO_ID} from HuggingFace Hub...")
-            model_path = snapshot_download(repo_id=self.HF_REPO_ID)
-
-        logger.info(f"Reranker: loading jina-reranker-v3-mlx from {model_path}")
-        self._reranker = MLXReranker(
-            model_path=model_path,
-            projector_path=os.path.join(model_path, "projector.safetensors"),
-        )
-        # MLX Metal GPU ops are not thread-safe — concurrent calls to
-        # Device::end_encoding() crash with SIGSEGV (NULL deref).
-        # Serialize all reranker inference through this lock.
-        self._mlx_lock = threading.Lock()
-        # Picked up by release_local_inference_memory() below, which routes "mlx" to
-        # mx.clear_cache(). Without it MLX holds every freed Metal buffer for the life
-        # of the process.
-        self._device_type = "mlx"
-        logger.info("Reranker: jina-mlx provider initialized")
-
-    def _predict_sync(self, pairs: list[tuple[str, str]]) -> list[float]:
-        """Score pairs grouped by query. Runs in a thread."""
-        if not pairs:
-            return []
-
-        query_groups: dict[str, list[tuple[int, str]]] = {}
-        for idx, (query, doc) in enumerate(pairs):
-            query_groups.setdefault(query, []).append((idx, doc))
-
-        all_scores = [0.0] * len(pairs)
-
-        with self._mlx_lock:
-            try:
-                for query, indexed_docs in query_groups.items():
-                    docs = [doc for _, doc in indexed_docs]
-                    indices = [idx for idx, _ in indexed_docs]
-                    results = self._reranker.rerank(query, docs)
-                    for result in results:
-                        original_idx = result["index"]
-                        all_scores[indices[original_idx]] = result["relevance_score"]
-            finally:
-                # Inside the lock: MLX Metal ops are not thread-safe, which is why
-                # #1113 introduced _mlx_lock in the first place.
-                release_local_inference_memory(self._device_type)
-
-        return all_scores
-
-    async def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-        if self._reranker is None:
-            raise RuntimeError("Reranker not initialized. Call initialize() first.")
-
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._predict_sync, pairs)
 
 
 class GoogleCrossEncoder(CrossEncoderModel):
@@ -2943,17 +2073,6 @@ def _create_cross_encoder_backend(member: RerankerMemberConfig) -> CrossEncoderM
             batch_size=member.tei_batch_size,
             max_concurrent=member.tei_max_concurrent,
         )
-    elif provider == "local":
-        return LocalSTCrossEncoder(
-            model_name=member.local_model,
-            max_concurrent=member.local_max_concurrent,
-            force_cpu=member.local_force_cpu,
-            trust_remote_code=member.local_trust_remote_code,
-            fp16=member.local_fp16,
-            bucket_batching=member.local_bucket_batching,
-            batch_size=member.local_batch_size,
-            timeout=member.local_timeout,
-        )
     elif provider == "cohere":
         api_key = member.cohere_api_key
         if not api_key:
@@ -2981,27 +2100,6 @@ def _create_cross_encoder_backend(member: RerankerMemberConfig) -> CrossEncoderM
             base_url=member.openrouter_base_url,
             timeout=member.openrouter_timeout,
         )
-    elif provider == "flashrank":
-        return FlashRankCrossEncoder(
-            model_name=member.flashrank_model,
-            cache_dir=member.flashrank_cache_dir,
-            cpu_mem_arena=member.flashrank_cpu_mem_arena,
-            batch_size=member.flashrank_batch_size,
-        )
-    elif provider == "onnx":
-        onnx = member.onnx
-        return OnnxCrossEncoder(
-            model_id=onnx.model_id,
-            model_path=onnx.model_path,
-            tokenizer_name_or_path=onnx.tokenizer_name_or_path,
-            onnx_file=onnx.file,
-            max_tokens=onnx.max_tokens,
-            batch_size=onnx.batch_size,
-            threads=onnx.threads,
-            max_concurrent=onnx.max_concurrent,
-            cpu_mem_arena=onnx.cpu_mem_arena,
-            timeout=onnx.timeout,
-        )
     elif provider == "litellm":
         return LiteLLMCrossEncoder(
             api_base=member.litellm_api_base,
@@ -3010,11 +2108,9 @@ def _create_cross_encoder_backend(member: RerankerMemberConfig) -> CrossEncoderM
             timeout=member.litellm_timeout,
         )
     elif provider == "litellm-sdk":
-        return LiteLLMSDKCrossEncoder(
-            api_key=member.litellm_sdk_api_key or None,
-            model=member.litellm_sdk_model,
-            api_base=member.litellm_sdk_api_base,
-            timeout=member.litellm_sdk_timeout,
+        raise ValueError(
+            "Reranker provider 'litellm-sdk' has been removed in this private build. "
+            "Use 'rrf', 'tei', 'cohere', or 'litellm' (proxy)."
         )
     elif provider == "zeroentropy":
         api_key = member.zeroentropy_api_key
@@ -3117,10 +2213,21 @@ def _create_cross_encoder_backend(member: RerankerMemberConfig) -> CrossEncoderM
             base_url=f"{HINDSIGHT_INFERENCE_URL}/v1/rerank",
             timeout=DEFAULT_RERANKER_COHERE_TIMEOUT,
         )
-    elif provider == "rrf":
+    elif provider in ("rrf", "none"):
         return RRFPassthroughCrossEncoder()
-    elif provider == "jina-mlx":
-        return JinaMLXCrossEncoder()
+    elif provider in ("local", "llamacpp"):
+        gpu_layers = -1 if not member.local_force_cpu else 0
+        return LlamaCppCrossEncoder(
+            model=member.local_model,
+            gpu_layers=gpu_layers,
+            timeout=member.local_timeout,
+            max_concurrent=member.local_max_concurrent,
+        )
+    elif provider in ("onnx", "flashrank", "jina-mlx"):
+        raise ValueError(
+            f"Built-in Python reranker provider '{provider}' has been removed in this private build. "
+            f"Use 'local' (managed llama.cpp GGUF), 'rrf'/'none', or a remote reranker provider."
+        )
     else:
         raise ValueError(
             f"Unknown reranker provider: {provider}. Supported: 'local', 'tei', 'cohere', 'zeroentropy', 'siliconflow', 'nvidia', 'typesafe', 'hindsight', 'alibaba', 'google', 'flashrank', 'onnx', 'litellm', 'litellm-sdk', 'rrf', 'jina-mlx'"

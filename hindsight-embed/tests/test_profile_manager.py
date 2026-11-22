@@ -69,7 +69,7 @@ class TestProfileManager:
         assert config_path.exists()
 
         # Verify config contents
-        config_content = config_path.read_text()
+        config_content = config_path.read_text(encoding="utf-8")
         assert "HINDSIGHT_API_LLM_PROVIDER=openai" in config_content
         assert "HINDSIGHT_API_LLM_API_KEY=sk-test" in config_content
         assert "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini" in config_content
@@ -78,7 +78,7 @@ class TestProfileManager:
         metadata_path = temp_hindsight_dir / "profiles" / "metadata.json"
         assert metadata_path.exists()
 
-        metadata = json.loads(metadata_path.read_text())
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert "test-profile" in metadata["profiles"]
         # The port now lives in the profile's .env, not metadata.
         assert "HINDSIGHT_API_PORT=" in config_content
@@ -165,7 +165,7 @@ class TestProfileManager:
         # Verify metadata no longer contains profile
         metadata_path = profiles_dir / "metadata.json"
         if metadata_path.exists():
-            metadata = json.loads(metadata_path.read_text())
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             assert "test-profile" not in metadata.get("profiles", {})
 
     def test_delete_profile_survives_undeletable_log(self, profile_manager, temp_hindsight_dir):
@@ -190,7 +190,7 @@ class TestProfileManager:
         assert (profiles_dir / "test-profile.log").exists()
         assert not (profiles_dir / "test-profile.log.1").exists()
         assert not profile_manager.profile_exists("test-profile")
-        metadata = json.loads((profiles_dir / "metadata.json").read_text())
+        metadata = json.loads((profiles_dir / "metadata.json").read_text(encoding="utf-8"))
         assert "test-profile" not in metadata.get("profiles", {})
 
     def test_delete_nonexistent_profile(self, profile_manager):
@@ -214,7 +214,7 @@ class TestProfileManager:
         # Verify active profile file was created
         active_file = temp_hindsight_dir / "active_profile"
         assert active_file.exists()
-        assert active_file.read_text() == "test-profile"
+        assert active_file.read_text(encoding="utf-8") == "test-profile"
 
         # Get active profile
         assert profile_manager.get_active_profile() == "test-profile"
@@ -252,7 +252,7 @@ class TestProfileManager:
         profiles = profile_manager.list_profiles()
         assert len(profiles) == 1
         assert profiles[0].name == ""
-        assert profiles[0].port == 8888
+        assert profiles[0].port == 9077
 
         # Create named profiles
         profile_manager.create_profile("profile1", {"KEY": "value"})
@@ -292,7 +292,7 @@ class TestProfileManager:
         assert paths.config == temp_hindsight_dir / "embed"
         assert paths.lock == temp_hindsight_dir / "daemon.lock"
         assert paths.log == temp_hindsight_dir / "daemon.log"
-        assert paths.port == 8888
+        assert paths.port == 9077
 
     def test_resolve_profile_paths_named(self, profile_manager, temp_hindsight_dir):
         """Test resolving paths for named profile."""
@@ -333,7 +333,7 @@ class TestProfileManager:
     def test_api_port_persisted_to_env(self, profile_manager, temp_hindsight_dir):
         """The allocated API port is written into the profile's .env, not metadata."""
         profile_manager.create_profile("p", {"KEY": "v"})
-        env = (temp_hindsight_dir / "profiles" / "p.env").read_text()
+        env = (temp_hindsight_dir / "profiles" / "p.env").read_text(encoding="utf-8")
         assert "HINDSIGHT_API_PORT=" in env
 
     def test_env_api_port_override_wins(self, profile_manager, temp_hindsight_dir):
@@ -390,7 +390,7 @@ class TestProfileManager:
 
         # Verify config was updated
         config_path = temp_hindsight_dir / "profiles" / "test.env"
-        config_content = config_path.read_text()
+        config_content = config_path.read_text(encoding="utf-8")
         assert "KEY=new_value" in config_content
         assert "KEY=old_value" not in config_content
 

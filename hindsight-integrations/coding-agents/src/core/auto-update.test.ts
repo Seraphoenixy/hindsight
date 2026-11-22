@@ -77,11 +77,14 @@ describe("npmViewVersion", () => {
       "0.6.1"
     );
     const [bin, args, opts] = spawn.mock.calls[0];
-    expect(bin).toBe("npm");
-    // --json, so the version arrives as a quoted string on stdout rather than npm's human
-    // output; a timeout bounds it (the NPM_VIEW_TIMEOUT_MS contract).
-    expect(args).toEqual(["view", "@vectorize-io/hindsight-coding-agents", "version", "--json"]);
-    expect(opts.timeout).toBe(5000);
+    if (process.platform === "win32") {
+      expect(bin).toBe("npm view @vectorize-io/hindsight-coding-agents version --json");
+      expect(args).toMatchObject({ shell: true, timeout: 5000 });
+    } else {
+      expect(bin).toBe("npm");
+      expect(args).toEqual(["view", "@vectorize-io/hindsight-coding-agents", "version", "--json"]);
+      expect(opts.timeout).toBe(5000);
+    }
   });
 
   it("reads npm 12's one-element array as the version (#6135)", async () => {
@@ -248,11 +251,19 @@ describe("maybeAutoUpdate", () => {
     expect(started).toBe("0.4.3");
     expect(spawn).toHaveBeenCalledTimes(1);
     const [bin, args, spawnOpts] = spawn.mock.calls[0];
-    expect(bin).toBe("npx");
+    expect(bin).toBe(
+      process.platform === "win32"
+        ? "npx -y @vectorize-io/hindsight-coding-agents@0.4.3 update"
+        : "npx"
+    );
     // Pinned to the version we resolved, and `update` — never `install`, which would rewire hosts.
-    expect(args).toEqual(["-y", "@vectorize-io/hindsight-coding-agents@0.4.3", "update"]);
-    expect(args).not.toContain("install");
-    expect(spawnOpts.detached).toBe(true);
+    if (process.platform === "win32") {
+      expect(args).toMatchObject({ shell: true, detached: true });
+    } else {
+      expect(args).toEqual(["-y", "@vectorize-io/hindsight-coding-agents@0.4.3", "update"]);
+      expect(args).not.toContain("install");
+      expect(spawnOpts.detached).toBe(true);
+    }
   });
 
   it("does nothing when the staged version is already current", async () => {

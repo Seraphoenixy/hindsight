@@ -1,9 +1,11 @@
-"""A tool-using turn reaches Gemini, Anthropic and Claude Code as a response schema.
+"""A tool-using turn reaches Gemini and Anthropic as a response schema.
 
 ``LLMProvider.call_with_tools`` hands each provider's ``call`` a raw JSON schema
 (``tools_via_schema.schema_format``), not a pydantic model, and no tools. Each provider must
 send that schema through its own structured-output path unchanged and hand the reply back
 as a dict.
+
+The ``claude-code`` case was removed with that provider in this private build.
 """
 
 from __future__ import annotations
@@ -89,32 +91,3 @@ async def test_anthropic_sends_the_schema_as_its_structured_output():
         kwargs["output_config"]["format"]["schema"]
         == tools_via_schema.response_schema(_TOOLS, LLM_TOOL_CHOICE_REQUIRED).schema
     )
-
-
-@pytest.mark.asyncio
-async def test_claude_code_puts_the_schema_in_the_prompt(monkeypatch):
-    import claude_agent_sdk
-
-    prompts: list[str] = []
-
-    class _Text:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class _Assistant:
-        def __init__(self, content: list[Any]) -> None:
-            self.content = content
-
-    async def fake_query(prompt: str, options: Any):
-        prompts.append(prompt)
-        yield _Assistant([_Text(json.dumps(_REPLY))])
-
-    monkeypatch.setattr(claude_agent_sdk, "ClaudeAgentOptions", lambda **kw: MagicMock(**kw))
-    monkeypatch.setattr(claude_agent_sdk, "AssistantMessage", _Assistant)
-    monkeypatch.setattr(claude_agent_sdk, "TextBlock", _Text)
-    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
-    from hindsight_api.engine.providers.claude_code_llm import ClaudeCodeLLM
-
-    provider = ClaudeCodeLLM(provider="claude-code", api_key="", base_url="", model="claude-haiku-4-5")
-    assert await _call(provider) == _REPLY
-    assert '"anyOf"' in prompts[0] and '"recall"' in prompts[0]

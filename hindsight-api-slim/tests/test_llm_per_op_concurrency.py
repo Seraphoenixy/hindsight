@@ -146,25 +146,32 @@ class TestBuildPerOpSemaphores:
         monkeypatch.delenv("HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT", raising=False)
         monkeypatch.delenv("HINDSIGHT_API_REFLECT_LLM_MAX_CONCURRENT", raising=False)
         monkeypatch.delenv("HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT", raising=False)
-        assert llm_wrapper._build_per_op_semaphores() == {}
+        result = llm_wrapper._build_per_op_semaphores()
+        assert set(result.keys()) == {"retain", "consolidation"}
+        assert result["retain"].capacity == 1
+        assert result["consolidation"].capacity == 1
 
     def test_populated_when_env_vars_set(self, monkeypatch):
         monkeypatch.setenv("HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT", "2")
         monkeypatch.setenv("HINDSIGHT_API_REFLECT_LLM_MAX_CONCURRENT", "3")
         monkeypatch.delenv("HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT", raising=False)
         result = llm_wrapper._build_per_op_semaphores()
-        assert set(result.keys()) == {"retain", "reflect"}
+        assert set(result.keys()) == {"retain", "reflect", "consolidation"}
         # These are CrossLoopSemaphores (process-wide caps usable from several event
         # loops), which expose the configured cap as a public property rather than
         # requiring a peek at asyncio.Semaphore's private _value.
         assert result["retain"].capacity == 2
         assert result["reflect"].capacity == 3
+        assert result["consolidation"].capacity == 1
 
     def test_empty_string_treated_as_unset(self, monkeypatch):
         monkeypatch.setenv("HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT", "")
         monkeypatch.delenv("HINDSIGHT_API_REFLECT_LLM_MAX_CONCURRENT", raising=False)
         monkeypatch.delenv("HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT", raising=False)
-        assert llm_wrapper._build_per_op_semaphores() == {}
+        result = llm_wrapper._build_per_op_semaphores()
+        assert set(result.keys()) == {"retain", "consolidation"}
+        assert result["retain"].capacity == 1
+        assert result["consolidation"].capacity == 1
 
     @pytest.mark.parametrize("bad_value", ["0", "-1"])
     def test_rejects_non_positive(self, monkeypatch, bad_value):

@@ -47,10 +47,8 @@ _LAZY_EXPORTS: "dict[str, tuple[str, str]]" = {
     "HindsightConfig": (".config", "HindsightConfig"),
     "get_config": (".config", "get_config"),
     "CrossEncoderModel": (".engine.cross_encoder", "CrossEncoderModel"),
-    "LocalSTCrossEncoder": (".engine.cross_encoder", "LocalSTCrossEncoder"),
     "RemoteTEICrossEncoder": (".engine.cross_encoder", "RemoteTEICrossEncoder"),
     "Embeddings": (".engine.embeddings", "Embeddings"),
-    "LocalSTEmbeddings": (".engine.embeddings", "LocalSTEmbeddings"),
     "RemoteTEIEmbeddings": (".engine.embeddings", "RemoteTEIEmbeddings"),
     "LLMConfig": (".engine.llm_wrapper", "LLMConfig"),
     "MemoryEngine": (".engine.memory_engine", "MemoryEngine"),
@@ -92,8 +90,8 @@ if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDEs, never at run
     # `_LAZY_EXPORTS` above so the resolver and the export list cannot drift. A linter cannot
     # see a computed `__all__`, so it reads every one of these as unused.
     from .config import HindsightConfig, get_config  # noqa: F401
-    from .engine.cross_encoder import CrossEncoderModel, LocalSTCrossEncoder, RemoteTEICrossEncoder  # noqa: F401
-    from .engine.embeddings import Embeddings, LocalSTEmbeddings, RemoteTEIEmbeddings  # noqa: F401
+    from .engine.cross_encoder import CrossEncoderModel, RemoteTEICrossEncoder  # noqa: F401
+    from .engine.embeddings import Embeddings, RemoteTEIEmbeddings  # noqa: F401
     from .engine.llm_wrapper import LLMConfig  # noqa: F401
     from .engine.memory_engine import MemoryEngine  # noqa: F401
     from .engine.search.trace import (  # noqa: F401

@@ -140,7 +140,6 @@ PROVIDER_NAME_MAPPING = {
     "lmstudio": "lmstudio",
     "openai-codex": "openai",
     "chatgpt": "openai",
-    "claude-code": "anthropic",
     "cursor": "cursor",
     "github-copilot": "github",
     "mock": "mock",

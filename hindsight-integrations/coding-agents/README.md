@@ -373,6 +373,9 @@ too: the package ships the profile patch layer, so nothing else needs editing. E
 companion skill — a plugin wired by the host's own plugin manager installs it itself on the first
 session, since that route never runs our installer.
 
+Management is available through the [Magpie plugin](./magpie/README.md). DSH only
+provides memory hooks and tools: it adds no sidebar page, management commands or UI startup.
+
 #### <img src="https://hindsight.vectorize.io/img/harness/workbuddy.png" alt="" width="20" height="20" /> WorkBuddy
 
 ```bash
@@ -546,7 +549,7 @@ environment carries over unchanged:
 
 | field               | env                             | default        | meaning                                                    |
 | ------------------- | ------------------------------- | -------------- | ---------------------------------------------------------- |
-| `serverMode`        | `HINDSIGHT_SERVER_MODE`         | `cloud`        | `cloud` \| `self-hosted` \| `daemon`                       |
+| `serverMode`        | `HINDSIGHT_SERVER_MODE`         | `daemon`       | `cloud` \| `self-hosted` \| `daemon`                       |
 | `apiPort`           | `HINDSIGHT_API_PORT`            | `9077`         | port the local daemon listens on                           |
 | `daemonIdleTimeout` | `HINDSIGHT_DAEMON_IDLE_TIMEOUT` | —              | deprecated, ignored: the daemon no longer exits on its own |
 | `daemonProfile`     | `HINDSIGHT_DAEMON_PROFILE`      | `coding-agent` | which local database it uses                               |

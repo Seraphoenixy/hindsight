@@ -54,8 +54,8 @@ export interface RawConfig {
    *   "self-hosted" — a Hindsight server you run; set `apiUrl` to it
    *   "daemon"      — a local `hindsight-embed` daemon this plugin starts on demand, at
    *                   127.0.0.1:{apiPort}. `apiUrl` is ignored in this mode.
-   * Omitted, it is inferred: "daemon" is never assumed, so an existing config keeps talking to
-   * whatever `apiUrl` it already names. */
+   * Omitted, this distribution defaults to "daemon". Select "cloud" or "self-hosted"
+   * explicitly to use an external API URL. */
   serverMode?: "cloud" | "self-hosted" | "daemon";
   apiUrl?: string; // Hindsight API base URL (default https://api.hindsight.vectorize.io — Cloud; set to http://localhost:8888 for a local server)
   apiToken?: string; // bearer token (optional)
@@ -589,7 +589,7 @@ function resolveAutoInject(raw: RawConfig): AutoInject {
 export function resolveConfig(raw: RawConfig = {}): Config {
   const serverMode = ["cloud", "self-hosted", "daemon"].includes(raw.serverMode as string)
     ? (raw.serverMode as "cloud" | "self-hosted" | "daemon")
-    : "cloud";
+    : "daemon";
   const apiPort = raw.apiPort || DEFAULT_DAEMON_PORT;
   const pageTrigger = resolvePageTrigger(raw);
   return {

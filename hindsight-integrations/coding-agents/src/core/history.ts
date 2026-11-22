@@ -189,7 +189,7 @@ function claudeHistory(repoDir: string, home: string): HistoryImport {
     if (!withinRepo(cwd, repoDir)) continue;
     try {
       const id = file
-        .split("/")
+        .split(/[\\/]/)
         .pop()!
         .replace(/\.jsonl$/, "");
       const s = toSession(id, readClaudeTranscript(file));

@@ -14,11 +14,25 @@ describe("recall config fields", () => {
   it("only offers fields the API accepts as per-bank config", () => {
     // The API's bank-config schema lists every configurable field; a toggle for
     // anything else would fail to save.
-    const spec = JSON.parse(
-      readFileSync(resolve(__dirname, "../../../hindsight-docs/static/openapi.json"), "utf8")
+    //
+    // Read from the Pydantic model, not from hindsight-docs/static/openapi.json:
+    // that generated file is not committed in this branch (the docs site ships
+    // only Markdown), so the check used to fail with ENOENT instead of testing
+    // the invariant. The model is the source the spec is generated from, so the
+    // parity it asserts is the same one, and it needs no build step.
+    const model = readFileSync(
+      resolve(__dirname, "../../../hindsight-api-slim/hindsight_api/engine/bank_templates.py"),
+      "utf8"
     );
-    const configurable = Object.keys(spec.components.schemas.BankTemplateConfig.properties);
-    for (const [field] of RECALL_FIELDS) expect(configurable).toContain(field);
+    const body = model.slice(model.indexOf("class BankTemplateConfig("));
+    const end = body.indexOf("\nclass ");
+    const fields = new Set(
+      [...(end === -1 ? body : body.slice(0, end)).matchAll(/^ {4}([a-z][a-z0-9_]*):/gm)].map(
+        (m) => m[1]
+      )
+    );
+    expect(fields.size).toBeGreaterThan(0);
+    for (const [field] of RECALL_FIELDS) expect(fields).toContain(field);
   });
 
   it("has a label and description for every field in the default locale", () => {

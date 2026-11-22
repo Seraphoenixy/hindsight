@@ -31,9 +31,6 @@ HOOK_EXEMPT_PROVIDERS = frozenset(
         "lmstudio",
         "llamacpp",
         "vertexai",
-        "bedrock",
-        "litellm",
-        "litellmrouter",
         "nous",
         "xai-oauth",
         "chatgpt",
@@ -84,7 +81,7 @@ def test_all_copied_llm_registries_list_no_key_providers_for_detection(provider)
         assert provider in names, f"{path} does not list {provider} in PROVIDER_DETECTION"
 
 
-@pytest.mark.parametrize("provider", ["claude-code", "cursor", "github-copilot"])
+@pytest.mark.parametrize("provider", ["cursor", "github-copilot"])
 def test_openclaw_no_key_registries_include_subscription_providers(provider):
     root = Path(__file__).resolve().parents[2]
     paths = [

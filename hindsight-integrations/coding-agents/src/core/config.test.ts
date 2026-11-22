@@ -25,7 +25,7 @@ afterEach(() => {
 describe("loadConfig layering", () => {
   it("missing files yield defaults", () => {
     const cfg = loadConfig({ path: join(root, "nope.json") });
-    expect(cfg.apiUrl).toBe("https://api.hindsight.vectorize.io");
+    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
     expect(cfg.bankId).toBeUndefined();
     expect(cfg.disabled).toBe(false);
   });
@@ -34,13 +34,14 @@ describe("loadConfig layering", () => {
     writeFileSync(globalCfg, "{not json");
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const cfg = loadConfig({ path: globalCfg });
-    expect(cfg.apiUrl).toBe("https://api.hindsight.vectorize.io");
+    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
     expect(err).toHaveBeenCalledOnce();
     err.mockRestore();
   });
 
   it("applies the requesting harness's section over the base", () => {
     writeJson(globalCfg, {
+      serverMode: "self-hosted",
       apiUrl: "http://x:1",
       bankId: "shared",
       harnesses: {
@@ -200,7 +201,11 @@ describe("reflectToolTimeoutMs / reflectBudget", () => {
 // exfiltrate the user's token + prompts to its own server just by being opened.
 describe("loadConfig — untrusted project-local layer is sanitized (security)", () => {
   it("the user-global config CAN still set apiUrl/apiToken (only the project layer is restricted)", () => {
-    writeJson(globalCfg, { apiUrl: "https://real.example", apiToken: "REAL-TOKEN" });
+    writeJson(globalCfg, {
+      serverMode: "self-hosted",
+      apiUrl: "https://real.example",
+      apiToken: "REAL-TOKEN",
+    });
     const cfg = loadConfig({ path: globalCfg });
     expect(cfg.apiUrl).toBe("https://real.example");
     expect(cfg.apiToken).toBe("REAL-TOKEN");
@@ -368,7 +373,7 @@ describe("environment fallback", () => {
   });
 
   it("supplies apiUrl and apiToken when the file omits them", () => {
-    writeJson(globalCfg, { bankId: "b" }); // no apiUrl/apiToken
+    writeJson(globalCfg, { serverMode: "self-hosted", bankId: "b" }); // no apiUrl/apiToken
     process.env.HINDSIGHT_API_URL = "http://localhost:8888";
     process.env.HINDSIGHT_API_TOKEN = "tok-from-env";
     const cfg = loadConfig({ path: globalCfg });
@@ -377,7 +382,11 @@ describe("environment fallback", () => {
   });
 
   it("the FILE wins over env — env is a fallback, not an override", () => {
-    writeJson(globalCfg, { apiUrl: "https://from-file", apiToken: "tok-from-file" });
+    writeJson(globalCfg, {
+      serverMode: "self-hosted",
+      apiUrl: "https://from-file",
+      apiToken: "tok-from-file",
+    });
     process.env.HINDSIGHT_API_URL = "https://from-env";
     process.env.HINDSIGHT_API_TOKEN = "tok-from-env";
     const cfg = loadConfig({ path: globalCfg });
@@ -525,7 +534,7 @@ describe("environment fallback", () => {
   });
 
   it("an empty env var does not mask the file or the default", () => {
-    writeJson(globalCfg, { apiUrl: "https://from-file" });
+    writeJson(globalCfg, { serverMode: "self-hosted", apiUrl: "https://from-file" });
     process.env.HINDSIGHT_API_URL = "";
     process.env.HINDSIGHT_SURVEY_MODEL = "   ";
     const cfg = loadConfig({ path: globalCfg });

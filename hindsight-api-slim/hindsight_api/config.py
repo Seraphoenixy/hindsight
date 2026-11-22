@@ -1006,7 +1006,6 @@ ENV_KB_EMBEDDINGS_API_KEY = "HINDSIGHT_API_KB_EMBEDDINGS_API_KEY"
 ENV_KB_EMBEDDINGS_DIMENSIONS = "HINDSIGHT_API_KB_EMBEDDINGS_DIMENSIONS"
 ENV_KB_EMBEDDINGS_BASE_URL = "HINDSIGHT_API_KB_EMBEDDINGS_BASE_URL"
 ENV_KB_EMBEDDINGS_MODALITIES = "HINDSIGHT_API_KB_EMBEDDINGS_MODALITIES"
-ENV_KB_EMBEDDINGS_DEVICE = "HINDSIGHT_API_KB_EMBEDDINGS_DEVICE"
 ENV_KB_EMBEDDINGS_BATCH_SIZE = "HINDSIGHT_API_KB_EMBEDDINGS_BATCH_SIZE"
 ENV_KB_EMBEDDINGS_MAX_IN_FLIGHT = "HINDSIGHT_API_KB_EMBEDDINGS_MAX_IN_FLIGHT"
 # Knowledge-bank search's reranker: any endpoint speaking Cohere's rerank API ({model, query,
@@ -1341,7 +1340,6 @@ PROVIDER_DEFAULT_MODELS = {
     "vertexai": "google/gemini-3.1-flash-lite",
     "openai-codex": "gpt-5.6-luna",
     "chatgpt": "gpt-6-luna",
-    "claude-code": "claude-sonnet-5-5",
     "cursor": "auto",
     "github-copilot": "gpt-5.6-terra",
     "mock": "mock-model",
@@ -1395,8 +1393,10 @@ DEFAULT_LLM_SUPPORTS_STRING_PATTERN = False
 # every other LiteLLM backend handles natively.
 DEFAULT_LLM_STRUCTURED_OUTPUT_IN_PROMPT = False
 
-DEFAULT_LLM_MAX_CONCURRENT = 32
+DEFAULT_LLM_MAX_CONCURRENT = 2
 DEFAULT_LLM_MAX_RETRIES = 3  # Max retry attempts for LLM API calls
+DEFAULT_RETAIN_LLM_MAX_CONCURRENT = 1
+DEFAULT_CONSOLIDATION_LLM_MAX_CONCURRENT = 1
 DEFAULT_LLM_INITIAL_BACKOFF = 1.0  # Initial backoff in seconds for retry exponential backoff
 DEFAULT_LLM_MAX_BACKOFF = 60.0  # Max backoff cap in seconds for retry exponential backoff
 DEFAULT_LLM_TIMEOUT = 120.0  # seconds
@@ -1505,7 +1505,7 @@ DEFAULT_EMBEDDINGS_GEMINI_FORCE_IPV4 = False
 DEFAULT_EMBEDDINGS_GEMINI_BATCH_SIZE = 100
 DEFAULT_EMBEDDING_DIMENSION = 384
 
-DEFAULT_RERANKER_PROVIDER = "local"
+DEFAULT_RERANKER_PROVIDER = "rrf"
 DEFAULT_RERANKER_SEND_BANK_AS_HEADER = False
 DEFAULT_RERANKER_LOCAL_MODEL = "hindsight-ai/hs-rerank-1"
 DEFAULT_RERANKER_LOCAL_FORCE_CPU = False  # Force CPU mode for local reranker
@@ -1904,7 +1904,7 @@ DEFAULT_XAI_OAUTH_DEBUG_HEADERS = False
 # still-full store just sheds again and burns the claim — and short enough that a
 # cleared backlog is not left waiting. Deferrals do not count against max_retries.
 DEFAULT_BACKPRESSURE_DEFER_SECONDS = 120
-DEFAULT_MCP_ENABLED = True
+DEFAULT_MCP_ENABLED = False
 DEFAULT_MCP_ENABLED_TOOLS: list[str] | None = None  # None = all tools enabled
 DEFAULT_MCP_STATELESS = False  # False = stateful (supports SSE/GET); True = stateless (POST-only)
 DEFAULT_MCP_INSTRUCTIONS = None
@@ -2091,11 +2091,12 @@ Transcribe only the visible text in the image. Do not describe the image, summar
 DEFAULT_FILE_CONVERSION_MAX_BATCH_SIZE_MB = 100  # Max total batch size in MB (all files combined)
 DEFAULT_FILE_CONVERSION_MAX_BATCH_SIZE = 10  # Max files per batch upload
 # Knowledge banks: one embedder per server, its modalities deciding which media types can be ingested
-# (knowledge/embedders.py). Multimodal: "local" (EmbeddingGemma 2 in-process), "gemini" / "vertex"
-# (Gemini Embedding 2), "voyage" (text, image, video), "cohere" (text, image), "openai" (any compatible
-# server). Text only: "text", any memory-bank embeddings provider (see EMBEDDINGS_SIDE_KB_TEXT).
-DEFAULT_KB_EMBEDDINGS_PROVIDER = "local"
-DEFAULT_KB_EMBEDDINGS_LOCAL_MODEL = "google/embeddinggemma-2"
+# (knowledge/embedders.py). Multimodal: "gemini" / "vertex" (Gemini Embedding 2), "voyage" (text, image,
+# video), "cohere" (text, image), "openai" (any compatible server). Text only: "text", any memory-bank
+# embeddings provider (see EMBEDDINGS_SIDE_KB_TEXT) — the default, since it reuses the memory banks'
+# embedder and needs no second provider. "local" (EmbeddingGemma 2 in-process) was removed with the
+# built-in Python inference stack in this private build.
+DEFAULT_KB_EMBEDDINGS_PROVIDER = "text"
 DEFAULT_KB_EMBEDDINGS_GEMINI_MODEL = "gemini-embedding-2"
 DEFAULT_KB_EMBEDDINGS_VOYAGE_MODEL = "voyage-multimodal-3.5"
 DEFAULT_KB_EMBEDDINGS_COHERE_MODEL = "embed-v4.0"
@@ -4410,7 +4411,6 @@ class HindsightConfig:
     kb_embeddings_dimensions: int | None = None  # None: the model's native size
     kb_embeddings_base_url: str | None = None  # openai provider: the server's /v1 URL
     kb_embeddings_modalities: str = "text,image"  # openai provider: what the remote model embeds
-    kb_embeddings_device: str | None = None  # None: auto (cuda, mps, cpu)
     kb_embeddings_batch_size: int = DEFAULT_KB_EMBEDDINGS_BATCH_SIZE
     kb_embeddings_max_in_flight: int = DEFAULT_KB_EMBEDDINGS_MAX_IN_FLIGHT
     kb_reranker_url: str | None = None
@@ -4939,24 +4939,7 @@ class HindsightConfig:
         main_embeddings = self.embeddings_provider
         if self.query_embeddings is not None and self.passage_embeddings is not None:
             main_embeddings = ""
-        if main_embeddings == "local" or self.reranker_provider == "local":
-            # find_spec, not import: importing sentence_transformers pulls in torch and costs
-            # ~15 s, which every process (even `--help`) would pay just to run this check.
-            if importlib.util.find_spec("sentence_transformers") is None:
-                missing = []
-                if main_embeddings == "local":
-                    missing.append("embeddings")
-                if self.reranker_provider == "local":
-                    missing.append("reranker")
-                logger.warning(
-                    "Local ML provider configured for %s, but 'sentence-transformers' "
-                    "is not installed. The API will fail at startup. Either:\n"
-                    "  1. Install local ML deps: pip install hindsight-api[local-ml]\n"
-                    "  2. Use a remote provider instead:\n"
-                    "     HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai (or gemini, tei)\n"
-                    "     HINDSIGHT_API_RERANKER_PROVIDER=none (or tei)",
-                    " and ".join(missing),
-                )
+        # 'local' embeddings/reranker use managed llama-server GGUF (no sentence-transformers needed).
 
         if main_embeddings == "onnx":
             if importlib.util.find_spec("onnxruntime") is None or importlib.util.find_spec("transformers") is None:
@@ -5200,7 +5183,7 @@ class HindsightConfig:
             fireworks_batch_max_wait_seconds=int(
                 os.getenv(ENV_FIREWORKS_BATCH_MAX_WAIT_SECONDS, str(DEFAULT_FIREWORKS_BATCH_MAX_WAIT_SECONDS))
             ),
-            retain_llm_max_concurrent=_env_int(ENV_RETAIN_LLM_MAX_CONCURRENT),
+            retain_llm_max_concurrent=_env_int_or(ENV_RETAIN_LLM_MAX_CONCURRENT, DEFAULT_RETAIN_LLM_MAX_CONCURRENT),
             retain_llm_max_retries=_env_int(ENV_RETAIN_LLM_MAX_RETRIES),
             retain_llm_initial_backoff=_env_float(ENV_RETAIN_LLM_INITIAL_BACKOFF),
             retain_llm_max_backoff=_env_float(ENV_RETAIN_LLM_MAX_BACKOFF),
@@ -5227,7 +5210,9 @@ class HindsightConfig:
             consolidation_llm_model=os.getenv(ENV_CONSOLIDATION_LLM_MODEL)
             or _env_default_model(ENV_CONSOLIDATION_LLM_PROVIDER),
             consolidation_llm_base_url=os.getenv(ENV_CONSOLIDATION_LLM_BASE_URL) or None,
-            consolidation_llm_max_concurrent=_env_int(ENV_CONSOLIDATION_LLM_MAX_CONCURRENT),
+            consolidation_llm_max_concurrent=_env_int_or(
+                ENV_CONSOLIDATION_LLM_MAX_CONCURRENT, DEFAULT_CONSOLIDATION_LLM_MAX_CONCURRENT
+            ),
             consolidation_llm_max_retries=_env_int(ENV_CONSOLIDATION_LLM_MAX_RETRIES),
             consolidation_llm_initial_backoff=_env_float(ENV_CONSOLIDATION_LLM_INITIAL_BACKOFF),
             consolidation_llm_max_backoff=_env_float(ENV_CONSOLIDATION_LLM_MAX_BACKOFF),
@@ -5934,7 +5919,6 @@ class HindsightConfig:
             kb_embeddings_dimensions=int(os.environ[ENV_KB_EMBEDDINGS_DIMENSIONS])
             if os.getenv(ENV_KB_EMBEDDINGS_DIMENSIONS)
             else None,
-            kb_embeddings_device=os.getenv(ENV_KB_EMBEDDINGS_DEVICE) or None,
             kb_embeddings_base_url=os.getenv(ENV_KB_EMBEDDINGS_BASE_URL) or None,
             kb_embeddings_modalities=os.getenv(ENV_KB_EMBEDDINGS_MODALITIES, "text,image").lower(),
             kb_embeddings_batch_size=int(

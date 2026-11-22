@@ -516,7 +516,6 @@ def test_litellm_takes_a_key_only_for_keyed_backends(model, supported):
 _OVERRIDE_ANSWERED_BY = {
     "AnthropicLLM": "AnthropicLLM",
     "ChatGPTLLM": "LLMInterface",
-    "ClaudeCodeLLM": "LLMInterface",
     "CodexLLM": "LLMInterface",
     "CursorLLM": "LLMInterface",
     "FireworksLLM": "OpenAICompatibleLLM",
@@ -524,7 +523,6 @@ _OVERRIDE_ANSWERED_BY = {
     "GitHubCopilotLLM": "LLMInterface",
     "LiteLLMLLM": "LiteLLMLLM",
     "LiteLLMRouterLLM": "LiteLLMRouterLLM",
-    "LlamaCppLLM": "LLMInterface",
     "MockLLM": "LLMInterface",
     "NoneLLM": "LLMInterface",
     "NousLLM": "NousLLM",

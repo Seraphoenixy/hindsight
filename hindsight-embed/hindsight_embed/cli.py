@@ -20,7 +20,9 @@ Environment variables:
     HINDSIGHT_EMBED_API_VERSION: Optional. hindsight-api version to use (default: matches embed version).
                                  Note: Only applies when starting daemon. To change version, stop daemon first.
     HINDSIGHT_EMBED_CLI_VERSION: Optional. hindsight CLI version to install (default: {embed_version}).
-    HINDSIGHT_EMBED_CONTROL_PORT: Optional. Port for the control center web app (default: 7878).
+    HINDSIGHT_EMBED_OPS_TOKEN: Optional. Access token for `hindsight-embed ops` (default: generated,
+                                 persisted at ~/.hindsight/ops.token). Handed to the control plane so
+                                 its local-management routes can call back into this CLI.
 """
 
 import argparse
@@ -178,6 +180,63 @@ def do_configure(args):
             sys.stdin = original_stdin
 
 
+def _do_configure_web() -> int:
+    """Bring the control plane up and open its local-settings page.
+
+    The browser wizard used to be the embed's own control center on 7878. It was
+    retired in favour of one management UI: the control plane already owns this
+    profile's memory banks, so the settings for the stack that feeds them belong
+    on the same page rather than behind a second URL, a second token and a second
+    process to supervise.
+
+    The daemon is ensured first because the page reads banks from it, and because
+    the profile settings it edits are what the daemon starts with. A daemon that
+    fails to start does not stop the page from opening — that page is where the
+    broken profile gets fixed — but it is reported rather than swallowed.
+    """
+    import webbrowser
+
+    from .ops import service
+    from .profile_manager import ProfileManager
+
+    profile = get_cli_profile_override() or ""
+    result = service.launch_ui(profile)
+    status = result.ui
+    if not status.running:
+        print("Failed to start the control plane.", file=sys.stderr)
+        print(f"  See its log: {ProfileManager().resolve_profile_paths(profile).ui_log}", file=sys.stderr)
+        print("  Or start it yourself: hindsight-embed ui start", file=sys.stderr)
+        return 1
+
+    url = f"{status.url.rstrip('/')}/local"
+    print(f"Control plane is running: {status.url}")
+    print(f"Open the local settings page: {url}")
+    if not result.daemon_ok:
+        # Not fatal, and deliberately not a failure exit: the page opens, and it is
+        # the one place the profile can be fixed. Say so, or the empty bank list
+        # reads as a bug in the UI.
+        #
+        # The leading newline is not cosmetic: `start_ui` renders its progress as a
+        # Rich panel, and Rich leaves the cursor at the panel's right edge when it
+        # writes to a pipe. Without it this warning is glued to the border and reads
+        # as part of the panel that just said the UI started.
+        print(
+            "\nWarning: the daemon did not start; /local will show it as stopped and its LLM settings "
+            "can be corrected there.",
+            file=sys.stderr,
+        )
+        print(
+            f"  Its log: {ProfileManager().resolve_profile_paths(profile).log}",
+            file=sys.stderr,
+        )
+    try:
+        webbrowser.open(url)
+    except Exception:
+        # Headless or no browser configured — the URL above is the answer.
+        pass
+    return 0
+
+
 def _has_non_interactive_env() -> bool:
     """Whether the env vars required by _do_configure_from_env are already set.
 
@@ -285,46 +344,16 @@ def _prompt_text(prompt: str, default: str = "") -> str | None:
 
 
 def _prompt_password(prompt: str) -> str | None:
-    """Simple password prompt that works with /dev/tty."""
-    import termios
-    import tty
+    """Read a password using the platform-native console or tty."""
+    # stdlib getpass selects the Windows console or POSIX tty implementation and
+    # restores terminal state itself. Unconditional termios imports broke Windows.
+    import getpass
 
-    # Read password with echo disabled (works because sys.stdin is already /dev/tty)
-    fd = sys.stdin.fileno()
-    print(f"\033[1m{prompt}\033[0m: ", end="", flush=True)
     try:
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd, termios.TCSADRAIN)
-            # Read character by character until newline
-            password = []
-            while True:
-                ch = sys.stdin.read(1)
-                if ch in ("\n", "\r"):
-                    break
-                elif ch == "\x7f":  # Backspace
-                    if password:
-                        password.pop()
-                        # Erase character on screen
-                        sys.stdout.write("\b \b")
-                        sys.stdout.flush()
-                elif ch == "\x03":  # Ctrl+C
-                    raise KeyboardInterrupt
-                elif ch >= " ":  # Printable character
-                    password.append(ch)
-            print()  # Newline after password
-            return "".join(password)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return getpass.getpass(f"{prompt}: ")
     except (EOFError, KeyboardInterrupt):
         print()
         return None
-    except Exception:
-        # Fallback to simple input if termios fails
-        try:
-            return input("")
-        except (EOFError, KeyboardInterrupt):
-            return None
 
 
 def _prompt_confirm(prompt: str, default: bool = True) -> bool | None:
@@ -928,122 +957,16 @@ def _do_configure_profile_interactive(profile_name: str, port: int | None) -> in
     return _do_configure_interactive(profile_name, port)
 
 
-def do_control(args) -> int:
-    """Handle control-center subcommands (start/stop/status/logs).
+def do_ops(args: list[str]) -> int:
+    """Handle ``ops`` subcommands — the machine-readable management surface.
 
-    The control center is a persistent, localhost-only web app that writes
-    profile config (the LLM wizard) and supervises the daemon. It runs as its
-    own detached process, so it survives daemon restarts.
+    Delegates wholesale to :mod:`hindsight_embed.ops.cli`, which owns the command
+    set and emits one JSON document. This wrapper exists only so the command is
+    reachable as ``hindsight-embed ops ...`` alongside the human-facing ones.
     """
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
+    from .ops import cli as ops_cli
 
-    from .control_center import (
-        control_status,
-        resolve_control_port,
-        start_control_center,
-        stop_control_center,
-    )
-    from .control_center.lifecycle import log_file
-
-    console = Console()
-    port = getattr(args, "port", None) or resolve_control_port()
-    command = args.control_command
-
-    if command == "start":
-        result = start_control_center(port, open_browser=not getattr(args, "no_open", False))
-        if not result.ok:
-            console.print(
-                Panel(
-                    Text(result.message, style="red"), title="[bold red]✗ Control Center[/bold red]", border_style="red"
-                )
-            )
-            return 1
-        body = Text()
-        body.append(
-            "Control center already running\n\n" if result.already_running else "Control center started\n\n",
-            style="green bold",
-        )
-        body.append("  Open: ", style="dim")
-        body.append(f"{result.url}\n", style="cyan")
-        body.append("  Logs: ", style="dim")
-        body.append(str(log_file()), style="")
-        console.print(
-            Panel(
-                body,
-                title=f"[bold green]✓ Control Center[/bold green] [dim](:{port})[/dim]",
-                border_style="green",
-                padding=(1, 2),
-            )
-        )
-        return 0
-
-    if command == "stop":
-        if stop_control_center(port):
-            console.print(
-                Panel(
-                    Text("Control center stopped", style="green"),
-                    title="[bold green]✓ Control Center[/bold green]",
-                    border_style="green",
-                )
-            )
-            return 0
-        console.print(
-            Panel(
-                Text("Failed to stop control center", style="red"),
-                title="[bold red]✗ Error[/bold red]",
-                border_style="red",
-            )
-        )
-        return 1
-
-    if command == "status":
-        status = control_status(port)
-        if status.running:
-            body = Text()
-            body.append("Control center is running\n\n", style="green bold")
-            body.append("  URL: ", style="dim")
-            body.append(f"http://localhost:{status.port}\n", style="cyan")
-            console.print(
-                Panel(
-                    body,
-                    title=f"[bold green]✓ Control Center[/bold green] [dim](:{status.port})[/dim]",
-                    border_style="green",
-                    padding=(1, 2),
-                )
-            )
-            return 0
-        console.print(
-            Panel(
-                Text("Control center is not running", style="dim"),
-                title="[bold]Control Center[/bold]",
-                border_style="dim",
-            )
-        )
-        return 1
-
-    if command == "logs":
-        log_path = log_file()
-        if not log_path.exists():
-            print("No control center logs found", file=sys.stderr)
-            print(f"  Expected at: {log_path}")
-            return 1
-        if getattr(args, "follow", False):
-            import subprocess
-
-            try:
-                subprocess.run(["tail", "-f", str(log_path)])
-            except KeyboardInterrupt:
-                pass
-            return 0
-        with open(log_path, encoding="utf-8", errors="replace") as f:
-            for line in f.readlines()[-getattr(args, "lines", 50) :]:
-                print(line, end="")
-        return 0
-
-    print("Usage: hindsight-embed control {start|stop|status|logs}", file=sys.stderr)
-    return 1
+    return ops_cli.main(args)
 
 
 def do_profile_command(args: list[str]) -> int:
@@ -1474,7 +1397,7 @@ def main() -> None:
             parser.add_argument(
                 "--web",
                 action="store_true",
-                help="Launch the browser-based control center wizard instead of the terminal prompts",
+                help="Open the control plane's local settings page instead of the terminal prompts",
             )
             args = parser.parse_args(remaining_args[1:])  # Skip 'configure' itself
 
@@ -1484,10 +1407,11 @@ def main() -> None:
 
             logger = setup_logging(False)
             if getattr(args, "web", False):
-                # Delegate to the control center: a persistent local web UI
-                # that writes config and supervises the daemon.
-                control_args = argparse.Namespace(control_command="start", port=None, no_open=False)
-                sys.exit(do_control(control_args))
+                # The browser wizard is the control plane's local-management page
+                # now: one UI, one place to configure the stack. Bring the control
+                # plane up (starting the daemon first) and send the user there.
+                exit_code = _do_configure_web()
+                sys.exit(exit_code)
             exit_code = do_configure(args)
             sys.exit(exit_code)
 
@@ -1546,27 +1470,30 @@ def main() -> None:
             exit_code = do_ui(args, config, logger)
             sys.exit(exit_code)
 
-        # Handle control-center subcommands
-        if command == "control":
-            parser = argparse.ArgumentParser(prog="hindsight-embed control")
-            subparsers = parser.add_subparsers(dest="control_command")
-            start_parser = subparsers.add_parser("start", help="Start the control center web app")
-            start_parser.add_argument("--port", type=int, help="Port for the control center (default: 7878)")
-            start_parser.add_argument("--no-open", action="store_true", help="Don't open the browser automatically")
-            stop_parser = subparsers.add_parser("stop", help="Stop the control center")
-            stop_parser.add_argument("--port", type=int, help="Port the control center is running on")
-            status_parser = subparsers.add_parser("status", help="Check control center status")
-            status_parser.add_argument("--port", type=int, help="Port to check")
-            logs_parser = subparsers.add_parser("logs", help="View control center logs")
-            logs_parser.add_argument("--follow", "-f", action="store_true")
-            logs_parser.add_argument("--lines", "-n", type=int, default=50)
+        # Handle ops subcommands: the machine-readable surface the control
+        # plane's local-management page calls. Arguments are passed through
+        # untouched — hindsight_embed.ops.cli owns its own parser, so this
+        # dispatch does not have to be extended for every new operation.
+        if command == "ops":
+            ops_args = remaining_args[1:]
+            # The global `-p/--profile` was consumed above by the parent parser,
+            # so the subcommand never sees it. Re-supply it as the long form: ops
+            # has its own `-p`, and silently dropping the flag would answer for
+            # the default profile while the caller asked about a named one.
+            if global_profile and "--profile" not in ops_args and "-p" not in ops_args:
+                ops_args = [*ops_args, "--profile", global_profile]
+            sys.exit(do_ops(ops_args))
 
-            args = parser.parse_args(remaining_args[1:])
-            if not args.control_command:
-                parser.print_help()
-                sys.exit(1)
-            setup_logging(False)
-            sys.exit(do_control(args))
+        # The control center was retired: it was a second UI (port 7878) over the
+        # same operations the control plane now owns. Say so instead of falling
+        # through to hindsight-cli, which would try to install the Rust CLI.
+        if command == "control":
+            print("error: 'control' was removed.", file=sys.stderr)
+            print("  The control center is now the control plane's local-settings page:", file=sys.stderr)
+            print("    hindsight-embed ui start     # then open <ui-url>/local", file=sys.stderr)
+            print("    hindsight-embed configure --web   # start it and open that page", file=sys.stderr)
+            print("  Machine-readable equivalents are under 'hindsight-embed ops'.", file=sys.stderr)
+            sys.exit(1)
 
         # Handle --help / -h
         if command in ("--help", "-h"):
@@ -1624,11 +1551,25 @@ UI (control plane):
     ui status [--port PORT]                   Check UI status
     ui logs [-f] [-n]                         View UI logs
 
-Control center (config wizard + daemon supervisor):
-    control start [--port PORT] [--no-open]   Start the local control center (default port: 7878)
-    control stop [--port PORT]                Stop the control center
-    control status [--port PORT]              Check control center status
-    control logs [-f] [-n]                    View control center logs
+Local management (machine-readable, JSON on stdout):
+    ops profiles                    List every profile with its daemon status
+    ops settings [-p PROFILE]       The grouped settings catalog with current values
+    ops config [-p PROFILE]         The profile's editable configuration (API key masked)
+    ops env [-p PROFILE]            The profile's raw .env contents
+    ops paths [-p PROFILE]          On-disk references and URLs for the profile
+    ops health [-p PROFILE]         Live daemon health
+    ops logs [-n LINES] [--source]  Tail the daemon or control-plane log
+    ops daemon-status               Is the daemon up, and on which URL
+    ops ui-status                   Is the control plane up (reports only)
+    ops token                       The access token, created on first use
+    ops daemon-start|stop|restart   Drive the profile's daemon
+    ops save-settings               Write grouped settings (JSON request on stdin)
+    ops save-config                 Write ports and version pins (JSON request on stdin)
+    ops write-env                   Overwrite the profile's .env (JSON request on stdin)
+    ops delete-profile              Stop the profile's processes, then delete it
+
+    These are what the control plane's local-settings page calls; the browser UI
+    needs no separate control-center process.
 
 CLI commands (forwarded to hindsight-cli):
     memory retain <bank> <content>   Store a memory

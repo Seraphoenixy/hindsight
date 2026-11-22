@@ -15,6 +15,10 @@ set -e
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [ "$SCRIPT_DIR" = "${BASH_SOURCE[0]}" ] && SCRIPT_DIR=.
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Git Bash GUI shells may omit uv's standard user install directory.
+if ! command -v uv >/dev/null 2>&1 && [ -x "$HOME/.local/bin/uv.exe" ]; then
+    export PATH="$HOME/.local/bin:$PATH"
+fi
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
@@ -28,11 +32,13 @@ run_task() {
     shift 2
     local cmd="$@"
 
-    # The subshell's exit code is the task's; its output is kept for failures.
+    # Upstream packages can be absent from this trimmed distribution.
+    [ -d "$dir" ] || { echo "  $name: package absent from this checkout, not applicable"; return 0; }
+    # Include cd errors in the log, and collect every task before cleanup.
     (
         cd "$dir"
-        $cmd > "$TEMP_DIR/$name.output" 2>&1
-    ) &
+        $cmd
+    ) > "$TEMP_DIR/$name.output" 2>&1 &
     PIDS+=($!)
     NAMES+=("$name")
 }
@@ -120,6 +126,7 @@ if changed "${PYTHON_PACKAGES[@]}" hindsight-integrations/; then
     # VIRTUAL_ENV is what `uv run` sets: ty reads it to find the installed packages.
     export VIRTUAL_ENV="$REPO_ROOT/.venv"
     VENV_BIN="$VIRTUAL_ENV/bin"
+    [ -d "$VIRTUAL_ENV/Scripts" ] && VENV_BIN="$VIRTUAL_ENV/Scripts"
 fi
 
 echo "  Running lints in parallel..."
@@ -206,7 +213,7 @@ for i in "${!PIDS[@]}"; do
     if ! wait "${PIDS[$i]}"; then
         echo ""
         echo "  ❌ ${NAMES[$i]} failed:"
-        cat "$TEMP_DIR/${NAMES[$i]}.output"
+        cat "$TEMP_DIR/${NAMES[$i]}.output" || true
         FAILED=1
     fi
 done

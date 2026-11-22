@@ -144,8 +144,14 @@ def test_each_provider_is_built_from_the_knowledge_settings(memory):
         create_knowledge_embedder(
             _config(kb_embeddings_provider="vertex", embeddings_vertexai_project_id=None), memory.embeddings
         )
-    with pytest.raises(ValueError, match="Expected local, gemini, vertex, voyage, cohere, openai or text"):
+    with pytest.raises(ValueError, match="Expected gemini, vertex, voyage, cohere, openai or text"):
         create_knowledge_embedder(_config(kb_embeddings_provider="nope"), memory.embeddings)
+
+
+def test_the_removed_local_provider_names_its_replacement(memory):
+    """``local`` is gone with the built-in inference stack; the error must say what to use instead."""
+    with pytest.raises(ValueError, match="has been removed in this private build"):
+        create_knowledge_embedder(_config(kb_embeddings_provider="local"), memory.embeddings)
 
 
 async def test_the_text_provider_reuses_the_memory_banks_embedder_by_default(memory):
@@ -297,28 +303,3 @@ async def test_a_video_query_is_refused_by_a_model_without_video():
     )
     with pytest.raises(UnsupportedModalityError):
         await images_only.embed_query(None, None, MP4)
-
-
-def test_a_clip_is_embedded_alone_and_the_rest_in_batches():
-    # One 30 s video clip took 2 GB on CPU: 32 of them in one batch ran a server to 42 GB.
-    from hindsight_api.knowledge.embedders import _model_batches
-
-    clip = {"video": "frames"}
-    inputs = ["a", "b", "c", clip, "d", {"audio": "pcm"}, {"image": "pixels"}, "e"]
-    assert list(_model_batches(inputs, 2)) == [
-        ["a", "b"],
-        ["c"],
-        [clip],
-        ["d"],
-        [{"audio": "pcm"}],
-        [{"image": "pixels"}, "e"],
-    ]
-
-
-def test_long_texts_are_batched_by_their_size_not_only_their_count(monkeypatch):
-    # 32 windows of a dense table ran a CPU embedder past 10 GB: a batch is capped by its characters too.
-    from hindsight_api.knowledge import embedders
-
-    monkeypatch.setattr(embedders, "_TEXT_BATCH_CHARS", 10)
-    batches = list(embedders._model_batches(["aaaa", "bbbb", "cccc", "dd", "e" * 30, "f"], 32))
-    assert batches == [["aaaa", "bbbb"], ["cccc", "dd"], ["e" * 30], ["f"]]

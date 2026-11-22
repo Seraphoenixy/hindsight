@@ -71,22 +71,7 @@ dependencies = [
     "anthropic>=0.99.0",
     "typer>=0.9.0",
     "cohere>=5.0.0",
-    # 1.82.7/1.82.8 had a supply chain compromise (yanked); 1.83.0+ also fixes
-    # GHSA-jjhc-v7c2-5hh6 / GHSA-53mr-6c8q-9789 / GHSA-pq44-5pcq-4r5g /
-    # GHSA-8cjq-wjmh-q42r; 1.84.0 fixes GHSA-4xpc-pv4p-pm3w.
-    # Floor raised to 1.93.0 for Python 3.14: litellm ships its own Rust
-    # extension (litellm-rust python-bridge). Releases before 1.93.0 publish no
-    # cp314 wheel and their sdist fails to build because PyO3 0.23.5 rejects
-    # any interpreter newer than 3.13. 1.93.0 adds cp314 wheels and a PyO3 that
-    # builds on 3.14.
-    # Floor raised to 1.95.1 for macOS: releases 1.92.0-1.95.0 publish no macOS
-    # wheels, so we used to pin darwin to the pure-python 1.91.x line. That pin
-    # broke Python 3.14 on macOS (1.91.x declares requires-python <3.14, so pip
-    # refuses it and `uv pip check` fails). Every release from 1.95.1 on ships
-    # macOS arm64/x86_64 wheels, so one floor now serves every platform.
-    "litellm>=1.95.1",
     "markitdown[pdf,docx,pptx,xlsx,xls]>=0.1.4", # File to markdown conversion
-    "obstore>=0.4.0", # S3/GCS/Azure object storage client (Rust-backed)
     "winloop>=0.1.0; sys_platform == 'win32'",
     "uvloop>=0.22.1; sys_platform != 'win32'",
     # Transitive dependency security fixes
@@ -101,9 +86,7 @@ dependencies = [
     "python-multipart>=0.0.22", # Arbitrary file write via non-default configuration fix
     "aiohttp>=3.14.3", # GHSA-cq5v-8q36-5273: OOB heap read in the C response parser, plus earlier DoS fixes
     "pygments>=2.20.0", # ReDoS via inefficient GUID regex fix
-    "claude-agent-sdk>=0.2.121", # CVE-2026-96620 fix
     "github-copilot-sdk>=1.0.11",
-    "boto3>=1.42.74",
     "croniter>=2.0.0", # Cron parsing for scheduled mental model refresh
     "json-repair>=0.63.2", # Structural repair of malformed LLM JSON (last-resort parse fallback); >=0.60.1 also fixes the circular-$ref unbounded-CPU DoS
     "orjson>=3.11.0", # Fast JSON encode/decode on the recall path (audit rows, TEI embedding responses); 3.11 ships 3.14 wheels
@@ -111,61 +94,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-local-ml = [
-    # Local ML models for embeddings/reranking
-    # 5.0 is the floor: LocalSTEmbeddings calls SentenceTransformer.encode_query()
-    # and .encode_document(), which only exist from 5.0 onwards. On 4.x those are
-    # an AttributeError at first encode (recall/retain), not at startup.
-    "sentence-transformers>=6.2.0", # 6.2 loads multimodal EmbeddingGemma 2 (knowledge banks)
-    "transformers>=5.22.1", # 5.22.1 knows EmbeddingGemma 2 (knowledge banks); >=5.5.0 also clears GHSA-fgcw-684q-jj6r (LightGlue RCE)
-    # transformers enforces its tokenizers range with a runtime check, but has
-    # shipped metadata declaring a wider range than it actually enforces. Keep
-    # this cap in step with the transformers floor: without it an in-place upgrade
-    # can pull a tokenizers transformers rejects and break local embeddings/reranker
-    # startup. See issue #2055.
-    "tokenizers>=0.23.1,<0.24.0",
-    # >=2.6.0 for the remote-code-execution CVE fix. The 2.11.0 floor is for
-    # ARMv8.0 CPUs (e.g. Cortex-A57): torch 2.10.0's aarch64 wheel bundles a
-    # mimalloc whose ELF constructor runs an inline ARMv8.1 LSE atomic
-    # (`ldaddal` in `_mi_options_init`), so `import torch` dies with SIGILL at
-    # dlopen time on any CPU without LSE. 2.11.0+ keeps LSE behind the
-    # runtime-dispatched outline-atomics helpers again. See issue #4142.
-    "torch>=2.11.0",
-    "torchvision>=0.26.0", # EmbeddingGemma 2 image/video processors (knowledge banks)
-    "av>=18.1.0", # PyAV (19 needs Python 3.12): knowledge banks cut and decode audio/video with its bundled ffmpeg libraries, no system ffmpeg
-    "einops>=0.8.2",
-    "flashrank>=0.2.0",
-    # Apple Silicon local inference. mlx is Apple's Metal/unified-memory
-    # framework: the only provider using it (`jina-mlx` reranker) refuses to
-    # start anywhere else, and mlx's Linux wheels are CPU-only, exist only for
-    # manylinux_2_35 (glibc >= 2.35) and ship no sdist — so on older-glibc Linux
-    # the whole `[all]` extra became unresolvable and pip silently backtracked
-    # to an ancient release with a pre-CVE torch pin. See issue #4499.
-    "mlx>=0.31.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "mlx-lm>=0.31.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "safetensors>=0.6.2",
-]
-local-llm = [
-    # Built-in llama.cpp inference for fully offline operation
-    "llama-cpp-python[server]>=0.3.0",
-    "huggingface-hub>=0.20.0",
-]
-local-onnx = [
-    # In-process ONNX Runtime embeddings without an Ollama/TEI sidecar
-    "onnxruntime>=1.17.0",
-    "transformers>=5.22.1", # 5.5.0 clears GHSA-fgcw-684q-jj6r (LightGlue RCE); 5.22.1 matches local-ml
-    "tokenizers>=0.23.1,<0.24.0", # See issue #2055 (transformers caps tokenizers below its next minor)
-    "huggingface-hub>=0.20.0",
-    "numpy>=1.26.0",
-]
 embedded-db = [
     "pg0-embedded>=0.17.0",
 ]
 oracle = [
     "oracledb>=2.5.0",
 ]
+cloud = [
+    "boto3>=1.42.74",
+    "litellm>=1.95.1",
+    "obstore>=0.4.0",
+]
 all = [
-    "hindsight-api-slim[local-ml,local-onnx,embedded-db]",
+    "hindsight-api-slim[embedded-db]",
 ]
 test = [
     "pytest>=7.0.0",

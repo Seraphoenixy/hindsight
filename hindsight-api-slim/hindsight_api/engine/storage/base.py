@@ -7,7 +7,17 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Any
 
-import obstore as obs
+
+def _obstore() -> Any:
+    try:
+        import obstore as obs
+    except ImportError as exc:
+        raise ImportError(
+            "obstore is required for S3/GCS/Azure object storage backends. "
+            "Install it with: pip install 'hindsight-api-slim[cloud]'"
+        ) from exc
+    return obs
+
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +155,7 @@ class FileStorage(ABC):
 
 async def delete_object_store_prefix(store, prefix: str) -> int:
     """:meth:`FileStorage.delete_prefix` for the obstore-backed stores (S3, GCS, Azure)."""
+    obs = _obstore()
     deleted = 0
     # One page per bulk delete: S3's DeleteObjects takes up to 1000 keys.
     async for page in obs.list(store, prefix=prefix, chunk_size=1000):
@@ -170,7 +181,7 @@ class ObstoreFileStorage(FileStorage):
         key: str,
         metadata: dict[str, str] | None = None,
     ) -> str:
-        await obs.put_async(self._store, key, file_data)
+        await _obstore().put_async(self._store, key, file_data)
         return key
 
     async def store_stream(
@@ -179,6 +190,7 @@ class ObstoreFileStorage(FileStorage):
         stream: AsyncIterator[bytes],
         metadata: dict[str, str] | None = None,
     ) -> str:
+        obs = _obstore()
         writer = obs.open_writer_async(self._store, key)
         try:
             async for chunk in stream:
@@ -202,7 +214,7 @@ class ObstoreFileStorage(FileStorage):
 
     async def retrieve(self, key: str) -> bytes:
         try:
-            response = await obs.get_async(self._store, key)
+            response = await _obstore().get_async(self._store, key)
             # obstore returns its own Bytes buffer, not a Python `bytes`. Callers rely on
             # the `-> bytes` return type, and handing a non-`bytes` to something strict about
             # the type (e.g. a Starlette Response, whose render() calls `.encode()` on a
@@ -216,7 +228,7 @@ class ObstoreFileStorage(FileStorage):
 
     async def retrieve_stream(self, key: str) -> AsyncIterator[bytes]:
         try:
-            response = await obs.get_async(self._store, key)
+            response = await _obstore().get_async(self._store, key)
             async for chunk in response.stream():
                 yield bytes(chunk)
         except Exception as e:
@@ -225,24 +237,24 @@ class ObstoreFileStorage(FileStorage):
             raise
 
     async def delete(self, key: str) -> None:
-        await obs.delete_async(self._store, key)
+        await _obstore().delete_async(self._store, key)
 
     async def delete_prefix(self, prefix: str) -> int:
         return await delete_object_store_prefix(self._store, prefix)
 
     async def exists(self, key: str) -> bool:
         try:
-            await obs.head_async(self._store, key)
+            await _obstore().head_async(self._store, key)
             return True
         except Exception:
             return False
 
     async def get_download_url(self, key: str, expires_in: int = 3600) -> str:
-        return await obs.sign_async(self._store, "GET", key, timedelta(seconds=expires_in))
+        return await _obstore().sign_async(self._store, "GET", key, timedelta(seconds=expires_in))
 
     async def get_size(self, key: str) -> int | None:
         try:
-            head = await obs.head_async(self._store, key)
+            head = await _obstore().head_async(self._store, key)
         except Exception as e:
             if _is_not_found(e):
                 return None

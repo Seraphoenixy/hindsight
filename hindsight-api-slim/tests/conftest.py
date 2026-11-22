@@ -56,8 +56,7 @@ try:
 except ImportError:
     pass
 
-from hindsight_api import LLMConfig, LocalSTEmbeddings, MemoryEngine, RequestContext
-from hindsight_api.engine.cross_encoder import LocalSTCrossEncoder
+from hindsight_api import LLMConfig, MemoryEngine, RequestContext
 from hindsight_api.engine.query_analyzer import DateparserQueryAnalyzer
 from hindsight_api.engine.task_backend import SyncTaskBackend
 from hindsight_api.pg0 import EmbeddedPostgres
