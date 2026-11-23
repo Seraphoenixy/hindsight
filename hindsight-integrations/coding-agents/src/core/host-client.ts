@@ -67,6 +67,7 @@ export function resolveHostMemory(harness: string, directory: string): HostMemor
       bank: bankId,
       // Names the repo in the initiative pages this host captures, as the seeded pages do.
       project,
+      projectScope: cfg.projectScope,
       maxParallelRetains: cfg.maxParallelRetains,
       observationScopes: cfg.observationScopes,
       pageSearchLimit: cfg.pageSearchLimit,

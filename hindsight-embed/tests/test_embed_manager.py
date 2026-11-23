@@ -784,19 +784,40 @@ def test_is_ui_running_detects_ipv6_only_ui(tmp_path, monkeypatch):
 
     # A ::1 listener is not guaranteed on CI hosts, so the probe is stood in for
     # here; the probe's own transport is covered by test_http_probe.py.
-    def fake_probe(url, **kwargs):
-        requested.append(url)
-        if url.startswith("http://[::1]:"):
-            return ProbeResponse(status_code=200, text="")
-        return None  # connection refused
+    def fake_probe_first(urls, **kwargs):
+        requested.extend(urls)
+        ipv6 = next(index for index, url in enumerate(urls) if url.startswith("http://[::1]:"))
+        return ipv6, ProbeResponse(status_code=200, text="")
 
-    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.probe_get", fake_probe)
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.probe_first", fake_probe_first)
 
     assert manager.is_ui_running("hermes", 19177) is True
-    assert requested == [
-        "http://127.0.0.1:19177/api/health",
-        "http://[::1]:19177/api/health",
-    ]
+    assert set(requested) == {
+        "http://127.0.0.1:19177/api/liveness",
+        "http://[::1]:19177/api/liveness",
+    }
+
+
+def test_is_ui_running_accepts_a_control_plane_without_the_liveness_route(tmp_path, monkeypatch):
+    """An old panel 404s /api/liveness; /api/health still identifies it as ours."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    manager = DaemonEmbedManager()
+
+    monkeypatch.setattr(
+        "hindsight_embed.daemon_embed_manager.probe_first",
+        lambda urls, **kwargs: (0, ProbeResponse(status_code=404, text="<html>")),
+    )
+    probed = []
+
+    def old_health(url, **kwargs):
+        probed.append(url)
+        return ProbeResponse(status_code=200, text="{}")
+
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.probe_get", old_health)
+
+    assert manager.is_ui_running("hermes", 19177) is True
+    assert probed == ["http://127.0.0.1:19177/api/health"]
 
 
 def test_is_ui_running_false_when_no_loopback_answers(tmp_path, monkeypatch):
@@ -807,17 +828,31 @@ def test_is_ui_running_false_when_no_loopback_answers(tmp_path, monkeypatch):
 
     requested = []
 
-    def refused(url, **kwargs):
-        requested.append(url)
-        return None
+    def refused(urls, **kwargs):
+        requested.extend(urls)
+        return 0, None
 
-    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.probe_get", refused)
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.probe_first", refused)
 
     assert manager.is_ui_running("hermes", 19177) is False
-    assert requested == [
-        "http://127.0.0.1:19177/api/health",
-        "http://[::1]:19177/api/health",
-    ]
+    assert set(requested) == {
+        "http://127.0.0.1:19177/api/liveness",
+        "http://[::1]:19177/api/liveness",
+    }
+
+
+@pytest.mark.parametrize(
+    ("hostname", "expected"),
+    [
+        ("127.0.0.1", ("127.0.0.1",)),
+        ("0.0.0.0", ("127.0.0.1",)),
+        ("::1", ("::1",)),
+        ("[::1]", ("::1",)),
+        ("localhost", ("127.0.0.1", "::1")),
+    ],
+)
+def test_ui_bind_probe_hosts_follows_the_requested_family(hostname, expected):
+    assert DaemonEmbedManager._ui_bind_probe_hosts(hostname) == expected
 
 
 def test_is_port_in_use_checks_both_loopback_families(monkeypatch):
@@ -861,6 +896,12 @@ class _RecordingProbe:
         self.connects.append(connect_timeout)
         return ProbeResponse(status_code=200, text="")
 
+    def first(self, urls, *, read_timeout, connect_timeout=None):
+        for _url in urls:
+            self.reads.append(read_timeout)
+            self.connects.append(connect_timeout)
+        return 0, ProbeResponse(status_code=200, text="")
+
 
 def test_reclaim_probe_waits_long_enough_for_a_busy_daemon(monkeypatch):
     """Regression for #3099: a busy event loop must not read as a dead daemon.
@@ -895,19 +936,20 @@ def test_liveness_probes_stay_short(tmp_path, monkeypatch):
 
     probe = _RecordingProbe()
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.probe_get", probe)
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.probe_first", probe.first)
 
     assert manager.is_running("hermes") is True
     assert manager.is_ui_running("hermes", 19177) is True
 
-    assert probe.reads == [2.0, 2.0]
-    assert all(c == daemon_embed_manager.PROBE_CONNECT_TIMEOUT for c in probe.connects)
+    assert probe.reads[0] == 2.0
+    assert probe.connects[0] == daemon_embed_manager.PROBE_CONNECT_TIMEOUT
+    assert probe.reads[1:] and all(r == daemon_embed_manager.UI_LIVENESS_PROBE_TIMEOUT for r in probe.reads[1:])
+    assert all(c == daemon_embed_manager.UI_LIVENESS_PROBE_TIMEOUT for c in probe.connects[1:])
 
     # An address that swallows the SYN hangs in connect, not in read, so the
-    # connect cap is what bounds the delete handler's three serial probes
-    # (daemon + one per loopback family). At 1s each that is 3s, below the 5s
-    # default client timeout — and below the 4s the two uncapped 2s probes
-    # could reach before this change.
-    assert daemon_embed_manager.PROBE_CONNECT_TIMEOUT * 3 < 5.0
+    # connect cap is what bounds the delete handler's probes. The UI families
+    # are probed concurrently at half a second; the daemon keeps its 1s cap.
+    assert daemon_embed_manager.UI_LIVENESS_PROBE_TIMEOUT * 2 + daemon_embed_manager.PROBE_CONNECT_TIMEOUT < 5.0
 
 
 # ── #4344: the probe's decode is pinned, not left to the locale ──────────────

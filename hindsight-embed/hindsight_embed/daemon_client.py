@@ -90,20 +90,28 @@ def is_daemon_running(profile: str | None = None) -> bool:
     return _manager.is_running(profile)
 
 
-def start_ui(profile: str | None = None, ui_port: int | None = None, hostname: str = "0.0.0.0") -> bool:
+def start_ui(
+    profile: str | None = None,
+    ui_port: int | None = None,
+    hostname: str = "0.0.0.0",
+    *,
+    check_running: bool = True,
+) -> bool:
     """Start the control plane UI.
 
     Args:
         profile: Profile name (None = resolve from priority).
         ui_port: Port for the UI. Defaults to daemon_port + 10000.
         hostname: Hostname to bind to. Defaults to 0.0.0.0.
+        check_running: Probe for an existing UI first. A caller that just did
+            that probe can pass false to avoid paying for it twice.
 
     Returns:
         True if UI started successfully.
     """
     if profile is None:
         profile = resolve_active_profile()
-    return _manager.start_ui(profile, ui_port, hostname)
+    return _manager.start_ui(profile, ui_port, hostname, check_running=check_running)
 
 
 def stop_ui(profile: str | None = None, ui_port: int | None = None) -> bool:

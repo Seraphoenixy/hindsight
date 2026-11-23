@@ -2816,6 +2816,7 @@
     "start": "시작",
     "stop": "중지",
     "restart": "재시작",
+    "openMemory": "메모리 열기",
     "deleteProfile": "프로필 삭제",
     "failed": "실패",
     "savedRestart": "저장했습니다. 적용하려면 데몬을 재시작하세요.",
@@ -2859,6 +2860,12 @@
     "deleteConfirm": "프로필 \"{name}\"을(를) 삭제할까요? 데몬을 중지하고 구성과 로그를 제거합니다. 되돌릴 수 없습니다.",
     "optionDefault": "(기본)",
     "optionCustom": "직접 입력…",
-    "defaultHint": "(기본: {value})"
+    "defaultHint": "(기본: {value})",
+    "fetchModels": "모델 가져오기",
+    "fetchingModels": "모델 가져오는 중…",
+    "modelsAvailable": "사용 가능한 모델: {count}",
+    "modelsEmpty": "공급자가 모델을 반환하지 않았습니다.",
+    "modelsNeedProvider": "먼저 공급자를 선택하세요.",
+    "modelsHint": "위의 공급자, 키, 기본 URL로 조회합니다. 저장되지 않습니다."
   }
 }

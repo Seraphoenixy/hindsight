@@ -29,7 +29,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from ._http_probe import ProbeResponse, probe_get
+from ._http_probe import ProbeResponse, probe_first, probe_get
 from ._ui_broker import UiLaunch, in_windows_job, launch_independent_ui
 from .embed_manager import EmbedManager
 from .profile_manager import ProfileLockTimeout, ProfileManager, ProfilePaths, lock_file, unlock_file
@@ -118,6 +118,11 @@ HEALTH_PROBE_TIMEOUT = _safe_positive_float(
 # pushed the control center's delete handler (one daemon probe + one UI probe
 # per loopback family) past the 5s default client timeout on Windows.
 LIVENESS_PROBE_TIMEOUT = 2.0
+# Readiness of the control plane itself. The panel must count as up even while
+# its dataplane is down, so this targets a process-only endpoint and never waits
+# on backend health. A loopback answer is milliseconds; a short cap keeps a
+# wrong family or a not-yet-listening port from stalling startup.
+UI_LIVENESS_PROBE_TIMEOUT = 0.5
 # Connecting is not the slow part for a busy daemon — being answered is. Cap
 # connect separately so an unreachable address cannot spend the whole read
 # budget, which is what turns two loopback families into double the wait.
@@ -1490,23 +1495,62 @@ class DaemonEmbedManager(EmbedManager):
         """Check if the UI is running and responsive."""
         return self._reachable_ui_host(profile, ui_port) is not None
 
-    def _reachable_ui_host(self, profile: str, ui_port: int | None = None) -> str | None:
-        """Loopback host on which the UI answers /api/health, or None.
+    def _reachable_ui_host(
+        self, profile: str, ui_port: int | None = None, hosts: tuple[str, ...] = LOOPBACK_HOSTS
+    ) -> str | None:
+        """Loopback host on which the UI answers its process-only liveness route.
 
-        The UI is probed on every loopback family rather than on 127.0.0.1
-        alone: Next.js started with `--hostname localhost` binds ::1 only, so
-        the IPv4 probe refused the connection and `ui start`/`ui status`
-        reported a healthy control plane as down (issue #3527).
+        Two properties matter here:
+
+        * ``/api/liveness`` does not touch the dataplane. The panel is usable
+          while the backend is down — that is exactly when it shows Local
+          settings — so backend latency must not delay the panel's own start.
+        * The loopback families are probed concurrently with a short cap. A
+          sequential 2s probe per address made a cold ``ui start`` spend most of
+          its time waiting on ports that were not listening yet. The first host
+          in the requested order wins, preserving the IPv4-first preference.
+
+        ``hosts`` lets a caller that knows the bind address skip the family that
+        cannot answer; ``ui status`` still checks both (issue #3527: a
+        ``localhost`` bind may be IPv6-only).
         """
         if ui_port is None:
             ui_port = self._profile_manager.resolve_profile_paths(profile).ui_port
-        for host in LOOPBACK_HOSTS:
-            # IPv6 literals have to be bracketed in a URL authority.
-            base = f"http://[{host}]:{ui_port}" if ":" in host else f"http://{host}:{ui_port}"
-            response = _probe(f"{base}/api/health", LIVENESS_PROBE_TIMEOUT)
-            if response is not None and response.status_code == 200:
-                return host
+        # IPv6 literals have to be bracketed in a URL authority.
+        base_urls = [f"http://[{host}]:{ui_port}" if ":" in host else f"http://{host}:{ui_port}" for host in hosts]
+        urls = [f"{base}/api/liveness" for base in base_urls]
+        index, response = probe_first(
+            urls,
+            read_timeout=UI_LIVENESS_PROBE_TIMEOUT,
+            connect_timeout=UI_LIVENESS_PROBE_TIMEOUT,
+        )
+        if response is None:
+            return None
+        if response.status_code == 200:
+            return hosts[index]
+        if response.status_code == 404:
+            # A control plane from before /api/liveness exists answers 404 on
+            # this route but is still a panel worth adopting, not a dead one.
+            # /api/health is slower, so this runs only for that old build.
+            health = _probe(f"{base_urls[index]}/api/health", LIVENESS_PROBE_TIMEOUT)
+            if health is not None and health.status_code == 200:
+                return hosts[index]
         return None
+
+    @staticmethod
+    def _ui_bind_probe_hosts(hostname: str) -> tuple[str, ...]:
+        """Loopback families that can answer for the requested bind address.
+
+        ``cli.js`` maps a literal loopback bind to ``localhost`` with a pinned
+        DNS family, so the bind still answers on exactly one family. An
+        unspecified/other hostname may resolve either way, so both are checked.
+        """
+        host = hostname.strip().lower()
+        if host in {"127.0.0.1", "0.0.0.0"}:
+            return ("127.0.0.1",)
+        if host in {"::1", "[::1]"}:
+            return ("::1",)
+        return LOOPBACK_HOSTS
 
     @staticmethod
     def _ui_port_file(paths) -> Path:
@@ -1529,13 +1573,17 @@ class DaemonEmbedManager(EmbedManager):
         except OSError:
             pass
 
-    def start_ui(self, profile: str, ui_port: int | None = None, hostname: str = "0.0.0.0") -> bool:
+    def start_ui(
+        self, profile: str, ui_port: int | None = None, hostname: str = "0.0.0.0", *, check_running: bool = True
+    ) -> bool:
         """Start the control plane UI in background.
 
         Args:
             profile: Profile name.
             ui_port: Port for the UI. Defaults to daemon_port + 10000.
             hostname: Hostname to bind to. Defaults to 0.0.0.0.
+            check_running: Probe for an existing UI first. Callers that just did
+                this check can skip the duplicate probe.
 
         Returns:
             True if UI started successfully.
@@ -1544,7 +1592,7 @@ class DaemonEmbedManager(EmbedManager):
         if ui_port is None:
             ui_port = paths.ui_port
 
-        if self.is_ui_running(profile, ui_port):
+        if check_running and self.is_ui_running(profile, ui_port):
             logger.debug(f"UI already running for profile '{profile}' on port {ui_port}")
             self._record_ui_port(paths, ui_port)
             return True
@@ -1588,6 +1636,7 @@ class DaemonEmbedManager(EmbedManager):
             start_time = time.time()
             title = f"[bold cyan]Starting UI[/bold cyan] [dim]({profile or 'default'} @ :{ui_port})[/dim]"
             log_lines = [f"Starting UI for {profile_label}...", ""]
+            probe_hosts = self._ui_bind_probe_hosts(hostname)
 
             with Live(console=console, auto_refresh=False) as live:
                 content = Text("\n".join(log_lines), style="dim")
@@ -1596,7 +1645,7 @@ class DaemonEmbedManager(EmbedManager):
                 live.refresh()
 
                 while time.time() - start_time < 30:
-                    if self._reachable_ui_host(profile, ui_port) is not None:
+                    if self._reachable_ui_host(profile, ui_port, probe_hosts) is not None:
                         self._record_ui_port(paths, ui_port)
                         # "localhost" rather than a loopback literal: the UI may
                         # have bound ::1 only (issue #3527), and name resolution
@@ -1624,7 +1673,7 @@ class DaemonEmbedManager(EmbedManager):
                     panel = Panel(content, title=title, border_style="cyan", padding=(1, 2))
                     live.update(panel)
                     live.refresh()
-                    time.sleep(0.5)
+                    time.sleep(0.1)
 
             # Timeout
             console.print(

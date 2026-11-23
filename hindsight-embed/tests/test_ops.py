@@ -617,28 +617,37 @@ class TestOpsCommands:
 class TestLaunchUi:
     """`launch_ui` is the launcher path (`configure --web`, `ui start`), not a route.
 
-    It reports the daemon separately from the UI because the two failures mean
-    different things: a UI that will not start is a dead end for the user, while a
-    daemon that will not start leaves `/local` — the page where the profile gets
-    fixed — as the thing to open. Swallowing the daemon result made a broken
-    profile look like a working page that simply listed no banks.
+    It starts the UI and only observes the daemon: `/local` is the page where a
+    profile is configured and where its daemon is started, so it must open against
+    a stopped daemon. The observed state is reported so the caller can say the
+    empty bank list is a missing backend, not an empty product.
     """
 
-    def test_reports_a_daemon_failure_without_hiding_the_ui(self, temp_hindsight_dir, monkeypatch):
+    def test_does_not_start_the_daemon(self, temp_hindsight_dir, monkeypatch):
         from hindsight_embed import daemon_client
 
-        monkeypatch.setattr(daemon_client, "ensure_daemon_running", lambda *a, **k: False)
-        monkeypatch.setattr(daemon_client, "start_ui", lambda *a, **k: False)
+        monkeypatch.setattr(daemon_client, "is_daemon_running", lambda *a, **k: False)
+        monkeypatch.setattr(
+            daemon_client,
+            "ensure_daemon_running",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("launch_ui must not start the daemon")),
+        )
+        monkeypatch.setattr(daemon_client, "start_ui", lambda *a, **k: True)
         monkeypatch.setattr(daemon_client, "is_ui_running", lambda profile=None, ui_port=None: True)
 
         result = service.launch_ui("")
         assert result.daemon_ok is False
         assert result.ui.running is True, "the page that fixes the profile must still open"
 
-    def test_reports_a_healthy_start(self, temp_hindsight_dir, monkeypatch):
+    def test_reports_an_already_running_daemon(self, temp_hindsight_dir, monkeypatch):
         from hindsight_embed import daemon_client
 
-        monkeypatch.setattr(daemon_client, "ensure_daemon_running", lambda *a, **k: True)
+        monkeypatch.setattr(daemon_client, "is_daemon_running", lambda *a, **k: True)
+        monkeypatch.setattr(
+            daemon_client,
+            "ensure_daemon_running",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("launch_ui must not start the daemon")),
+        )
         monkeypatch.setattr(daemon_client, "start_ui", lambda *a, **k: True)
         monkeypatch.setattr(daemon_client, "is_ui_running", lambda profile=None, ui_port=None: True)
 
@@ -646,10 +655,10 @@ class TestLaunchUi:
         assert result.daemon_ok is True
         assert result.ui.running is True
 
-    def test_a_failed_ui_is_reported_even_when_the_daemon_came_up(self, temp_hindsight_dir, monkeypatch):
+    def test_a_failed_ui_is_reported_even_when_the_daemon_is_running(self, temp_hindsight_dir, monkeypatch):
         from hindsight_embed import daemon_client
 
-        monkeypatch.setattr(daemon_client, "ensure_daemon_running", lambda *a, **k: True)
+        monkeypatch.setattr(daemon_client, "is_daemon_running", lambda *a, **k: True)
         monkeypatch.setattr(daemon_client, "start_ui", lambda *a, **k: False)
         monkeypatch.setattr(daemon_client, "is_ui_running", lambda profile=None, ui_port=None: False)
 

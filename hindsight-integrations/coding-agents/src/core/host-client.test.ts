@@ -57,15 +57,59 @@ describe("resolveHostMemory", () => {
     const repo = join(root, "my-repo");
     mkdirSync(repo);
     execFileSync("git", ["init", "-q", repo]);
-    writeConfig({});
+    writeConfig({ bankMode: "project" });
     let { resolveHostMemory } = await loadFactory();
     const own = resolveHostMemory("dsh", repo);
     expect(own.client.project).toBe("my-repo");
     expect(own.bankId).toContain("my-repo");
 
-    writeConfig({ bankId: "shared-memory" });
+    writeConfig({ bankMode: "project", bankId: "shared-memory" });
     ({ resolveHostMemory } = await loadFactory());
     expect(resolveHostMemory("dsh", repo).client.project).toBeUndefined();
+  });
+
+  it("shares one bank across hosts while keeping same-name repos and worktrees distinct", async () => {
+    const left = join(root, "left", "repo");
+    const right = join(root, "right", "repo");
+    const worktree = join(root, "linked");
+    for (const repo of [left, right]) {
+      mkdirSync(repo, { recursive: true });
+      execFileSync("git", ["init", "-q", repo]);
+    }
+    execFileSync("git", [
+      "-C",
+      left,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "initial",
+    ]);
+    execFileSync("git", ["-C", left, "worktree", "add", "--detach", "-q", worktree]);
+    const { resolveHostMemory } = await loadFactory();
+    expect(resolveHostMemory("codex", left).cfg.disabled).toBe(true);
+
+    writeConfig({
+      optInPaths: [left, right],
+      harnesses: { codex: { bankId: "ignored" } },
+      paths: { [left]: { gitIngest: "message" } },
+    });
+    const a = resolveHostMemory("codex", left);
+    const b = resolveHostMemory("antigravity-cli", right);
+    const linked = resolveHostMemory("codex", worktree);
+    expect(a.bankId).toBe("工程知识与经验");
+    expect(b.bankId).toBe(a.bankId);
+    expect(b.client.projectTag).not.toBe(a.client.projectTag);
+    expect(linked.client.projectTag).toBe(a.client.projectTag);
+    expect(a.cfg.gitIngest).toBe("message");
+    expect(linked.cfg.gitIngest).toBe("message");
+    expect(b.cfg.gitIngest).toBe("none");
+    expect(b.cfg.retainSessions).toBe(false);
+    expect(b.cfg.codebaseSurvey).toBe(false);
+    expect(b.cfg.importChatHistory).toBe(false);
   });
 
   it("enforces optInOnly for every host, not just the ones that remembered to pass a directory", async () => {
@@ -118,12 +162,18 @@ describe("resolveHostMemory", () => {
     // `banks.<id>.apiToken` is a legitimate override (it is not stripped by BANK_OVERRIDE_EXCLUDED),
     // so a provider that re-read only the top level would hand back the wrong credential.
     const { resolveHostMemory: probe } = await loadFactory();
-    writeConfig({ serverMode: "self-hosted", apiUrl: "http://server", apiToken: "global" });
+    writeConfig({
+      optInPaths: [root],
+      serverMode: "self-hosted",
+      apiUrl: "http://server",
+      apiToken: "global",
+    });
     const bankId = probe("dsh", root).bankId;
 
     writeConfig({
       apiUrl: "http://server",
       apiToken: "global",
+      optInPaths: [root],
       banks: { [bankId]: { apiToken: "per-bank" } },
     });
     const { resolveHostMemory } = await loadFactory();

@@ -19,10 +19,8 @@
  * opens, and the daemon's own status stays with `ensureDaemon`.
  */
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { Config } from "./config";
@@ -30,6 +28,7 @@ import { daemonEnv, isServerHealthy } from "./daemon";
 import { diag } from "./diag";
 import { log } from "./log";
 import type { ToolSpec } from "./page-tools";
+import { resolveEmbedCommand } from "./embed-ops";
 
 const execFileAsync = promisify(execFile);
 
@@ -120,58 +119,6 @@ export function ensureControlPlaneStarted(
   return tracked;
 }
 
-function resolveRepoRootFromStaged(): string | undefined {
-  try {
-    const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-    const originPath = join(pkgRoot, ".install-origin.json");
-    if (existsSync(originPath)) {
-      const origin = JSON.parse(readFileSync(originPath, "utf8")) as { source?: string };
-      if (origin.source) return join(origin.source, "..", "..");
-    }
-  } catch {
-    // ignore
-  }
-  return undefined;
-}
-
-async function resolveEmbedCommand(cfg: Config): Promise<[string, ...string[]]> {
-  if (!cfg.embedPackagePath) {
-    const exeName = process.platform === "win32" ? "hindsight-embed.exe" : "hindsight-embed";
-    const binDir = process.platform === "win32" ? "Scripts" : "bin";
-    const repoRoot = resolveRepoRootFromStaged();
-    if (repoRoot) {
-      const venvEmbed = join(repoRoot, ".venv", binDir, exeName);
-      if (existsSync(venvEmbed)) return [venvEmbed];
-    }
-    // Magpie's independently bundled entry lives deeper in this checkout and
-    // has no staged-install marker. Prefer that checkout's installed embed too.
-    for (let dir = dirname(fileURLToPath(import.meta.url)); ; dir = dirname(dir)) {
-      const venvEmbed = join(dir, ".venv", binDir, exeName);
-      if (existsSync(venvEmbed)) return [venvEmbed];
-      if (dirname(dir) === dir) break;
-    }
-    const localEmbed = join(homedir(), ".local", "bin", exeName);
-    if (existsSync(localEmbed)) return [localEmbed];
-  }
-
-  const { getEmbedCommand } = await import("@vectorize-io/hindsight-all");
-  const [cmd, ...baseArgs] = getEmbedCommand({
-    embedVersion: cfg.embedVersion,
-    embedPackagePath: cfg.embedPackagePath,
-  });
-
-  if (cmd === "uvx") {
-    const uvxName = process.platform === "win32" ? "uvx.exe" : "uvx";
-    for (const candidate of [
-      join(homedir(), ".local", "bin", uvxName),
-      join(homedir(), ".cargo", "bin", uvxName),
-    ]) {
-      if (existsSync(candidate)) return [candidate, ...baseArgs];
-    }
-  }
-  return [cmd, ...baseArgs];
-}
-
 async function _ensureControlPlaneStartedImpl(
   cfg: Config,
   harness: string,
@@ -187,13 +134,12 @@ async function _ensureControlPlaneStartedImpl(
 
   try {
     const [cmd, ...baseArgs] = await resolveEmbedCommand(cfg);
-    // `ui start` ensures the daemon first (the page reads banks from it), then
-    // starts the standalone server. `--hostname 127.0.0.1` is deliberate for a
+    // `--no-daemon` keeps the two lifecycles separate: opening the management UI
+    // must not bootstrap the memory backend. The panel shows the backend's state
+    // and sends an unconfigured install to the /local settings page, where the
+    // daemon is started explicitly. `--hostname 127.0.0.1` is deliberate for a
     // UI whose /local page controls local processes: the routes are gated, but a
-    // loopback bind removes the LAN from the path entirely. A user who wants the
-    // UI on the network runs `hindsight-embed ui start --hostname 0.0.0.0`
-    // themselves, which is an explicit choice rather than a side effect of
-    // starting memory.
+    // loopback bind removes the LAN from the path entirely.
     const args = [
       ...baseArgs,
       "ui",
@@ -204,6 +150,7 @@ async function _ensureControlPlaneStartedImpl(
       String(port),
       "--hostname",
       "127.0.0.1",
+      "--no-daemon",
     ];
 
     await execFileAsync(cmd, args, {

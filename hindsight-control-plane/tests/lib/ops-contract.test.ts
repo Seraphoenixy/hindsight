@@ -59,7 +59,9 @@ describe.skipIf(!embed)("hindsight-embed ops contract", () => {
   });
 
   it("lists the coding-agent profile on a fresh machine", () => {
-    const doc = ops<{ profiles: { name: string; port: number; daemon_running: boolean }[] }>(["profiles"]);
+    const doc = ops<{ profiles: { name: string; port: number; daemon_running: boolean }[] }>([
+      "profiles",
+    ]);
     expect(doc.profiles).toHaveLength(1);
     expect(doc.profiles[0].name).toBe("coding-agent");
     // An isolated HOME isolates configuration, not TCP ports: an existing daemon
@@ -95,7 +97,10 @@ describe.skipIf(!embed)("hindsight-embed ops contract", () => {
   it("reports a rejected value as a JSON error on a non-zero exit", () => {
     let failed = false;
     try {
-      ops(["save-settings"], JSON.stringify({ values: { HINDSIGHT_API_LLM_PROVIDER: "not-a-provider" } }));
+      ops(
+        ["save-settings"],
+        JSON.stringify({ values: { HINDSIGHT_API_LLM_PROVIDER: "not-a-provider" } })
+      );
     } catch (error) {
       const err = error as { stdout?: string };
       const doc = JSON.parse(err.stdout ?? "{}") as { error?: string };
@@ -112,6 +117,17 @@ describe.skipIf(!embed)("hindsight-embed ops contract", () => {
     expect(config.api_key_masked).not.toContain("secret-123");
     const envDoc = ops<{ content: string }>(["env"]);
     expect(envDoc.content).toContain("sk-secret-123");
+  });
+
+  it("declines model discovery for OAuth providers without calling the network", () => {
+    let message = "";
+    try {
+      ops(["models"], JSON.stringify({ provider: "openai-codex", api_key: null, base_url: "" }));
+    } catch (error) {
+      const err = error as { stdout?: string };
+      message = (JSON.parse(err.stdout ?? "{}") as { error?: string }).error ?? "";
+    }
+    expect(message).toContain("Enter the model id directly");
   });
 
   it("creates and returns an ops token", () => {

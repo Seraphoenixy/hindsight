@@ -2816,6 +2816,7 @@
     "start": "開始",
     "stop": "停止",
     "restart": "再起動",
+    "openMemory": "メモリを開く",
     "deleteProfile": "プロファイルを削除",
     "failed": "失敗",
     "savedRestart": "保存しました。反映にはデーモンの再起動が必要です。",
@@ -2859,6 +2860,12 @@
     "deleteConfirm": "プロファイル「{name}」を削除しますか？デーモンを停止し、設定とログを削除します。元に戻せません。",
     "optionDefault": "（既定）",
     "optionCustom": "カスタム…",
-    "defaultHint": "（既定: {value}）"
+    "defaultHint": "（既定: {value}）",
+    "fetchModels": "モデルを取得",
+    "fetchingModels": "モデルを取得中…",
+    "modelsAvailable": "利用可能なモデル: {count}",
+    "modelsEmpty": "プロバイダーはモデルを返しませんでした。",
+    "modelsNeedProvider": "先にプロバイダーを選択してください。",
+    "modelsHint": "上のプロバイダー、キー、ベース URL で照会します。保存はされません。"
   }
 }

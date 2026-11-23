@@ -9,10 +9,13 @@ import {
 } from "./control-plane";
 import { isServerHealthy } from "./daemon";
 import { openManagementPage } from "./management-browser";
+import { inspectMagpieLlm, syncMagpieLlm, type LlmState } from "./magpie-llm";
 
 export interface ProcessRequest {
   id: string;
-  action: "start" | "stop" | "restart" | "open";
+  action: "start" | "stop" | "restart" | "open" | "sync-llm";
+  /** Page-selected model for `sync-llm`; omitted follows the host's current model. */
+  model?: string | null;
 }
 
 interface Operation extends ProcessRequest {
@@ -27,13 +30,14 @@ export interface ProcessState {
   url: string;
   running: boolean;
   daemonHealthy: boolean;
+  llm: LlmState;
   checkedAt: number;
   operation: Operation | null;
 }
 
 function receiptPath(request: ProcessRequest): string {
   if (!/^\d{13}-[a-z0-9]{6,16}$/.test(request.id)) throw new Error("Invalid process request");
-  if (!["start", "stop", "restart", "open"].includes(request.action))
+  if (!["start", "stop", "restart", "open", "sync-llm"].includes(request.action))
     throw new Error("Invalid process action");
   return join(homedir(), ".hindsight", "magpie", "requests", request.id + ".json");
 }
@@ -49,6 +53,7 @@ export async function publishProcessState(
     isControlPlaneHealthy(port),
     isServerHealthy(cfg.apiUrl),
   ]);
+  const llm = await inspectMagpieLlm(cfg, { daemonHealthy });
   let operation: Operation | null = null;
   if (request) {
     try {
@@ -73,6 +78,7 @@ export async function publishProcessState(
     url: `http://127.0.0.1:${port}`,
     running,
     daemonHealthy,
+    llm,
     checkedAt: Date.now(),
     operation,
   };
@@ -113,22 +119,35 @@ export async function executeProcessRequest(
   }
   await publishProcessState(cfg, port, stateFile, request);
   try {
+    if (request.action === "sync-llm") {
+      const llm = await syncMagpieLlm(cfg, {
+        mode: request.model ? "fixed" : "follow",
+        model: request.model ?? null,
+        force: true,
+        restart: true,
+        noCache: true,
+      });
+      if (!["synced", "updated"].includes(llm.status)) throw new Error(llm.message);
+      operation.message = llm.message;
+    }
     if (request.action === "stop" || request.action === "restart") {
       await stopControlPlane(cfg, { port });
       if (await isControlPlaneHealthy(port)) throw new Error("管理界面仍在运行，停止未成功");
     }
-    if (request.action !== "stop") {
+    if (request.action !== "stop" && request.action !== "sync-llm") {
       const started = await ensureControlPlaneStarted(cfg, "magpie", { port });
       if (!started.running) throw new Error("管理界面未能启动，请查看 profile 日志");
     }
     if (request.action === "open") await openManagementPage(port, request.id);
     operation.phase = "done";
-    operation.message = {
-      start: "管理界面已启动",
-      stop: "管理界面已停止",
-      restart: "管理界面已重启",
-      open: "已在系统浏览器打开",
-    }[request.action];
+    if (request.action !== "sync-llm")
+      operation.message = {
+        start: "管理界面已启动",
+        stop: "管理界面已停止",
+        restart: "管理界面已重启",
+        open: "已在系统浏览器打开",
+        "sync-llm": "",
+      }[request.action];
   } catch (error) {
     operation.phase = "failed";
     operation.message = error instanceof Error ? error.message : String(error);

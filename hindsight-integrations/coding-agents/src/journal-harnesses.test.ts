@@ -34,7 +34,12 @@ vi.mock("node:fs", async (importOriginal) => {
 let rawConfig: RawConfig = {};
 vi.mock("./core/config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./core/config")>();
-  return { ...actual, loadConfig: () => actual.resolveConfig(rawConfig) };
+  // Write-back tests must not depend on — or start — a local daemon. The lifecycle has its own
+  // tests; here the cold start would only turn a slow machine into a 30 s timeout.
+  return {
+    ...actual,
+    loadConfig: () => actual.resolveConfig({ daemonAutoStart: false, ...rawConfig }),
+  };
 });
 
 const zcode = HOOK_HARNESSES.zcode;

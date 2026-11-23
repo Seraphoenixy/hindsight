@@ -29,7 +29,12 @@ vi.mock("node:fs", async (importOriginal) => {
 let rawConfig: RawConfig = {};
 vi.mock("./config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./config")>();
-  return { ...actual, loadConfig: () => actual.resolveConfig(rawConfig) };
+  // These tests exercise write-back, not process lifecycles: keep the daemon's cold start out of
+  // them so a developer's real profile/uv installation can never turn a unit test into a 30 s wait.
+  return {
+    ...actual,
+    loadConfig: () => actual.resolveConfig({ daemonAutoStart: false, ...rawConfig }),
+  };
 });
 
 let root: string;

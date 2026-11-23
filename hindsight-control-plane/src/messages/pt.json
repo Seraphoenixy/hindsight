@@ -2816,6 +2816,7 @@
     "start": "Iniciar",
     "stop": "Parar",
     "restart": "Reiniciar",
+    "openMemory": "Abrir memória",
     "deleteProfile": "Excluir perfil",
     "failed": "Falha",
     "savedRestart": "Salvo. Reinicie o daemon para aplicar.",
@@ -2859,6 +2860,12 @@
     "deleteConfirm": "Excluir o perfil \"{name}\"? O daemon é parado e a configuração e os logs são removidos. Não pode ser desfeito.",
     "optionDefault": "(padrão)",
     "optionCustom": "Personalizado…",
-    "defaultHint": "(padrão: {value})"
+    "defaultHint": "(padrão: {value})",
+    "fetchModels": "Obter modelos",
+    "fetchingModels": "Obtendo modelos…",
+    "modelsAvailable": "Modelos disponíveis: {count}",
+    "modelsEmpty": "O provedor não retornou nenhum modelo.",
+    "modelsNeedProvider": "Escolha um provedor primeiro.",
+    "modelsHint": "Consulta com o provedor, a chave e a URL base acima. Nada é salvo."
   }
 }

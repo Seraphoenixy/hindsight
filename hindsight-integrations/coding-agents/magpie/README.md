@@ -9,6 +9,17 @@ Start, stop and restart control the management UI through hindsight-embed.
 Open management starts it if needed and opens the full UI in the system browser.
 Both the management UI and the memory service have independent lifecycles.
 
+The page also connects Hindsight's LLM to Magpie. When the plugin loads, it reads
+the model Magpie installed in Codex's config and, if that profile has no manual
+LLM settings, writes the Magpie gateway URL, token and model to the profile.
+The profile's own LLM settings win; automatic sync never overwrites them. The
+first takeover records the replaced values in ~/.hindsight/magpie/llm.json.
+
+Use the model list to follow Magpie's current model or pin one model. Following
+re-applies the model whenever Codex's config changes. A running backend picks
+up a change with "sync and apply"; otherwise the page reports that a restart is
+needed. Automatic sync never restarts a backend.
+
 Loading the plugin only observes state: it does not undo an explicit stop.
 Changing the port option (default 19077) requires the host to reload.
 The host uses coding-agents configuration, including daemon profile and embed

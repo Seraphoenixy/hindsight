@@ -177,7 +177,7 @@ export class RuntimeCore {
     const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
     this.turnCount.set(sessionId, turns);
 
-    const cacheFile = sessionCacheFile(this.harness, sessionId);
+    const cacheFile = sessionCacheFile(this.harness, sessionId, this.cfg.projectScope?.id);
     if (this.deferInitialReflect) {
       // `seedIfCold` has no session id. Transfer its SessionStart decision to the first concrete
       // session here; `buildHookOutput` consumes it exactly once, like hook harnesses do.

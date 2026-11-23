@@ -46,6 +46,7 @@ import {
   readSessionCache,
   sessionCacheFile,
   sessionRootDir,
+  sessionRetainBlocked,
   stashPendingContext,
   takePendingContext,
   writeSessionCache,
@@ -440,7 +441,16 @@ export async function runHook(
   const { prompt: rawPrompt, cwd: rawCwd, sessionId } = spec.parse(ev);
   if (spec.toolHook?.accept(ev)) {
     // Runs on every tool call, so it does nothing but hand over what a prompt hook stashed.
-    const pending = sessionId ? takePendingContext(spec.harness, sessionId) : undefined;
+    const pending = sessionId
+      ? takePendingContext(spec.harness, sessionId, () => {
+          if (!rawCwd) return undefined;
+          const cfg = loadConfig({ harness: spec.harness });
+          const bank = deriveBankIdOrSkip(cfg, rawCwd, spec.harness);
+          if (!bank) return undefined;
+          const resolved = applyBankConfig(cfg, bank, rawCwd).cfg;
+          return resolved.disabled ? undefined : resolved.projectScope?.id;
+        })
+      : undefined;
     if (pending) process.stdout.write(JSON.stringify(spec.toolHook.emit(pending)));
     return;
   }
@@ -455,6 +465,7 @@ export async function runHook(
   let cfg = loadConfig({ harness: spec.harness });
   setLogLevel(cfg.logLevel);
   if (cfg.disabled) {
+    if (cfg.bankMode === "shared" && sessionId) sessionRetainBlocked(spec.harness, sessionId, true);
     log.debug(spec.harness, "hook skipped: disabled");
     return;
   }
@@ -463,7 +474,7 @@ export async function runHook(
   // session's only record of what the user said, and a slow or unreachable server must not be able
   // to cost the turn. Journaling under `retainSessions: false` writes a temp file nothing reads,
   // which is cheaper than threading that decision through two processes to find out.
-  if (spec.journalPrompt) {
+  if (spec.journalPrompt && cfg.bankMode !== "shared") {
     appendJournalTurn(journalPath(spec.harness, sessionId), { role: "user", content: prompt });
   }
 
@@ -473,23 +484,29 @@ export async function runHook(
   const sessionRoot = sessionRootDir(spec.harness, sessionId, cwd);
   const derived = deriveBankIdOrSkip(cfg, cwd, spec.harness, sessionRoot);
   if (derived === null) return; // repository unidentifiable: stay silent rather than invent a bank
-  const resolved = applyBankConfig(cfg, derived, cwd);
+  const resolved = applyBankConfig(cfg, derived, cwd, sessionRoot);
   cfg = resolved.cfg;
   const bankId = resolved.bankId;
+  if (cfg.bankMode === "shared" && sessionId && (cfg.disabled || !cfg.retainSessions))
+    sessionRetainBlocked(spec.harness, sessionId, true);
   if (cfg.disabled) {
     log.debug(spec.harness, "hook skipped: bank disabled via banks override", { bank: bankId });
     return;
+  }
+  if (spec.journalPrompt && cfg.bankMode === "shared" && cfg.retainSessions) {
+    appendJournalTurn(journalPath(spec.harness, sessionId), { role: "user", content: prompt });
   }
   const client = makeClient({
     apiUrl: cfg.apiUrl,
     apiToken: cfg.apiToken,
     bank: bankId,
+    projectScope: cfg.projectScope,
     maxParallelRetains: cfg.maxParallelRetains,
     observationScopes: cfg.observationScopes,
     pageSearchLimit: cfg.pageSearchLimit,
     recallOptions: cfg.recallOptions,
   });
-  const cacheFile = sessionCacheFile(spec.harness, sessionId || "no-session");
+  const cacheFile = sessionCacheFile(spec.harness, sessionId || "no-session", cfg.projectScope?.id);
 
   // Safety net on EVERY harness: on the session's FIRST prompt (no cache file yet), fire the
   // ingestion engine. Normally the shared SessionStart lifecycle already did — the engine's
@@ -508,7 +525,7 @@ export async function runHook(
   }
   let context = output.context;
   if (context && spec.toolHook && sessionId) {
-    stashPendingContext(spec.harness, sessionId, context);
+    stashPendingContext(spec.harness, sessionId, context, cfg.projectScope?.id);
     context = undefined;
   }
   if (context || output.notice) out(context, output.notice);

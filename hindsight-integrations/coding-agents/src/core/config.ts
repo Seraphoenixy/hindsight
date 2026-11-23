@@ -15,7 +15,13 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SEED_LIMIT } from "./seed";
-import { isOptedIn, pathSection } from "./bank";
+import {
+  BankResolutionError,
+  isOptedIn,
+  pathSection,
+  resolveProjectScope,
+  type ProjectScope,
+} from "./bank";
 import { log } from "./log";
 import {
   DEFAULT_OBSERVATION_SCOPES,
@@ -73,11 +79,18 @@ export interface RawConfig {
   /** Daemon mode: `hindsight-embed` profile name, i.e. which local database is used (default
    *  "coding-agent"). Separate profiles keep unrelated setups from sharing memory. */
   daemonProfile?: string;
+  /** Daemon mode: whether a host session may START the daemon when it is down (default true).
+   *  Set false to keep memory working against an already-running server while leaving the
+   *  backend's lifecycle to an explicit action (the management panel's Local settings page).
+   *  This never stops or configures anything; it only suppresses the automatic cold start. */
+  daemonAutoStart?: boolean;
   /** Daemon mode: which `hindsight-embed` release to run via uvx (default "latest"). */
   embedVersion?: string;
   /** Daemon mode: local `hindsight-embed` checkout to run instead of a published release (dev). */
   embedPackagePath?: string;
-  bankId?: string; // EXPLICIT memory bank id — set = static bank; unset = per-repo dynamic (core/bank.ts)
+  bankMode?: "shared" | "project";
+  importChatHistory?: boolean;
+  bankId?: string; // destination bank name
   dynamicBankId?: boolean; // force dynamic resolution even when bankId is set (default: dynamic iff no bankId)
   bankIdTemplate?: string; // dynamic bank id format (default "coding-agent::{gitProject}" — harness-neutral) —
   //   placeholders: {gitProject} {project} {harness} {channel} {user} (see core/bank.ts)
@@ -311,8 +324,12 @@ export interface Config {
   /** Undefined = never told the daemon to auto-exit; see RawConfig above. */
   daemonIdleTimeout?: number;
   daemonProfile: string;
+  daemonAutoStart: boolean;
   embedVersion?: string;
   embedPackagePath?: string;
+  bankMode?: "shared" | "project";
+  projectScope?: ProjectScope;
+  importChatHistory?: boolean;
   bankId?: string; // resolved per-directory via deriveBankIdOrSkip — see core/bank.ts
   dynamicBankId?: boolean;
   bankIdTemplate?: string;
@@ -587,6 +604,7 @@ function resolveAutoInject(raw: RawConfig): AutoInject {
 }
 
 export function resolveConfig(raw: RawConfig = {}): Config {
+  const shared = raw.bankMode === "shared";
   const serverMode = ["cloud", "self-hosted", "daemon"].includes(raw.serverMode as string)
     ? (raw.serverMode as "cloud" | "self-hosted" | "daemon")
     : "daemon";
@@ -605,21 +623,24 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     apiPort,
     daemonIdleTimeout: raw.daemonIdleTimeout,
     daemonProfile: raw.daemonProfile || DEFAULT_DAEMON_PROFILE,
+    daemonAutoStart: raw.daemonAutoStart ?? true,
     embedVersion: raw.embedVersion || undefined,
     embedPackagePath: raw.embedPackagePath || undefined,
+    bankMode: raw.bankMode,
+    importChatHistory: raw.importChatHistory ?? !shared,
     bankId: raw.bankId,
     dynamicBankId: raw.dynamicBankId,
     bankIdTemplate: raw.bankIdTemplate,
     mapPathToBank: raw.mapPathToBank,
     resolveWorktrees: raw.resolveWorktrees,
-    optInOnly: raw.optInOnly ?? false,
+    optInOnly: raw.optInOnly ?? shared,
     // Same shape as retainTags: a config typo must not become a path that silently approves nothing.
     optInPaths: Array.isArray(raw.optInPaths)
       ? raw.optInPaths.filter((p): p is string => typeof p === "string" && p.trim() !== "")
       : [],
     harness: raw.harness ?? "opencode",
     disabled: raw.disabled ?? false,
-    retainSessions: raw.retainSessions ?? true, // write sessions back by default, every harness
+    retainSessions: raw.retainSessions ?? !shared,
     manageBankConfig: raw.manageBankConfig ?? true,
     retainExtractionMode: RETAIN_EXTRACTION_MODES.includes(raw.retainExtractionMode!)
       ? raw.retainExtractionMode!
@@ -660,13 +681,15 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     customPages: resolveCustomPages(raw.customPages),
     autoSeed: raw.autoSeed ?? true,
     seedLimit: raw.seedLimit || DEFAULT_SEED_LIMIT,
-    codebaseSurvey: raw.codebaseSurvey ?? true,
+    codebaseSurvey: raw.codebaseSurvey ?? !shared,
     surveyModel: raw.surveyModel || "haiku",
     surveyBudgetUsd: raw.surveyBudgetUsd || 2,
     surveyRefreshCommits: raw.surveyRefreshCommits ?? 20,
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
-      : "message",
+      : shared
+        ? "none"
+        : "message",
     // Hostile input is a config typo, not an attack: keep only string entries so a stray number or
     // nested object cannot reach the API as a tag and fail the whole retain.
     retainTags: Array.isArray(raw.retainTags)
@@ -763,6 +786,8 @@ const ENV_KEYS = {
   embedVersion: "HINDSIGHT_EMBED_VERSION",
   embedPackagePath: "HINDSIGHT_EMBED_PACKAGE_PATH",
   daemonProfile: "HINDSIGHT_DAEMON_PROFILE",
+  daemonAutoStart: "HINDSIGHT_DAEMON_AUTO_START",
+  bankMode: "HINDSIGHT_BANK_MODE",
   bankId: "HINDSIGHT_BANK_ID",
   dynamicBankId: "HINDSIGHT_DYNAMIC_BANK_ID",
   bankIdTemplate: "HINDSIGHT_BANK_ID_TEMPLATE",
@@ -772,6 +797,7 @@ const ENV_KEYS = {
   harness: "HINDSIGHT_HARNESS",
   disabled: "HINDSIGHT_DISABLED",
   retainSessions: "HINDSIGHT_RETAIN_SESSIONS",
+  importChatHistory: "HINDSIGHT_IMPORT_CHAT_HISTORY",
   maxParallelRetains: "HINDSIGHT_MAX_PARALLEL_RETAINS",
   reflectTimeoutMs: "HINDSIGHT_REFLECT_TIMEOUT_MS",
   reflectToolTimeoutMs: "HINDSIGHT_REFLECT_TOOL_TIMEOUT_MS",
@@ -810,6 +836,7 @@ const ENV_BOOLEANS = new Set<keyof RawConfig>([
   "optInOnly",
   "disabled",
   "retainSessions",
+  "importChatHistory",
   "autoReflect",
   "autoSeed",
   "codebaseSurvey",
@@ -865,8 +892,27 @@ export function readEnvConfig(env: NodeJS.ProcessEnv = process.env): RawConfig {
 export function loadConfig(opts: LoadOptions | string = {}): Config {
   const o: LoadOptions = typeof opts === "string" ? { path: opts } : opts; // legacy: loadConfig(path)
   // Env first so the FILE wins on any field it sets.
-  const withEnv = applyLayer({}, readEnvConfig(), o.harness);
-  const raw = applyLayer(withEnv, readRaw(o.path ?? CONFIG_PATH), o.harness);
+  const env = readEnvConfig();
+  const file = readRaw(o.path ?? CONFIG_PATH);
+  const global = mergeRaw(env, file);
+  const raw = applyLayer(applyLayer({}, env, o.harness), file, o.harness);
+  const mode =
+    global.bankMode === "shared" || global.bankMode === "project"
+      ? global.bankMode
+      : global.bankIdTemplate || global.dynamicBankId === true || global.mapPathToBank
+        ? "project"
+        : "shared";
+  raw.bankMode = mode;
+  if (mode === "shared") {
+    Object.assign(raw, {
+      bankId: global.bankId,
+      apiUrl: global.apiUrl,
+      apiToken: global.apiToken,
+      apiPort: global.apiPort,
+      daemonProfile: global.daemonProfile,
+      serverMode: global.serverMode,
+    });
+  }
   // The harness that ASKED is the correct fallback for an unset `harness` field — not a hardcoded
   // "opencode", whose silent default misfiled every other harness's background seed into an
   // `opencode::<project>` bank (#3247). An explicit `harness:` in the config file still wins.
@@ -877,6 +923,7 @@ export function loadConfig(opts: LoadOptions | string = {}): Config {
 /** Bank-resolution fields are meaningless inside a `banks.<id>` section (they can't change the id
  *  that selected it) — strip them so a typo there can't silently re-route memory. */
 const BANK_OVERRIDE_EXCLUDED = [
+  "bankMode",
   "bankId",
   "bankIdTemplate",
   "mapPathToBank",
@@ -899,7 +946,8 @@ export function applyBankConfig(
   resolvedId: string,
   /** The directory the bank was resolved FROM. Supplying it enforces `optInOnly`; every entry
    *  point already has it to hand, having just passed it to bank resolution. */
-  directory?: string
+  directory?: string,
+  sessionRoot?: string
 ): { cfg: Config; bankId: string } {
   // Rides the `disabled` gate every entry point already checks after bank resolution, rather than
   // adding a second thing eight call sites must remember — and that gate is known to stop the run
@@ -907,6 +955,37 @@ export function applyBankConfig(
   if (directory !== undefined && !isOptedIn(cfg, directory))
     return { cfg: { ...cfg, disabled: true }, bankId: resolvedId };
   const byPath = directory === undefined ? undefined : pathSection(cfg, cfg.paths, directory);
+  if (cfg.bankMode === "shared") {
+    if (cfg.disabled) return { cfg, bankId: resolvedId };
+    try {
+      const projectScope =
+        directory === undefined ? undefined : resolveProjectScope(directory, sessionRoot);
+      const bank = overrideFields(cfg.banks[resolvedId] ?? {});
+      const project = overrideFields(byPath ?? {});
+      for (const key of [
+        "serverMode",
+        "apiUrl",
+        "apiPort",
+        "apiToken",
+        "daemonProfile",
+        "bank",
+        "manageBankConfig",
+        "defaultBankConfig",
+        "retainExtractionMode",
+      ])
+        delete project[key];
+      delete bank.bank;
+      const disabled = bank.disabled === true || project.disabled === true;
+      const patch = { ...bank, ...project } as RawConfig;
+      return {
+        cfg: { ...cfg, ...resolvePartial(cfg, patch), projectScope, disabled },
+        bankId: resolvedId,
+      };
+    } catch (error) {
+      if (!(error instanceof BankResolutionError)) throw error;
+      return { cfg: { ...cfg, disabled: true }, bankId: resolvedId };
+    }
+  }
   if (byPath) {
     // A path entry never renames the bank: only `banks.<id>` may, below.
     const { bank: _rename, ...rest } = overrideFields(byPath);

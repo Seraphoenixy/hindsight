@@ -407,7 +407,14 @@ export async function startCodebaseSurvey(
     const { cfg, bankId } = resolveHostConfig(harness, repoDir);
     if (cfg.disabled) return false;
     const key = createHash("sha256")
-      .update(JSON.stringify([cfg.apiUrl.replace(/\/+$/, ""), cfg.apiToken ?? "", bankId]))
+      .update(
+        JSON.stringify([
+          cfg.apiUrl.replace(/\/+$/, ""),
+          cfg.apiToken ?? "",
+          bankId,
+          ...(cfg.projectScope ? [cfg.projectScope.id] : []),
+        ])
+      )
       .digest("hex");
     const leaseDir = opts.lease?.dir ?? join(tmpdir(), "hindsight-coding-agent", "surveys");
     const lease = acquireLease(leaseDir, key, opts.lease?.staleMs ?? LEASE_STALE_MS);
@@ -415,7 +422,7 @@ export async function startCodebaseSurvey(
     const attemptsFile = join(
       leaseDir,
       `attempts-${createHash("sha256")
-        .update(JSON.stringify([key, repoDir]))
+        .update(JSON.stringify([key, cfg.projectScope?.id ?? repoDir]))
         .digest("hex")}.json`
     );
     const attempts = opts.sha ? surveyAttempts(attemptsFile, opts.sha) : 0;

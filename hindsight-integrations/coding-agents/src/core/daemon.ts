@@ -37,6 +37,8 @@
  * was removed after it killed in-flight requests (#3903), so `daemonIdleTimeout` is inert.
  */
 import { execFileSync, spawn as realSpawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config";
@@ -52,6 +54,55 @@ import { nodeBinary } from "./util";
  */
 export const DAEMON_WAIT_SESSION_START_MS = 12_000;
 export const DAEMON_WAIT_RETAIN_MS = 40_000;
+
+/** Where `hindsight-embed` keeps a profile's `.env`. The unnamed default is `~/.hindsight/embed`. */
+export function daemonProfileEnvPath(profile: string): string {
+  return profile
+    ? join(homedir(), ".hindsight", "profiles", `${profile}.env`)
+    : join(homedir(), ".hindsight", "embed");
+}
+
+/**
+ * Auto-start only a profile the user has already provisioned.
+ *
+ * `@vectorize-io/hindsight-all` creates a missing profile on start, so without this gate a host
+ * merely opening a session would invent a backend with defaults nobody chose. The management
+ * panel writes this file when settings are saved, and so does an explicit
+ * `hindsight-embed profile create`. Until then the plugin stays inert and explains how to
+ * configure it instead of starting a service that cannot serve memory.
+ */
+export function daemonProfileProvisioned(cfg: Config): boolean {
+  return existsSync(daemonProfileEnvPath(cfg.daemonProfile));
+}
+
+const autoStartDeclined = new Set<string>();
+
+/** Say why a cold start was suppressed, once per profile/reason — not on every session. */
+function noteAutoStartDeclined(
+  cfg: Config,
+  harness: string,
+  reason: "disabled" | "unprovisioned"
+): void {
+  const key = `${reason}:${cfg.daemonProfile}`;
+  if (autoStartDeclined.has(key)) return;
+  autoStartDeclined.add(key);
+  if (reason === "disabled") {
+    log.info(
+      harness,
+      "Hindsight daemon auto-start is disabled (daemonAutoStart=false); using an already-running server only"
+    );
+  } else {
+    log.warn(
+      harness,
+      `Hindsight local memory is not configured yet — open the management panel's Local settings ` +
+        `to choose a provider and start it (profile "${cfg.daemonProfile}")`
+    );
+  }
+  diag(harness, reason === "disabled" ? "daemon_autostart_disabled" : "daemon_profile_missing", {
+    profile: cfg.daemonProfile,
+    path: daemonProfileEnvPath(cfg.daemonProfile),
+  });
+}
 
 /** Probe a base URL's /health. Never throws — an unreachable server is just "not running". */
 export async function isServerHealthy(baseUrl: string, timeoutMs = 2_000): Promise<boolean> {
@@ -272,6 +323,14 @@ export async function ensureDaemon(
 ): Promise<void> {
   if (cfg.serverMode !== "daemon") return;
   if (await isServerHealthy(cfg.apiUrl)) return;
+  if (!cfg.daemonAutoStart) {
+    noteAutoStartDeclined(cfg, harness, "disabled");
+    return;
+  }
+  if (!daemonProfileProvisioned(cfg)) {
+    noteAutoStartDeclined(cfg, harness, "unprovisioned");
+    return;
+  }
   if (!preflightDaemon(cfg, harness)) return;
 
   const waitMs = opts.waitMs ?? 0;

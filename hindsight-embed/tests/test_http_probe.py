@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from hindsight_embed._http_probe import ProbeResponse, aprobe_get, probe_get
+from hindsight_embed._http_probe import ProbeResponse, aprobe_get, probe_first, probe_get
 from hindsight_embed.daemon_embed_manager import DaemonEmbedManager
 from hindsight_embed.profile_manager import ProfileManager
 
@@ -65,6 +65,24 @@ class TestProbe:
         with serve(reply(200, {"status": "ok"})) as stub:
             resp = asyncio.run(aprobe_get(f"{stub.base_url}/api/health", read_timeout=2.0))
         assert resp == ProbeResponse(status_code=200, text='{"status": "ok"}')
+
+    def test_first_answer_wins_without_waiting_for_a_dead_address(self):
+        dead = f"http://127.0.0.1:{closed_port()}/api/liveness"
+        with serve(reply(200, {"status": "ok"})) as stub:
+            index, resp = probe_first([dead, f"{stub.base_url}/api/liveness"], read_timeout=2.0, connect_timeout=2.0)
+        assert index == 1
+        assert resp is not None and resp.status_code == 200
+
+    def test_non_200_is_returned_to_its_caller(self):
+        """The caller distinguishes an old panel's 404 from a dead port."""
+        with serve(reply(404, text="<html>missing</html>")) as stub:
+            index, resp = probe_first([f"{stub.base_url}/api/liveness"], read_timeout=2.0, connect_timeout=2.0)
+        assert index == 0
+        assert resp is not None and resp.status_code == 404
+
+    def test_first_is_none_when_nothing_answers(self):
+        urls = [f"http://127.0.0.1:{closed_port()}/api/liveness" for _ in range(2)]
+        assert probe_first(urls, read_timeout=0.2, connect_timeout=0.2) == (0, None)
 
     def test_leaves_the_callers_event_loop_untouched(self):
         """``asyncio.run`` clears the calling thread's current loop; a probe must not.

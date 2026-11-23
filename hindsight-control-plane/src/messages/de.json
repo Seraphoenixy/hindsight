@@ -2816,6 +2816,7 @@
     "start": "Starten",
     "stop": "Stoppen",
     "restart": "Neu starten",
+    "openMemory": "Speicher öffnen",
     "deleteProfile": "Profil löschen",
     "failed": "Fehlgeschlagen",
     "savedRestart": "Gespeichert. Daemon neu starten, damit es wirkt.",
@@ -2859,6 +2860,12 @@
     "deleteConfirm": "Profil „{name}“ löschen? Der Daemon wird gestoppt und Konfiguration und Logs werden entfernt. Nicht umkehrbar.",
     "optionDefault": "(Standard)",
     "optionCustom": "Benutzerdefiniert…",
-    "defaultHint": "(Standard: {value})"
+    "defaultHint": "(Standard: {value})",
+    "fetchModels": "Modelle abrufen",
+    "fetchingModels": "Modelle werden abgerufen…",
+    "modelsAvailable": "Verfügbare Modelle: {count}",
+    "modelsEmpty": "Der Anbieter hat keine Modelle zurückgegeben.",
+    "modelsNeedProvider": "Wähle zuerst einen Anbieter.",
+    "modelsHint": "Fragt mit Anbieter, Schlüssel und Basis-URL oben ab. Es wird nichts gespeichert."
   }
 }

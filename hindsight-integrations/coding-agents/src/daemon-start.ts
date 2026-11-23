@@ -7,7 +7,13 @@
  * daemon answers /health. It writes only to the plugin log, so its stdio can be discarded.
  */
 import { type Config, loadConfig } from "./core/config";
-import { DAEMON_CONFIG_ENV, daemonEnv, isServerHealthy, preflightDaemon } from "./core/daemon";
+import {
+  DAEMON_CONFIG_ENV,
+  daemonEnv,
+  daemonProfileProvisioned,
+  isServerHealthy,
+  preflightDaemon,
+} from "./core/daemon";
 import { diag } from "./core/diag";
 import { log, setLogLevel } from "./core/log";
 
@@ -24,6 +30,15 @@ async function main(): Promise<void> {
   setLogLevel(cfg.logLevel);
 
   if (cfg.serverMode !== "daemon") return;
+  if (!cfg.daemonAutoStart) return;
+  if (!daemonProfileProvisioned(cfg)) {
+    log.warn(
+      harness,
+      `Hindsight local memory is not configured yet (profile "${cfg.daemonProfile}") — ` +
+        "open the management panel's Local settings to configure and start it"
+    );
+    return;
+  }
   if (!preflightDaemon(cfg, harness)) return;
   // Several sessions can race to start one daemon; whoever loses simply finds it healthy.
   if (await isServerHealthy(cfg.apiUrl)) {

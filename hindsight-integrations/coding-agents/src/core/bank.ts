@@ -27,7 +27,8 @@
  * hooks skip the session (`deriveBankIdOrSkip`). Guessing there is how a linked worktree ended up
  * with a permanent bank of its own (#3950): a skipped session is recoverable, a scattered one is not.
  */
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize, sep } from "node:path";
 import { diag } from "./diag";
@@ -36,6 +37,7 @@ import { log } from "./log";
 import { applyTemplate } from "./template";
 
 export interface BankConfig {
+  bankMode?: "shared" | "project";
   bankId?: string;
   dynamicBankId?: boolean;
   bankIdTemplate?: string;
@@ -46,6 +48,7 @@ export interface BankConfig {
 }
 
 const DEFAULT_BANK_NAME = "coding";
+export const SHARED_BANK_NAME = "工程知识与经验";
 // Harness-NEUTRAL default so every coding agent (Claude, Codex, Cursor, opencode) shares ONE bank
 // per repo — switch agents, keep your memory. Namespaced with `coding-agent::` to identify these
 // banks and avoid collisions with other Hindsight banks. Deliberately NOT `{harness}::…` (that would
@@ -195,6 +198,32 @@ function gitProjectName(directory: string, resolveWorktrees: boolean, sessionRoo
   return dirName(sessionRoot || directory);
 }
 
+export interface ProjectScope {
+  id: string;
+  name: string;
+}
+
+/** Use the canonical main checkout path as identity, keeping the readable name separate. */
+export function resolveProjectScope(directory: string, sessionRoot?: string): ProjectScope {
+  const originalRoot =
+    sessionRoot && isWithin(normalize(directory), normalize(sessionRoot)) ? sessionRoot : undefined;
+  const project = resolveProjectRoot(nearestExistingDir(directory));
+  if (project.status === "failed")
+    throw new BankResolutionError(`git probe failed for ${directory} (${project.reason})`);
+  const root = project.status === "resolved" ? project.root : originalRoot || directory;
+  let canonical = normalize(root);
+  try {
+    canonical = realpathSync.native(canonical);
+  } catch {
+    // A directory can disappear between the Git probe and realpath.
+  }
+  if (process.platform === "win32") canonical = canonical.toLowerCase();
+  return {
+    id: createHash("sha256").update(canonical).digest("hex").slice(0, 24),
+    name: dirName(root),
+  };
+}
+
 /** A configured directory, `~`-expanded and normalised, without a trailing separator. */
 function configuredDir(dir: string): string {
   const expanded = dir === "~" || dir.startsWith("~/") ? join(homedir(), dir.slice(1)) : dir;
@@ -276,7 +305,7 @@ export function isOptedIn(config: BankConfig, directory: string): boolean {
     )
   )
     return true;
-  const pathMap = config.mapPathToBank;
+  const pathMap = config.bankMode === "shared" ? undefined : config.mapPathToBank;
   return Boolean(pathMap && directories.some((candidate) => mapLookup(pathMap, candidate)));
 }
 
@@ -319,6 +348,7 @@ export function deriveBankId(
    *  entry this directory inherits (lookupDirectories). */
   sessionRoot?: string
 ): string {
+  if (config.bankMode === "shared") return config.bankId || SHARED_BANK_NAME;
   const mapped = mappedBank(config, directory, sessionRoot);
   if (mapped) return mapped;
 

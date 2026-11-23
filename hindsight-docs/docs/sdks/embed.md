@@ -88,7 +88,7 @@ Profile configuration and daemon control live in the **control plane**, on its
 `/local` page — the same application that shows your memory banks:
 
 ```bash
-# Start the control plane (it starts the daemon first), then open <ui-url>/local
+# Start the control plane only, then open <ui-url>/local
 hindsight-embed ui start
 
 # Or start it and open that page in one step
@@ -210,7 +210,7 @@ machine's profiles, their `.env`, and the daemon, and it drives the operations
 below through this CLI — one UI, one port, no second process to supervise.
 
 ```bash
-# Start the control plane (starts the daemon first), then open <ui-url>/local
+# Start the control plane only, then open <ui-url>/local
 hindsight-embed ui start
 
 # Start it and open the local settings page in the browser
@@ -233,6 +233,7 @@ available.
 ```bash
 hindsight-embed ops profiles                  # every profile with daemon status
 hindsight-embed ops settings -p coding-agent  # grouped settings catalog + values
+echo '{"provider":"groq","api_key":null}' | hindsight-embed ops models  # ids the provider advertises; nothing saved
 hindsight-embed ops config                    # editable config (API key masked)
 hindsight-embed ops env                       # raw .env, verbatim
 hindsight-embed ops paths                     # files, database URL, addresses

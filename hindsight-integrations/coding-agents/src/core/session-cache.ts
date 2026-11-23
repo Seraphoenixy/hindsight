@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PageRef } from "./page-injection";
@@ -21,8 +21,26 @@ export interface SessionCache {
   pages?: { atTurn: number; list: PageRef[] };
 }
 
-export function sessionCacheFile(harness: string, sessionId: string): string {
-  return join(tmpdir(), `hindsight-${harness}`, `${sessionId}.json`);
+export function sessionCacheFile(harness: string, sessionId: string, projectId?: string): string {
+  return join(
+    tmpdir(),
+    `hindsight-${harness}`,
+    `${sessionId}${projectId ? `-${projectId}` : ""}.json`
+  );
+}
+
+/** A transcript touching an unapproved scope must not be uploaded as a whole later. */
+export function sessionRetainBlocked(harness: string, sessionId: string, block = false): boolean {
+  const path = join(tmpdir(), `hindsight-${harness}`, `${sessionId}.retain-blocked`);
+  if (block) {
+    try {
+      if (!existsSync(path)) writeFileAtomic(path, "");
+    } catch {
+      // Do not let a local cache failure interrupt the host hook.
+    }
+    return true;
+  }
+  return existsSync(path);
 }
 
 export function readSessionCache(cacheFile: string): SessionCache {
@@ -74,7 +92,12 @@ function pendingContextFile(harness: string, sessionId: string): string {
 
 /** Add a block to the session's pending context. A block already waiting is not added again, so a
  *  session that goes several turns without a tool call is not handed the same roster N times. */
-export function stashPendingContext(harness: string, sessionId: string, context: string): void {
+export function stashPendingContext(
+  harness: string,
+  sessionId: string,
+  context: string,
+  projectId?: string
+): void {
   const path = pendingContextFile(harness, sessionId);
   let existing = "";
   try {
@@ -82,9 +105,11 @@ export function stashPendingContext(harness: string, sessionId: string, context:
   } catch {
     /* nothing pending yet */
   }
+  const prefix = projectId ? `project=${projectId}\n` : "";
+  if (prefix) existing = existing.startsWith(prefix) ? existing.slice(prefix.length) : "";
   if (existing.includes(context)) return;
   try {
-    writeFileAtomic(path, existing ? `${existing}\n\n${context}` : context);
+    writeFileAtomic(path, prefix + (existing ? `${existing}\n\n${context}` : context));
   } catch {
     /* best-effort, like the session cache */
   }
@@ -92,12 +117,20 @@ export function stashPendingContext(harness: string, sessionId: string, context:
 
 /** Claim and clear the session's pending context. The rename is the claim: tool hooks can run in
  *  parallel, and only the one whose rename succeeds delivers the block. */
-export function takePendingContext(harness: string, sessionId: string): string | undefined {
+export function takePendingContext(
+  harness: string,
+  sessionId: string,
+  projectForTool?: () => string | undefined
+): string | undefined {
   const path = pendingContextFile(harness, sessionId);
   const claimed = `${path}.${process.pid}.claim`;
   try {
     renameSync(path, claimed);
-    return readFileSync(claimed, "utf8") || undefined;
+    const pending = readFileSync(claimed, "utf8");
+    if (!pending.startsWith("project=")) return pending || undefined;
+    const newline = pending.indexOf("\n");
+    if (newline < 0 || pending.slice(8, newline) !== projectForTool?.()) return undefined;
+    return pending.slice(newline + 1);
   } catch {
     return undefined;
   } finally {

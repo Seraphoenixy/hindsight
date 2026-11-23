@@ -4810,6 +4810,19 @@ class HindsightConfig:
 
     def validate(self) -> None:
         """Validate configuration values and raise errors for invalid combinations."""
+        # A daemon whose provider needs a key but has none cannot serve a single
+        # memory operation. Fail at startup so the control plane reports an
+        # unconfigured backend instead of presenting a healthy shell that errors
+        # on every retain/recall/reflect.
+        from .provider_auth import requires_api_key
+
+        if requires_api_key(self.llm_provider) and not (self.llm_api_key or "").strip():
+            raise ValueError(
+                f"{ENV_LLM_API_KEY} is required for LLM provider '{self.llm_provider}'. "
+                "Configure it in the profile before starting the daemon, or choose a "
+                "provider that authenticates out-of-band (ollama, llamacpp, openai-codex, ...)."
+            )
+
         for operation in DECISION_MODEL_OPERATIONS:
             self.decision_model_config(operation)  # raises on an unknown provider or a missing key
         if self.kb_reranker_url and not self.kb_reranker_model:

@@ -168,6 +168,70 @@ def test_ui_status_uses_the_selected_profiles_port(
     assert "29100" in capsys.readouterr().out
 
 
+def test_ui_start_opens_the_panel_without_touching_the_daemon(
+    profiles: ProfileManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profiles.set_active_profile("work")
+    monkeypatch.setattr(daemon_client, "is_ui_running", Mock(return_value=False))
+    monkeypatch.setattr(daemon_client, "is_daemon_running", Mock(return_value=False))
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "ensure_daemon_running", ensure)
+    start_ui = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "start_ui", start_ui)
+
+    invoke_cli(monkeypatch, ["ui", "start"])
+
+    ensure.assert_not_called()
+    start_ui.assert_called_once_with("work", None, "0.0.0.0", check_running=False)
+
+
+def test_ui_start_with_daemon_starts_it_when_needed(profiles: ProfileManager, monkeypatch: pytest.MonkeyPatch) -> None:
+    profiles.set_active_profile("work")
+    monkeypatch.setattr(daemon_client, "is_ui_running", Mock(return_value=False))
+    monkeypatch.setattr(daemon_client, "is_daemon_running", Mock(return_value=False))
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "ensure_daemon_running", ensure)
+    start_ui = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "start_ui", start_ui)
+
+    invoke_cli(monkeypatch, ["ui", "start", "--with-daemon"])
+
+    ensure.assert_called_once()
+    start_ui.assert_called_once_with("work", None, "0.0.0.0", check_running=False)
+
+
+def test_ui_start_with_daemon_reuses_a_running_daemon(
+    profiles: ProfileManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profiles.set_active_profile("work")
+    monkeypatch.setattr(daemon_client, "is_ui_running", Mock(return_value=False))
+    monkeypatch.setattr(daemon_client, "is_daemon_running", Mock(return_value=True))
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "ensure_daemon_running", ensure)
+    start_ui = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "start_ui", start_ui)
+
+    invoke_cli(monkeypatch, ["ui", "start", "--with-daemon"])
+
+    ensure.assert_not_called()
+    start_ui.assert_called_once_with("work", None, "0.0.0.0", check_running=False)
+
+
+def test_ui_start_no_daemon_is_a_compatibility_no_op(profiles: ProfileManager, monkeypatch: pytest.MonkeyPatch) -> None:
+    profiles.set_active_profile("work")
+    monkeypatch.setattr(daemon_client, "is_ui_running", Mock(return_value=False))
+    monkeypatch.setattr(daemon_client, "is_daemon_running", Mock(return_value=False))
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "ensure_daemon_running", ensure)
+    start_ui = Mock(return_value=True)
+    monkeypatch.setattr(daemon_client, "start_ui", start_ui)
+
+    invoke_cli(monkeypatch, ["ui", "start", "--no-daemon"])
+
+    ensure.assert_not_called()
+    start_ui.assert_called_once_with("work", None, "0.0.0.0", check_running=False)
+
+
 def test_configure_uses_the_creation_target_even_with_an_env_profile(
     profiles: ProfileManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:

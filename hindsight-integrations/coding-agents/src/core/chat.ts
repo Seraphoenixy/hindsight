@@ -327,6 +327,7 @@ async function writeSession(
 ): Promise<void> {
   if (!turns.length) return;
   const refId = `conversation:${sessionId}`;
+  const memoryScope = client.memoryScope ?? client.bank;
   let cursor = cursors?.read(sessionId);
   // A "yes" is remembered on the cursor: hook harnesses run a fresh process per Stop, so without it
   // every turn re-asked, and one slow or failed probe turned that turn's append into a full replace
@@ -336,15 +337,15 @@ async function writeSession(
     Boolean(cursors) && (cursor?.appendSupported === true || (await supportsAppend(client)));
   // The session followed its working folder into another bank (#5812): from here on its turns go
   // there, and nothing the other bank's document holds or still owes is this bank's business.
-  const moved = Boolean(cursor && cursor.bank !== client.bank);
+  const moved = Boolean(cursor && cursor.bank !== memoryScope);
   if (moved)
     log.warn(harness ?? "", "session moved to another bank mid-session", {
       session: sessionId,
       from: cursor?.bank,
-      to: client.bank,
+      to: memoryScope,
       atTurn: cursor?.turns,
     });
-  const segments = advanceSegments(cursor, client.bank);
+  const segments = advanceSegments(cursor, memoryScope);
   // Only an append can build on a lost write; a replace already re-sends everything. The ops of a
   // bank the session just left would be looked up in this one, so they are not checked.
   let ops: string[] = [];
@@ -352,7 +353,7 @@ async function writeSession(
     ({ cursor, ops } = await settleOps(client, cursor));
   const plan = planRetain(turns, cursor, {
     appendSupported,
-    bank: client.bank,
+    bank: memoryScope,
     path: transcriptPath,
   });
   // Recorded whenever the probe ran, so a deployment where append never activates shows up in the
@@ -377,7 +378,7 @@ async function writeSession(
   /** Identity of ONE payload: a resubmission of the same bytes is collapsed server-side into the
    *  original operation instead of extracting (or appending) twice. */
   const opId = (mode: string, content: string) =>
-    uuidV5(`${client.bank}\n${refId}\n${mode}\n${content}`);
+    uuidV5(`${memoryScope}\n${refId}\n${mode}\n${content}`);
   const submit = (content: string, operationId: string, append: boolean) =>
     client.retain(
       content,
@@ -415,7 +416,7 @@ async function writeSession(
   const next = {
     turns: turns.length,
     fingerprint: fingerprintTurns(turns, turns.length),
-    bank: client.bank,
+    bank: memoryScope,
     ...(paths ? { paths } : {}),
     ...(segments ? { segments } : {}),
     ...(appendSupported ? { appendSupported: true } : {}),
@@ -435,7 +436,7 @@ async function writeSession(
   if (plan.mode === "replace") {
     // Only this bank's share: a session that moved here keeps its earlier turns in the bank they
     // were written to (#5812). A move with nothing new since has no share to start a document with.
-    const share = bankTurns(turns, segments, client.bank);
+    const share = bankTurns(turns, segments, memoryScope);
     if (!share.length) return;
     const content = renderSessionJsonl(refId, share, startTs);
     // Nothing to buffer: replace is idempotent by construction, so a later one re-establishes the

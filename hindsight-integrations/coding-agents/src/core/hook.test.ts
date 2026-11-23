@@ -871,6 +871,7 @@ describe("runHook prompt cleaning (#6488)", () => {
   };
 
   beforeEach(() => {
+    vi.stubEnv("HINDSIGHT_BANK_MODE", "project");
     vi.stubEnv("HINDSIGHT_AUTO_SEED", "false");
     vi.stubEnv("HINDSIGHT_API_URL", "http://127.0.0.1:9");
     vi.stubEnv("HINDSIGHT_BANK_ID", "hs-test-6488");

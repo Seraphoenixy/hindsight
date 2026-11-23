@@ -335,6 +335,24 @@ export function getSettings(profile: string): Promise<OpsSettings> {
   return readCached("settings", profileArgs(normalizeProfile(profile)));
 }
 
+export interface ModelsView {
+  provider: string;
+  base_url: string;
+  models: string[];
+}
+
+export interface ListModelsRequest {
+  provider?: string | null;
+  api_key?: string | null;
+  base_url?: string | null;
+}
+
+export function listModels(profile: string, body: ListModelsRequest): Promise<ModelsView> {
+  // Live provider call, not a cached read: the answer depends on the form's
+  // unsaved values and on what the provider serves right now.
+  return runOps("models", profileArgs(normalizeProfile(profile)), body);
+}
+
 interface OpsEnvFile {
   name: string;
   display_name: string;

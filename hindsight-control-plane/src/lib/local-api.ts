@@ -93,6 +93,19 @@ export interface SettingsView {
   unset_required: string[];
 }
 
+export interface ModelsView {
+  provider: string;
+  base_url: string;
+  models: string[];
+}
+
+export interface ListModelsRequest {
+  provider: string;
+  /** A string is used as sent; null means "use the saved profile key". */
+  api_key: string | null;
+  base_url: string;
+}
+
 export interface ProfileConfigView {
   name: string;
   display_name: string;
@@ -172,6 +185,9 @@ export const localApi = {
     request<SettingsView>(token, "POST", `/profiles/${profileSegment(profile)}/settings`, {
       values,
     }),
+
+  listModels: (token: string, profile: string, body: ListModelsRequest) =>
+    request<ModelsView>(token, "POST", `/profiles/${profileSegment(profile)}/models`, body),
 
   config: (token: string, profile: string) =>
     request<ProfileConfigView>(token, "GET", `/profiles/${profileSegment(profile)}/config`),

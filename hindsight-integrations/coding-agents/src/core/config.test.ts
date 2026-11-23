@@ -43,6 +43,7 @@ describe("loadConfig layering", () => {
     writeJson(globalCfg, {
       serverMode: "self-hosted",
       apiUrl: "http://x:1",
+      bankMode: "project",
       bankId: "shared",
       harnesses: {
         "claude-code": { bankId: "claude-bank" },

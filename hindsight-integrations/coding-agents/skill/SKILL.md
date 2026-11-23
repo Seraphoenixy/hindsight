@@ -14,23 +14,21 @@ explains what happens automatically, which tools you have, and how to configure 
 
 ## What happens automatically (no action needed)
 
-- **Per-repo memory bank**: each repository resolves to a bank (shown in the session banner:
-  `↳ memory bank “coding-agent::<repo>”`). Worktrees share the main repo's bank.
-- **Ingestion builds itself**: on first open, the bank is seeded from recent commit messages and a
-  read-only codebase survey; every session start, a background engine tops it up (new commits, new
-  conversations) and keeps 5 pages current. There is NO ingest command to run.
-- **Session synthesis**: by default, the first prompt of a session triggers one deep memory
-  synthesis (`reflect`) injected into context. `autoInject` switches the source: `pages` (page
-  search hits), `recall` (recalled observations), or `none` (nothing injected; the agent
-  searches the pages first and reflects only when they are too shallow).
-- **Write-back**: the session transcript is retained into the bank automatically at session end
-  (per-turn on opencode). The user never needs to "save" a conversation.
+- **Shared memory bank**: approved projects use `工程知识与经验` by default.
+  Worktrees share their main checkout's project scope within the bank.
+- **Project approval**: projects listed in `optInPaths` can initialize their pages.
+  Git history, codebase surveys, session write-back, and historical session import
+  have separate controls and default to off in shared mode.
+- **Session synthesis**: the first prompt can inject context via `autoInject`. Recall and
+  Reflect default to the current project plus explicitly shared references.
+- **Cross-project lookup**: pass `all_projects: true` to page search or Reflect when the
+  task spans projects. Pass `shared: true` when ingesting a reference intended for every project.
 
 ## Storing things deliberately
 
 When the user says "store this in hindsight" / "remember this":
 
-- The **current conversation** is captured automatically at session end — say so; no tool needed.
+- The **current conversation** is captured at session end if session write-back is enabled. Otherwise, use `hindsight_ingest_document` for the notes the user wants to retain.
 - An **external document, notes, or durable findings** → `hindsight_ingest_document(title, content)`.
 - A **new feature/initiative being started** → `hindsight_capture_initiative(title, summary)`,
   right after the plan is agreed and before code is written.
@@ -44,7 +42,7 @@ When the user says "store this in hindsight" / "remember this":
 - `hindsight_search_pages(query)` — FIRST STOP for project questions (components,
   conventions, past decisions, initiatives). Server-side hybrid search, fast.
 - `hindsight_read_page(page_id)` / `hindsight_list_pages` — read pages fully.
-- `hindsight_reflect(query)` — deep reasoning over the whole memory for WHY questions and exact
+- `hindsight_reflect(query)` — deep reasoning over scoped memory for WHY questions and exact
   decided values; slower (seconds), use deliberately.
 - Credit visibly whenever memory informs an answer: start that part with
   `🧠 From Hindsight memory (<page>): …` — and never credit memory that didn't contribute.
@@ -97,8 +95,14 @@ environment carries over unchanged:
 | `apiPort`           | `HINDSIGHT_API_PORT`            | `9077`         | port the local daemon listens on                           |
 | `daemonIdleTimeout` | `HINDSIGHT_DAEMON_IDLE_TIMEOUT` | —              | deprecated, ignored: the daemon no longer exits on its own |
 | `daemonProfile`     | `HINDSIGHT_DAEMON_PROFILE`      | `coding-agent` | which local database it uses                               |
+| `daemonAutoStart`   | `HINDSIGHT_DAEMON_AUTO_START`   | `true`         | start the daemon on session start; `false` only uses an already-running server |
 | `embedVersion`      | `HINDSIGHT_EMBED_VERSION`       | `latest`       | which `hindsight-embed` release to run                     |
 | `embedPackagePath`  | `HINDSIGHT_EMBED_PACKAGE_PATH`  | —              | run a local checkout instead (development)                 |
+
+Auto-start only ever reuses a profile that already exists; a host opening a session never creates
+one. Configure the profile once — the management panel's Local settings page, or
+`hindsight-embed profile create` — and every later session starts the same daemon. Set
+`daemonAutoStart: false` to leave the daemon's lifecycle entirely to that explicit surface.
 
 Any `HINDSIGHT_API_*` variable you export is forwarded to the daemon, so server-side settings need
 no equivalent here.
@@ -152,32 +156,37 @@ client is actually using.
 
 ### Opt-in only
 
-By default every project gets memory — that is what makes the plugin zero-setup. If you would
-rather nothing be remembered until you say so, turn memory off everywhere and name the projects
-that may use it:
+The plugin defaults to one `工程知识与经验` bank. Only paths listed in
+`optInPaths` get project memory by default. Linked worktrees inherit approval from the
+main checkout. Approving a directory prefix also approves repositories under it.
 
 ```jsonc
 {
-  "optInOnly": true,
   "optInPaths": ["~/work/client-x", "~/oss"],
+  "paths": {
+    "~/work/client-x": { "gitIngest": "message", "retainSessions": true }
+  }
 }
 ```
 
-Anything outside those paths is **inert**: no bank is created, nothing is retained, no seed runs,
-and the agent behaves exactly as it would without the plugin. Approving costs nothing else —
-`optInPaths` says _which projects_, not _which bank_, so an approved repo keeps its usual
-`coding-agent::{gitProject}` name. Paths are prefixes, so approving `~/work` approves every repo
-under it while each still gets its own bank.
+Git history, codebase surveys, current session write-back and historical session import are
+off by default in shared mode. Enable them with `gitIngest`, `codebaseSurvey`,
+`retainSessions`, and `importChatHistory` respectively. Historical session import also
+requires `retainSessions`. The first approved session can initialize the shared bank and
+the project's default pages. `autoSeed: false` disables that automatic initialization.
+An explicit document write can still create the bank.
 
-A `mapPathToBank` entry counts as opted in too, since routing a path to a named bank already
-declares that project. A bare `bankId` does not: it names a bank rather than a project, so it
-cannot say which work may be remembered, and a privacy switch has to fail closed.
+Shared mode uses project-scoped writes, consolidation, Recall and Reflect. The five
+default pages and initiative pages live inside a project folder and refresh from that
+project's own memories. To deliberately search across projects, pass `all_projects: true`
+to `hindsight_search_pages` or `hindsight_reflect`; the same flag opens a page found by
+an all-project search. To make an ingested reference available during automatic retrieval
+in any project, pass `shared: true` to `hindsight_ingest_document`.
 
-There is no per-repo opt-in file, for the same reason there is no repo-carried config at all: a
-cloned repository must not be able to turn memory on.
-
-There is deliberately no repo-carried config file — per-repo bank routing is `mapPathToBank`,
-per-agent differences are `harnesses.<name>`.
+Use `bankMode: "project"` for legacy bank routing. Existing explicit `mapPathToBank`,
+`bankIdTemplate`, or `dynamicBankId: true` configurations select that mode when
+`bankMode` is absent. In project mode, path mappings also count as approval when
+`optInOnly` is enabled. Repository files cannot grant approval.
 
 Each entry point knows which harness it _is_ (the opencode plugin is loaded by opencode, the codex
 hook by Codex...), so one shared config serves several agents side by side:
@@ -198,11 +207,13 @@ hook by Codex...), so one shared config serves several agents side by side:
 | ----------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apiUrl`                | `https://api.hindsight.vectorize.io` | Hindsight API base URL (set to `http://localhost:8888` for a local server)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `apiToken`              | —                                    | bearer token (Hindsight Cloud). Picked up without restarting the agent: a long-lived host re-reads it after a rejected request, so enabling auth or rotating the key mid-session recovers on the next call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `bankId`                | —                                    | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `bankMode` | `"shared"` | One bank across projects, or `"project"` for legacy routing. Read from global config. |
+| `importChatHistory` | `false` in shared mode | Backfill historical conversations during initialization when session retention is enabled. |
+| `bankId`                | —                                    | explicit destination; defaults to `工程知识与经验` in shared mode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `dynamicBankId`         | dynamic iff no `bankId`              | force dynamic (`true`) or static (`false`) resolution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `bankIdTemplate`        | `"coding-agent::{gitProject}"`       | dynamic bank id format; the default makes every agent share one bank per repo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `mapPathToBank`         | —                                    | absolute path → bank; **longest prefix wins**; linked worktrees inherit their main checkout's mapping; overrides everything                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `optInOnly`             | `false`                              | run memory ONLY in opted-in projects — everything else is inert, with no bank created; see [Opt-in only](#opt-in-only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `optInOnly`             | `true` in shared mode | run memory ONLY in opted-in projects — everything else is inert, with no bank created; see [Opt-in only](#opt-in-only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `optInPaths`            | —                                    | directories opted in, matched as prefixes with `~` expanded; each repo beneath and its linked worktrees are approved while keeping their own dynamic bank                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `resolveWorktrees`      | `true`                               | linked worktrees inherit the main checkout's bank identity, path approval, and mapping                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `retainTags`            | —                                    | extra tags on every document written by the integration, e.g. `["project:{gitProject}"]` — see **Recording where a memory came from** below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -229,15 +240,15 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `customPages`           | —                                    | pages of your own, seeded alongside the five above and keyed by the name they get: `{"Security posture": {"source_query": "...", "tags": ["knowledge:decision"]}}`. `source_query` is required; `tags` picks which facts feed the page and is optional — omitted, the page draws on everything the bank holds. A separate setting from `pages` on purpose, so that an unknown name there stays a typo warning rather than quietly creating a page. File-only, and replaced (not merged) by a `banks.<id>` section                                                                                                                                                                                                                                                                                                                                                                                               |
 | `autoSeed`              | `true`                               | SessionStart: auto-seed a cold repo's bank from git history                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `seedLimit`             | `300`                                | git-log document size: a full write keeps the newest commits, between half of this and this many (the window moves in steps of half), and logs how many older ones it drops                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run only under the current harness's own CLI (Claude Code, Codex, Antigravity, opencode v1); other agents get no survey                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `codebaseSurvey`        | `false` in shared mode | SessionStart: headless survey of a cold repo's structure, run only under the current harness's own CLI (Claude Code, Codex, Antigravity, opencode v1); other agents get no survey                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `surveyModel`           | `haiku`                              | model for the survey — Claude recipe only (`claude -p --model`); other agents use their configured default                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `surveyRefreshCommits`  | `20`                                 | re-run the survey at SessionStart once this many commits have accrued since the last one, so the structural pages track an architecture that keeps moving (`0` = survey a cold repo only, never again)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `retainSessions`        | `true`                               | session write-back, honored by every harness: hook harnesses write the transcript on Stop, Factory Droid also writes on its cancellation notification, and plugin harnesses (opencode, opencode 2, Kilo) upsert it every turn plus an idle flush that captures the reply the per-turn pass can't see. Set `false` - globally, per harness, or per bank - to stop writing transcripts (the background history import stops with it) while recall, git ingest and the memory tools keep working                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `retainSessions`        | `false` in shared mode | session write-back, honored by every harness: hook harnesses write the transcript on Stop, Factory Droid also writes on its cancellation notification, and plugin harnesses (opencode, opencode 2, Kilo) upsert it every turn plus an idle flush that captures the reply the per-turn pass can't see. Set `false` - globally, per harness, or per bank - to stop writing transcripts (the background history import stops with it) while recall, git ingest and the memory tools keep working                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `maxParallelRetains`    | `10`                                 | cap on concurrent retain-related requests: drain()'s per-op polls plus deepen's chat/git retain pools. The API rate-limits bursts, not single requests — if you see 429s, lower this rather than raising it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `logLevel`              | `"info"`                             | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `autoUpdate`            | `true`                               | keep the installed runtime current by itself: once a day a session start asks npm for the published version and, when it is newer, re-stages `~/.hindsight/coding-agents` in the background. It rewires no host config, so a release adding a **new** hook entry point still needs a manual `install`. Set `false` to pin the installed version; `disabled` stops it too, since an inert plugin should stay inert. Only ever replaces a runtime installed the documented way, via `npx` — a copy installed with `npm i -g`, vendored as a project dependency, or built from a checkout is left to whoever manages it (update those the way you installed them), and it needs `npx` and `npm` on `PATH`                                                                                                                                                                                                          |
-| `gitIngest`             | `"message"`                          | git depth for seeding AND staying current (same engine): `"message"` = commit messages only (one doc, re-upserted when HEAD has a commit it lacks); `"full"` = messages + per-commit full diffs (progressive, newest first); `"none"` = git off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `gitIngest`             | `"none"` in shared mode | git depth for seeding AND staying current (same engine): `"message"` = commit messages only (one doc, re-upserted when HEAD has a commit it lacks); `"full"` = messages + per-commit full diffs (progressive, newest first); `"none"` = git off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `harness`               | `opencode`                           | **deepen engine only**: which session format `--conversations` is read as                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
@@ -469,6 +480,9 @@ Like every field here it can be set per bank, which is usually where it belongs:
 
 ### Per-repo opt-in/out — `banks.<bankId>`
 
+In shared mode this section configures the shared bank. Use `paths.<prefix>` for project
+settings such as `disabled` and source opt-ins. The following examples apply to project mode.
+
 Per-repo control lives in the SAME file, keyed by the **resolved bank id** (shown in the session
 banner) and applied AFTER bank resolution — so it works regardless of where the repo lives, and
 survives directory moves:
@@ -518,6 +532,9 @@ the boundary ("everything I clone under `work/client-x` shares memory").
 
 ### Per-directory overrides — `paths.<prefix>`
 
+In shared mode, path overrides control project behavior. Bank-wide settings and connection
+credentials stay common to all projects.
+
 When a folder is the boundary for something other than the bank — typically a different server
 or tenant for client work — key the override by directory instead of by bank id:
 
@@ -544,7 +561,9 @@ the directory still points at the same server.
 
 ### Bank resolution
 
-Coding memory is **per repository**. Resolution order for the working directory:
+In shared mode the destination is the same for all projects and harnesses. The project
+is identified by a hash of the canonical main checkout path. Moving or re-cloning a
+checkout gives it a new project identity. In project mode, the legacy resolution order is:
 
 1. `mapPathToBank` — longest matching absolute-path prefix (mapping a repo root covers every
    subdirectory; deeper mappings win; overrides even an explicit `bankId`).
@@ -571,6 +590,9 @@ logged as a warning in `plugin.log`.
 
 ### Recording where a memory came from
 
+Shared mode adds a reserved `project:<id>` tag automatically. Custom provenance tags
+and metadata can still be configured. The following examples describe legacy routing.
+
 With a bank per repo, the bank _is_ the answer to "where did this come from". On a deliberately
 **shared** bank — one bank holding cross-project knowledge so facts recall everywhere — it isn't:
 every memory looks alike. `retainTags` and `retainMetadata` stamp that provenance onto conversations,
@@ -596,6 +618,9 @@ with a warning, so a document's agent attribution always reflects the agent that
 
 ### One set of beliefs per repo
 
+Shared mode consolidates into separate project observation scopes, with a separate scope
+for explicitly shared references. The configuration below applies in project mode.
+
 Every document this integration writes carries provenance tags — `source:chat`, `harness:<id>`,
 `knowledge:<kind>`, plus anything from `retainTags`. Those tags say **who wrote** a memory; they are
 what filters recall and draws each document's agent logo, and they stay on the facts.
@@ -620,6 +645,8 @@ scope per bank, which is what a bank already is — one project's memory. Set th
 ```
 
 ### Splitting code from conversation — `per_source`
+
+This setting applies in project mode.
 
 `shared` puts every document a repo produces into one belief set. `"per_source"` keeps that set and
 adds one per origin, so "what the commits say" and "what was decided in conversation" can be asked

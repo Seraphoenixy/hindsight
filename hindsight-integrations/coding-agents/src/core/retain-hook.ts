@@ -23,7 +23,12 @@ import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import type { RetainCursorStore } from "./retain-cursor";
 import { buildRetainStamp, type RetainStamp } from "./retain-stamp";
-import { fileCursorStore, fileUsageCursorStore, sessionRootDir } from "./session-cache";
+import {
+  fileCursorStore,
+  fileUsageCursorStore,
+  sessionRetainBlocked,
+  sessionRootDir,
+} from "./session-cache";
 import { readClaudeTranscript } from "./transcript";
 import { appendJournalTurn, journalPath, readJournalTranscript } from "./turn-journal";
 import { stripInjectedMemory } from "./transcript-util";
@@ -199,14 +204,17 @@ export async function runRetainHook(
 
   let cfg = loadConfig({ harness: spec.harness });
   setLogLevel(cfg.logLevel);
-  if (cfg.disabled) return;
+  if (cfg.disabled) {
+    if (cfg.bankMode === "shared" && sessionId) sessionRetainBlocked(spec.harness, sessionId, true);
+    return;
+  }
 
   // A journal harness closes the turn HERE, at the first point past the kill switch: the host's
   // copy of the reply is ephemeral (ZCode deletes its Stop transcript the moment this hook
   // returns), so it has to be read before anything that can block or fail. Reading the journal
   // back as the transcript is what makes the rest of this function identical to every other
   // harness's — the same full conversation, planned against the same retain cursor.
-  if (spec.journal) {
+  if (spec.journal && cfg.bankMode !== "shared") {
     transcriptPath = journalPath(spec.harness, sessionId);
     readTranscript = readJournalTranscript;
     appendJournalTurn(transcriptPath, {
@@ -215,17 +223,33 @@ export async function runRetainHook(
     });
   }
 
-  if (!transcriptPath) return;
+  if (!transcriptPath && !spec.journal) return;
 
   const sessionRoot = sessionRootDir(spec.harness, sessionId, cwd);
   const derived = deriveBankIdOrSkip(cfg, cwd, spec.harness, sessionRoot);
   // Skipping the write-back loses this session; retaining it into a guessed bank loses it AND
   // pollutes the server with a bank nothing ever reads back (#3950).
   if (derived === null) return;
-  const resolved = applyBankConfig(cfg, derived, cwd);
+  const resolved = applyBankConfig(cfg, derived, cwd, sessionRoot);
   cfg = resolved.cfg;
   const bankId = resolved.bankId;
+  if (
+    cfg.bankMode === "shared" &&
+    sessionId &&
+    sessionRetainBlocked(spec.harness, sessionId, cfg.disabled || !cfg.retainSessions)
+  )
+    return;
   if (cfg.disabled) return; // per-bank opt-out (banks.<id> override)
+  if (spec.journal && cfg.bankMode === "shared") {
+    if (!cfg.retainSessions) return;
+    transcriptPath = journalPath(spec.harness, sessionId);
+    readTranscript = readJournalTranscript;
+    appendJournalTurn(transcriptPath, {
+      role: "assistant",
+      content: spec.journal.assistantText(ev),
+    });
+  }
+  if (!transcriptPath) return;
   // Checked only HERE, after the bank is resolved, so a `banks.<id>` section can turn write-back
   // back on for one repo under a global `retainSessions: false` (and vice versa). Before the
   // daemon start below: a session that writes nothing has no reason to bring a server up. It still
@@ -244,6 +268,7 @@ export async function runRetainHook(
       apiUrl: cfg.apiUrl,
       apiToken: cfg.apiToken,
       bank: bankId,
+      projectScope: cfg.projectScope,
       maxParallelRetains: cfg.maxParallelRetains,
       observationScopes: cfg.observationScopes,
     });

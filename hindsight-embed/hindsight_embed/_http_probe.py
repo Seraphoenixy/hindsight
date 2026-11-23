@@ -55,6 +55,40 @@ async def aprobe_get(url: str, *, read_timeout: float, connect_timeout: float | 
         return None
 
 
+async def aprobe_first(
+    urls: list[str], *, read_timeout: float, connect_timeout: float | None = None
+) -> tuple[int, ProbeResponse | None]:
+    """Probe ``urls`` concurrently and return the first HTTP answer as ``(index, response)``.
+
+    Pending probes are cancelled as soon as one answers, so an address family
+    that is not listening cannot delay one that is. When nothing answers, this
+    returns after the slowest probe finishes; ``(0, None)``. The caller decides
+    which statuses mean what — an old server may answer a route added later
+    with 404 and should not be mistaken for a dead one.
+    """
+    tasks = {
+        asyncio.create_task(aprobe_get(url, read_timeout=read_timeout, connect_timeout=connect_timeout)): index
+        for index, url in enumerate(urls)
+    }
+    try:
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            answered = []
+            for task in done:
+                response = task.result()
+                if response is not None:
+                    answered.append((tasks[task], response))
+            if answered:
+                return min(answered, key=lambda item: item[0])
+        return (0, None)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def probe_get(url: str, *, read_timeout: float, connect_timeout: float | None = None) -> ProbeResponse | None:
     """Sync entry point for :func:`aprobe_get`, for the CLI and threaded server.
 
@@ -79,5 +113,14 @@ def probe_get(url: str, *, read_timeout: float, connect_timeout: float | None = 
     client it replaced did; async callers should await :func:`aprobe_get`.
     """
     probe = functools.partial(aprobe_get, url, read_timeout=read_timeout, connect_timeout=connect_timeout)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, probe()).result()
+
+
+def probe_first(
+    urls: list[str], *, read_timeout: float, connect_timeout: float | None = None
+) -> tuple[int, ProbeResponse | None]:
+    """Sync entry point for :func:`aprobe_first`; same loop-isolation rules as :func:`probe_get`."""
+    probe = functools.partial(aprobe_first, urls, read_timeout=read_timeout, connect_timeout=connect_timeout)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, probe()).result()

@@ -213,13 +213,21 @@ export function buildPageTools(
         // fiddly drift apart, and the description is what a host shows when the tool is listed.
         "read a full page with hindsight_read_page. " +
         crediting,
-      inputSchema: { query: z.string().describe("what to look for") },
+      inputSchema: {
+        query: z.string().describe("what to look for"),
+        all_projects: z
+          .boolean()
+          .optional()
+          .describe("Search the entire bank when explicitly requested"),
+      },
       annotations: READ_ONLY_ANNOTATIONS,
-      handler: async (args: { query: string }) => {
+      handler: async (args: { query: string; all_projects?: boolean }) => {
         try {
           // Limit comes from the client (`pageSearchLimit`), so the tool and the hook's injection
           // can never drift apart — this used to pass its own literal 3.
-          const hits = await client.searchPages(args.query);
+          const hits = args.all_projects
+            ? await client.searchPages(args.query, { allProjects: true })
+            : await client.searchPages(args.query);
           // No `score`. The server fuses BM25 and vector search with reciprocal rank fusion, so the
           // number is ~1/(60+rank) summed over two retrievers: a perfect top hit scores about 0.03
           // and nothing ever approaches 1. Handed that, a model reads a strong match as 3% relevant
@@ -268,9 +276,17 @@ export function buildPageTools(
         "changing a subsystem, or an initiative's page before continuing that feature. A page may " +
         "contain [[page:<id>]] links to related pages; follow one by calling this tool again with " +
         "that id. Prefer reading a page over re-deriving the same understanding from source.",
-      inputSchema: { page_id: z.string() },
+      inputSchema: {
+        page_id: z.string(),
+        all_projects: z
+          .boolean()
+          .optional()
+          .describe("Open a page outside this project when explicitly requested"),
+      },
       annotations: READ_ONLY_ANNOTATIONS,
-      handler: guarded(async ({ page_id }) => client.getPage(page_id)),
+      handler: guarded(async ({ page_id, all_projects }) =>
+        all_projects ? client.getPage(page_id, true) : client.getPage(page_id)
+      ),
     },
     {
       name: "hindsight_reflect",
@@ -281,10 +297,17 @@ export function buildPageTools(
         "hindsight_search_pages (several seconds): reach for it when pages are too " +
         "shallow and you need the root cause or the decided literals. When the answer informs " +
         'your reply, credit it visibly with a blockquote header: "> 🧠 **From Hindsight memory** — <summary>".',
-      inputSchema: { query: z.string().describe("the question to reason over memory about") },
+      inputSchema: {
+        query: z.string().describe("the question to reason over memory about"),
+        all_projects: z
+          .boolean()
+          .optional()
+          .describe("Reflect across the entire bank when explicitly requested"),
+      },
       annotations: READ_ONLY_ANNOTATIONS,
-      handler: guarded(async ({ query }: { query: string }) =>
+      handler: guarded(async ({ query, all_projects }: { query: string; all_projects?: boolean }) =>
         client.reflect(query, {
+          ...(all_projects ? { allProjects: true } : {}),
           budget: opts.reflectBudget ?? "high",
           timeoutMs: opts.reflectTimeoutMs ?? DEFAULT_REFLECT_TOOL_TIMEOUT_MS,
         })
@@ -340,9 +363,16 @@ export function buildPageTools(
         "when you verify that a retrieved memory is wrong or outdated, ingest a document titled " +
         "'Correction: <topic>' stating what memory claimed, what is actually true, and the " +
         "evidence — the newer fact supersedes the stale one in future retrieval.",
-      inputSchema: { title: z.string(), content: z.string() },
+      inputSchema: {
+        title: z.string(),
+        content: z.string(),
+        shared: z
+          .boolean()
+          .optional()
+          .describe("Make this reference available to all projects when explicitly requested"),
+      },
       annotations: NON_DESTRUCTIVE_WRITE_ANNOTATIONS,
-      handler: guarded(async ({ title, content }) => {
+      handler: guarded(async ({ title, content, shared }) => {
         const slug = title
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, "-")
@@ -371,7 +401,10 @@ export function buildPageTools(
             ]),
           ],
           "document",
-          Object.keys(metadata).length ? { metadata } : {}
+          {
+            ...(Object.keys(metadata).length ? { metadata } : {}),
+            ...(shared ? { shared: true } : {}),
+          }
         );
         return { ok: true, doc_id: docId };
       }),

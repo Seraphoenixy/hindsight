@@ -2816,6 +2816,7 @@
     "start": "Start",
     "stop": "Stop",
     "restart": "Restart",
+    "openMemory": "Open memory",
     "deleteProfile": "Delete profile",
     "failed": "Failed",
     "savedRestart": "Saved. Restart the daemon for changes to take effect.",
@@ -2859,6 +2860,12 @@
     "deleteConfirm": "Delete the profile \"{name}\"? Its daemon is stopped and its config and logs are removed. This cannot be undone.",
     "optionDefault": "(default)",
     "optionCustom": "Custom…",
-    "defaultHint": "(default: {value})"
+    "defaultHint": "(default: {value})",
+    "fetchModels": "Fetch models",
+    "fetchingModels": "Fetching models…",
+    "modelsAvailable": "Models available: {count}",
+    "modelsEmpty": "The provider returned no models.",
+    "modelsNeedProvider": "Choose a provider first.",
+    "modelsHint": "Uses the provider, key and base URL above. Nothing is saved."
   }
 }

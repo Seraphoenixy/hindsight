@@ -754,6 +754,8 @@ describe("buildSessionStartContext — survey attempt limit (#5623)", () => {
   // this hook makes — so the count must hold with every retain failing.
   it("stops surveying a commit after SURVEY_MAX_ATTEMPTS launches, with every retain failing", async () => {
     const leaseDir = mkdtempSync(join(tmpdir(), "hindsight-attempts-"));
+    const previousConfig = rawConfig;
+    rawConfig = { bankMode: "project" };
     try {
       const spawn = vi.fn().mockImplementation(() => {
         const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
@@ -796,6 +798,7 @@ describe("buildSessionStartContext — survey attempt limit (#5623)", () => {
       for (let i = 0; i < SURVEY_MAX_ATTEMPTS + 2; i++) await session();
       expect(spawn).toHaveBeenCalledTimes(SURVEY_MAX_ATTEMPTS);
     } finally {
+      rawConfig = previousConfig;
       rmSync(leaseDir, { recursive: true, force: true });
     }
   });

@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from .. import daemon_client
 from .._http_probe import ProbeResponse, probe_get
 from ..profile_manager import ENV_API_PORT, ENV_CP_PORT, ProfileManager, parse_env_file
-from . import settings
+from . import models, settings
 from .settings import SettingField
 
 # Env var names the wizard owns. Writing config replaces these; everything else
@@ -602,6 +602,28 @@ def get_settings(name: str) -> SettingsView:
     )
 
 
+def list_models(
+    name: str,
+    *,
+    provider: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> models.ModelList:
+    """Ask a provider for its model ids using the form's unsaved values.
+
+    ``None`` means "use the saved profile value"; an explicit empty string means
+    the form cleared it. That distinction is what lets a user test a new key
+    without persisting it, or discover a provider's default endpoint after
+    clearing a Base URL override.
+    """
+    name = normalize_profile(name)
+    env = _read_raw_env(name)
+    resolved_provider = provider if provider is not None else env.get(_ENV_PROVIDER, "")
+    resolved_key = env.get(_ENV_API_KEY, "") if api_key is None else api_key
+    resolved_base = env.get(_ENV_BASE_URL, "") if base_url is None else base_url
+    return models.list_models(resolved_provider or "", resolved_key or "", resolved_base or "")
+
+
 def save_settings(name: str, values: dict[str, str]) -> SettingsView:
     """Write the grouped form's values into a profile's .env.
 
@@ -741,13 +763,12 @@ def ui_status(name: str) -> UiStatusView:
 
 @dataclass(frozen=True)
 class UiLaunchResult:
-    """Outcome of starting the control plane, including whether the daemon came up.
+    """Outcome of starting the control plane, including the daemon's state.
 
-    ``daemon_ok`` is separate from ``ui`` on purpose. A daemon that failed to start
-    does NOT prevent the UI from starting: ``/local`` is precisely where a broken
-    profile gets fixed, so refusing to open it would remove the only reachable
-    remedy. But it must be reported — a UI that silently connects to nothing looks
-    like a broken page rather than a daemon that needs configuring.
+    Starting the UI must not start the daemon: ``/local`` is precisely where a
+    profile gets fixed, so it has to open even when the daemon is absent or
+    broken. ``daemon_ok`` therefore reports whether one was already running, and
+    the caller warns about it rather than treating it as a launch failure.
     """
 
     ui: UiStatusView
@@ -755,7 +776,7 @@ class UiLaunchResult:
 
 
 def launch_ui(name: str) -> UiLaunchResult:
-    """Ensure the daemon is up, then start the control plane for this profile.
+    """Start the control plane for this profile without starting its daemon.
 
     NOT an operation of the browser page — the page is served by this very
     process. It exists for launchers (``hindsight-embed ui start``, the
@@ -763,9 +784,9 @@ def launch_ui(name: str) -> UiLaunchResult:
     and it is reached through the CLI, never through an HTTP route.
     """
     name = normalize_profile(name)
-    # The control plane talks to the daemon API, so it needs the daemon running.
-    # Its failure is reported, not acted on: see `UiLaunchResult`.
-    daemon_ok = bool(daemon_client.ensure_daemon_running(_daemon_config(name), name))
+    # Read the daemon's state; never change it. The page opens against a stopped
+    # daemon so the profile can be configured there.
+    daemon_ok = bool(daemon_client.is_daemon_running(name))
     daemon_client.start_ui(name)
     return UiLaunchResult(ui=ui_status(name), daemon_ok=daemon_ok)
 

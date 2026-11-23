@@ -35,7 +35,10 @@ export async function GET() {
     try {
       // A reachability probe, not a listing: ask for the smallest page the
       // endpoint will serve instead of pulling the default 100 banks.
-      await sdk.listBanks({ client: healthClient, query: { limit: 1 } });
+      // The generated SDK defaults to returning `{ error }` instead of
+      // throwing, so an unreachable dataplane would otherwise be reported as
+      // connected. This probe has to fail loudly.
+      await sdk.listBanks({ client: healthClient, query: { limit: 1 }, throwOnError: true });
       status.dataplane = {
         status: "connected",
         url: dataplaneUrl,

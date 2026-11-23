@@ -47,8 +47,8 @@ nltk_data/
 # Large benchmark datasets (will be downloaded automatically)
 **/longmemeval_s_cleaned.json
 
-# Debug logs
-logs/
+# Debug logs (root only — `logs` is also a legitimate route directory name)
+/logs/
 
 .DS_Store
 .sesskey

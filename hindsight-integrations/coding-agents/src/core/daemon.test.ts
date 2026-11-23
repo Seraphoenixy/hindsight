@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,7 +106,16 @@ describe("daemonEnv", () => {
 });
 
 describe("ensureDaemon", () => {
-  beforeEach(() => vi.stubEnv("HINDSIGHT_API_LLM_PROVIDER", "openai"));
+  beforeEach(() => {
+    vi.stubEnv("HINDSIGHT_API_LLM_PROVIDER", "openai");
+    // A cold start is gated on an explicitly provisioned profile; give these tests one.
+    const home = mkdtempSync(join(tmpdir(), "hs-daemon-home-"));
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    const profiles = join(home, ".hindsight", "profiles");
+    mkdirSync(profiles, { recursive: true });
+    writeFileSync(join(profiles, "coding-agent.env"), "HINDSIGHT_API_LLM_PROVIDER=openai\n");
+  });
   // Cloud and self-hosted must not so much as probe a local port.
   it("touches nothing outside daemon mode", async () => {
     const cfg = resolveConfig({ serverMode: "self-hosted", apiUrl: "https://cloud.example" });
@@ -123,6 +133,41 @@ describe("ensureDaemon", () => {
   it("resolves without reporting usability", async () => {
     const cfg = resolveConfig({ serverMode: "self-hosted", apiUrl: "https://cloud.example" });
     expect(await ensureDaemon(cfg, "claude-code", {})).toBeUndefined();
+  });
+
+  it("does not invent a profile when none has been configured", async () => {
+    const home = mkdtempSync(join(tmpdir(), "hs-daemon-empty-"));
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new Error("ECONNREFUSED")))
+    );
+    const spawnFn = vi.fn();
+    const cfg = resolveConfig({ serverMode: "daemon" });
+
+    await ensureDaemon(cfg, "dsh", {
+      waitMs: 0,
+      spawnFn: spawnFn as unknown as typeof import("node:child_process").spawn,
+    });
+
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it("leaves the lifecycle alone when daemonAutoStart is off", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new Error("ECONNREFUSED")))
+    );
+    const spawnFn = vi.fn();
+    const cfg = resolveConfig({ serverMode: "daemon", daemonAutoStart: false });
+
+    await ensureDaemon(cfg, "dsh", {
+      waitMs: 0,
+      spawnFn: spawnFn as unknown as typeof import("node:child_process").spawn,
+    });
+
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 
   /**

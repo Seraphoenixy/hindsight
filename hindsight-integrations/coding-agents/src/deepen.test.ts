@@ -60,7 +60,15 @@ function runDeepen(): {
     [deepen, "--repo", __dirname, "--bank", "lease-test", "--api-url", apiUrl],
     // TMPDIR holds the lease root, HOME the config/logs: both isolated per test.
     {
-      env: { ...process.env, TMPDIR: home, TEMP: home, TMP: home, HOME: home, USERPROFILE: home },
+      env: {
+        ...process.env,
+        HINDSIGHT_BANK_MODE: "project",
+        TMPDIR: home,
+        TEMP: home,
+        TMP: home,
+        HOME: home,
+        USERPROFILE: home,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     }
   );

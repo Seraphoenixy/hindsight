@@ -407,7 +407,9 @@ async function appendGitLog(
   const content = GITLOG_DIVIDER.slice(1) + records.join(GITLOG_DIVIDER);
   // Same base + same new commits = same operation, so a re-submitted append is collapsed into the
   // first one server-side rather than applied twice.
-  const operationId = uuidV5(`${client.bank}\n${canonical}\nappend\n${base}\n${content}`);
+  const operationId = uuidV5(
+    `${client.memoryScope ?? client.bank}\n${canonical}\nappend\n${base}\n${content}`
+  );
   log(`[gitlog] appending ${records.length} new commit message(s) to ${canonical} …`);
   try {
     await retainGitLog(client, repo, content, opts, head, { operationId });

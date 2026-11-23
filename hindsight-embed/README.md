@@ -145,7 +145,8 @@ The management UI is the control plane. Its `/local` page edits this machine's
 profiles, their `.env`, and the daemon:
 
 ```bash
-hindsight-embed ui start     # Start it (starts the daemon first), then open <ui-url>/local
+hindsight-embed ui start     # Start the panel only, then open <ui-url>/local
+hindsight-embed ui start --with-daemon  # Also start the daemon first
 hindsight-embed ui status    # Is it running, and on which URL
 hindsight-embed ui logs -f   # Why it failed, if it did
 hindsight-embed ui stop      # Stop it; the daemon keeps running
@@ -163,6 +164,7 @@ the control plane calls, and it works the same from a script:
 ```bash
 hindsight-embed ops profiles                  # every profile with daemon status
 hindsight-embed ops settings -p coding-agent  # grouped settings catalog + values
+echo '{"provider":"groq","api_key":null}' | hindsight-embed ops models  # ids the provider advertises; nothing saved
 hindsight-embed ops config                    # editable config (API key masked)
 hindsight-embed ops env                       # raw .env, verbatim
 hindsight-embed ops paths                     # files, database URL, addresses

@@ -2816,6 +2816,7 @@
     "start": "Iniciar",
     "stop": "Detener",
     "restart": "Reiniciar",
+    "openMemory": "Abrir memoria",
     "deleteProfile": "Eliminar perfil",
     "failed": "Error",
     "savedRestart": "Guardado. Reinicia el demonio para aplicar los cambios.",
@@ -2859,6 +2860,12 @@
     "deleteConfirm": "¿Eliminar el perfil \"{name}\"? Se detiene su demonio y se borran su configuración y registros. No se puede deshacer.",
     "optionDefault": "(predeterminado)",
     "optionCustom": "Personalizado…",
-    "defaultHint": "(predeterminado: {value})"
+    "defaultHint": "(predeterminado: {value})",
+    "fetchModels": "Obtener modelos",
+    "fetchingModels": "Obteniendo modelos…",
+    "modelsAvailable": "Modelos disponibles: {count}",
+    "modelsEmpty": "El proveedor no devolvió ningún modelo.",
+    "modelsNeedProvider": "Elige un proveedor primero.",
+    "modelsHint": "Consulta con el proveedor, la clave y la URL base de arriba. No se guarda nada."
   }
 }

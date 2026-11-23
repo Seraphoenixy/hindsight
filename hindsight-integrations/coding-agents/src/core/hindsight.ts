@@ -23,6 +23,7 @@ import {
 } from "./missions";
 import { version as PKG_VERSION } from "../../package.json";
 import { pool, semverGte, sleep } from "./util";
+import type { ProjectScope } from "./bank";
 import type { RetainStamp } from "./retain-stamp";
 
 /** Sent on every request so the server can tell which integration is calling. */
@@ -110,6 +111,7 @@ export interface ClientOpts {
    *  names no project (#4490). Must be a property of the bank and never of the calling session's
    *  cwd: see `bankProjectName` (#4146). */
   project?: string;
+  projectScope?: ProjectScope;
   log?: (msg: string) => void;
   /** Cap on concurrent retain-related requests (drain op polls, deepen pools). Default 10. */
   maxParallelRetains?: number;
@@ -136,6 +138,7 @@ export interface ClientOpts {
 }
 
 export interface RetainOpts {
+  shared?: boolean;
   timestamp?: string; // when the content occurred (temporal ranking)
   metadata?: Record<string, string>; // source provenance (returned with recalls)
   /** "append" concatenates `content` onto the stored document instead of replacing it — the whole
@@ -380,6 +383,7 @@ export class HindsightClient {
   private readonly tokenProvider?: () => string | undefined;
   readonly bank: string;
   readonly project?: string;
+  readonly projectScope?: ProjectScope;
   readonly opIds: string[] = []; // async operation ids collected by retain(), for drain()
   /** Tri-state capability probe: unknown until the first page request, then cached. */
   pagesSupported: boolean | undefined;
@@ -397,7 +401,8 @@ export class HindsightClient {
     this.token = o.apiToken;
     this.tokenProvider = o.tokenProvider;
     this.bank = o.bank;
-    this.project = o.project;
+    this.projectScope = o.projectScope;
+    this.project = o.projectScope?.name ?? o.project;
     this.log = o.log ?? (() => {});
     this.maxParallelRetains = o.maxParallelRetains || DEFAULT_MAX_PARALLEL_RETAINS;
     this.observationScopes = o.observationScopes ?? DEFAULT_OBSERVATION_SCOPES;
@@ -407,6 +412,28 @@ export class HindsightClient {
     // mutation everyone's.
     this.recallOptions = { ...DEFAULT_RECALL_OPTIONS, ...o.recallOptions };
     this.rateLimitPatienceMs = o.rateLimitPatienceMs ?? 0;
+  }
+
+  get projectTag(): string | undefined {
+    return this.projectScope && `project:${this.projectScope.id}`;
+  }
+
+  get memoryScope(): string {
+    return this.projectTag ? `${this.bank}/${this.projectTag}` : this.bank;
+  }
+
+  private documentId(id: string): string {
+    return this.projectTag ? `${this.projectTag}:${id}` : id;
+  }
+
+  private projectFolderName(): string | undefined {
+    return this.projectScope && `${this.projectScope.name} [${this.projectScope.id}]`;
+  }
+
+  private readScope(all = false): Record<string, unknown> {
+    return this.projectTag && !all
+      ? { tags: [this.projectTag, "scope:shared"], tags_match: "any_strict" }
+      : {};
   }
 
   /** The credential in use, for diagnostics. Never log or report the VALUE — booleans only. */
@@ -522,16 +549,26 @@ export class HindsightClient {
     strategy: string,
     opts: RetainOpts = {}
   ): Promise<void> {
+    const scope = this.projectTag && (opts.shared ? "scope:shared" : this.projectTag);
+    if (this.projectTag) {
+      tags = [
+        ...new Set([
+          ...tags.filter((tag) => !tag.startsWith("project:") && tag !== "scope:shared"),
+          this.projectTag,
+          ...(opts.shared ? ["scope:shared"] : []),
+        ]),
+      ];
+    }
     const item: Record<string, unknown> = {
       content,
       context,
-      document_id: documentId,
+      document_id: this.documentId(documentId),
       tags,
       strategy,
       // Sent on EVERY retain, including the server default `combined`, so the scoping a bank's
       // observations were built under is a property of the write rather than of whichever server
       // version happened to process it. Servers older than 0.4.15 ignore the field.
-      observation_scopes: resolveRetainScopes(tags, this.observationScopes),
+      observation_scopes: scope ? [[scope]] : resolveRetainScopes(tags, this.observationScopes),
     };
     if (opts.timestamp) item.timestamp = opts.timestamp;
     if (opts.metadata) item.metadata = opts.metadata;
@@ -612,7 +649,17 @@ export class HindsightClient {
     const ids = new Set<string>();
     const limit = 500;
     for (let offset = 0; ; offset += limit) {
-      const q = `?tags=${encodeURIComponent(tag)}&tags_match=${tagsMatch}&limit=${limit}&offset=${offset}`;
+      const query = new URLSearchParams({
+        tags: tag,
+        tags_match: tagsMatch,
+        limit: String(limit),
+        offset: String(offset),
+      });
+      if (this.projectTag) {
+        query.append("tags", this.projectTag);
+        query.set("tags_match", "all_strict");
+      }
+      const q = `?${query}`;
       const r = await this.req("GET", this.bankUrl(`/documents${q}`));
       let items: { id?: string }[] = [];
       let total = 0;
@@ -623,7 +670,8 @@ export class HindsightClient {
       } catch {
         break;
       }
-      for (const it of items) if (it.id) ids.add(it.id);
+      const prefix = this.documentId("");
+      for (const it of items) if (it.id?.startsWith(prefix)) ids.add(it.id.slice(prefix.length));
       if (items.length < limit || ids.size >= total) break; // last page reached
     }
     return ids;
@@ -636,6 +684,7 @@ export class HindsightClient {
    * caller, the git-log freshness check on SessionStart, reads a ~100k-character document for one tag.
    */
   async documentTags(documentId: string): Promise<string[] | undefined> {
+    documentId = this.documentId(documentId);
     const limit = 100;
     for (let offset = 0; ; offset += limit) {
       const q = `?q=${encodeURIComponent(documentId)}&limit=${limit}&offset=${offset}`;
@@ -651,7 +700,10 @@ export class HindsightClient {
   /** Whether the bank holds any document at all — a one-row listing. A bank that does not exist
    *  yet (404) holds none; any other failure throws, so a caller can tell "empty" from "unknown". */
   async hasDocuments(): Promise<boolean> {
-    const r = await this.req("GET", this.bankUrl("/documents?limit=1"));
+    const tag = this.projectTag
+      ? `&tags=${encodeURIComponent(this.projectTag)}&tags_match=all_strict`
+      : "";
+    const r = await this.req("GET", this.bankUrl(`/documents?limit=1${tag}`));
     if (r.status === 404) return false;
     const j = (await r.json()) as { items?: unknown[]; total?: number };
     return (j.total ?? j.items?.length ?? 0) > 0;
@@ -747,7 +799,10 @@ export class HindsightClient {
   /** Explicitly delete one document (and its cascaded memory units/links). Background sync must
    *  never use this as a cleanup primitive: a document id alone does not prove repository ownership. */
   async deleteDocument(documentId: string): Promise<void> {
-    await this.req("DELETE", this.bankUrl(`/documents/${encodeURIComponent(documentId)}`));
+    await this.req(
+      "DELETE",
+      this.bankUrl(`/documents/${encodeURIComponent(this.documentId(documentId))}`)
+    );
   }
 
   /** Count of operations still ACTIVE on this bank — the list includes terminal ops (completed/
@@ -838,13 +893,20 @@ export class HindsightClient {
    * tool (minutes, on a populated bank). This used to default to 120s, which silently overrode the
    * tool's configured window and aborted every high-budget synthesis mid-flight (#3590).
    */
-  async reflect(query: string, opts: { budget?: string; timeoutMs: number }): Promise<string> {
+  async reflect(
+    query: string,
+    opts: { budget?: string; timeoutMs: number; allProjects?: boolean }
+  ): Promise<string> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
     try {
       const resp = await this.fetchWithAuth(this.bankUrl("/reflect"), {
         method: "POST",
-        body: JSON.stringify({ query, budget: opts.budget ?? "high" }),
+        body: JSON.stringify({
+          query,
+          budget: opts.budget ?? "high",
+          ...this.readScope(opts.allProjects),
+        }),
         signal: ctrl.signal,
       });
       // Keep the server's body: a bare "reflect 500" in the diag trail is undebuggable after the fact.
@@ -884,7 +946,9 @@ export class HindsightClient {
       // `query` is applied AFTER the spread: everything else is the caller's to override, but a
       // config that could replace the goal with a fixed string would silently recall for the
       // wrong question on every turn.
-      { ...this.recallOptions, query },
+      this.projectTag
+        ? { ...this.recallOptions, tag_groups: undefined, query, ...this.readScope() }
+        : { ...this.recallOptions, query },
       [],
       opts.timeoutMs
     );
@@ -975,7 +1039,14 @@ export class HindsightClient {
         if (n.children?.length) walk(n.children, n.kind === "folder" ? n.name : folder);
       }
     };
-    walk(await this.tree());
+    const roots = await this.tree();
+    const project = this.projectFolderName();
+    if (project) {
+      const folder = roots.find((node) => node.kind === "folder" && node.name === project);
+      walk(folder?.children ?? [], folder?.name);
+    } else {
+      walk(roots);
+    }
     return { items };
   }
 
@@ -985,7 +1056,12 @@ export class HindsightClient {
    * the page — that is 70-95% of the raw bytes and can blow past an MCP host's per-tool-result
    * token cap.
    */
-  async getPage(pageId: string): Promise<unknown> {
+  async getPage(pageId: string, allProjects = false): Promise<unknown> {
+    if (this.projectTag && !allProjects) {
+      const pages = (await this.listPages()) as { items: { id: string }[] };
+      if (!pages.items.some((page) => page.id === pageId))
+        throw new Error(`page not found in this project: ${pageId}`);
+    }
     if (this.pagesSupported === false) throw new PagesUnavailableError();
     const r = await this.pagesReq("GET", `/${encodeURIComponent(pageId)}`);
     if (!r) throw new PagesUnavailableError();
@@ -998,12 +1074,16 @@ export class HindsightClient {
    *  hindsight_search_pages. */
   async searchPages(
     query: string,
-    opts: { limit?: number; timeoutMs?: number } = {}
+    opts: { limit?: number; timeoutMs?: number; allProjects?: boolean } = {}
   ): Promise<
     { id: string; name: string; source_query?: string; snippet: string; score: number }[]
   > {
     if (this.pagesSupported === false) throw new PagesUnavailableError();
-    const q = `?q=${encodeURIComponent(query)}&limit=${opts.limit ?? this.pageSearchLimit}`;
+    const tag =
+      this.projectTag && !opts.allProjects
+        ? `&tags=${encodeURIComponent(this.projectTag)}&tags_match=all_strict`
+        : "";
+    const q = `?q=${encodeURIComponent(query)}&limit=${opts.limit ?? this.pageSearchLimit}${tag}`;
     const r = await this.pagesReq("GET", `/search${q}`, undefined, [], opts.timeoutMs);
     // Routed through the same check as every other page endpoint. Without it a server with no
     // pages API parsed its own 404 body into zero hits and reported "nothing matched"
@@ -1019,7 +1099,13 @@ export class HindsightClient {
         score?: number;
       }[];
     };
-    return (j.results ?? []).map((x) => ({
+    let hits = j.results ?? [];
+    if (tag && hits.length) {
+      const pages = (await this.listPages()) as { items: { id: string }[] };
+      const ids = new Set(pages.items.map((page) => page.id));
+      hits = hits.filter((hit) => ids.has(hit.id));
+    }
+    return hits.map((x) => ({
       id: x.id,
       name: x.name,
       ...(x.source_query ? { source_query: x.source_query } : {}),
@@ -1058,6 +1144,10 @@ export class HindsightClient {
       }
       throw e;
     }
+    const folderName = this.projectFolderName();
+    const parentId = folderName ? await this.ensureFolder(folderName) : undefined;
+    if (folderName && !parentId) throw new Error("could not create project page folder");
+    if (parentId) roots = roots.find((node) => node.id === parentId)?.children ?? [];
     for (const n of roots) {
       if (n.kind === "page" && n.name) existing.set(n.name.toLowerCase(), n);
     }
@@ -1069,11 +1159,12 @@ export class HindsightClient {
       const body = {
         name: page.name,
         source_query: page.source_query,
-        tags: page.tags,
+        tags: this.projectTag ? [this.projectTag] : page.tags,
+        ...(parentId ? { parent_id: parentId } : {}),
         max_tokens: PAGE_MAX_TOKENS,
         // Resolved HERE, not in `buildPageTrigger`: a hashed cron (`H`) needs the page's identity,
         // and one trigger is built per session for all of them.
-        trigger: pageTriggerFor(pageTrigger, this.bank, page.name),
+        trigger: this.scopedPageTrigger(pageTrigger, page.name),
       };
       if (!hit) {
         // 409 = another deepen run seeded this name between our tree read and this POST. That is
@@ -1107,7 +1198,7 @@ export class HindsightClient {
         const patch: { trigger?: PageTrigger; source_query?: string; tags?: string[] } = {};
         if (sourceDrift) {
           patch.source_query = page.source_query;
-          patch.tags = page.tags;
+          patch.tags = body.tags;
           // Say so. This replaces a query edited through the API or the control plane, which used
           // to happen silently and read as the edit never having saved (#4460).
           this.log(
@@ -1172,7 +1263,7 @@ export class HindsightClient {
       if (query !== page.description) patch.source_query = query;
       // No trigger reported = policy unknown, not divergent (a server older than #3572).
       if (page.trigger != null) {
-        const desired = pageTriggerFor(pageTrigger, this.bank, page.name);
+        const desired = this.scopedPageTrigger(pageTrigger, page.name);
         if (pageTriggerDrifted(page.trigger, desired)) patch.trigger = pageTriggerPatch(desired);
       }
       if (!patch.trigger && !patch.source_query) continue;
@@ -1214,6 +1305,11 @@ export class HindsightClient {
    * `tags` but strip `metadata` (`_UNREAD_RESULT_FIELDS`), and the id has no business in a tag
    * vocabulary that exists to be matched with exact set-ops.
    */
+  private scopedPageTrigger(trigger: PageTrigger, name: string): PageTrigger {
+    const policy = pageTriggerFor(trigger, this.memoryScope, name);
+    return this.projectTag ? { ...policy, tags_match: "all_strict" } : policy;
+  }
+
   async captureInitiative(args: {
     title: string;
     summary: string;
@@ -1228,8 +1324,13 @@ export class HindsightClient {
     // and the marker must use, or `hindsight_read_page(id)` 404s and the `[[page:<id>]]` link
     // points at nothing.
     let pageId = args.relatesToPageId;
+    if (pageId && this.projectTag) await this.getPage(pageId);
     if (!pageId) {
-      const folderId = await this.ensureFolder("Initiatives");
+      const project = this.projectFolderName();
+      const projectFolder = project ? await this.ensureFolder(project) : undefined;
+      if (project && !projectFolder) throw new Error("could not create project page folder");
+      const folderId = await this.ensureFolder("Initiatives", projectFolder);
+      if (project && !folderId) throw new Error("could not create project initiative folder");
       // Same subject scoping and budget as the seeded pages: an initiative page synthesizes from
       // the same bank, which also holds facts about the dependencies this repo merely uses, and
       // "the project's memory" alone never said WHICH project (#3476). `max_tokens` is stated for
@@ -1242,9 +1343,9 @@ export class HindsightClient {
           `and its current state — drawn from the project's memory.` +
           pageScopeRule(this.project),
         parent_id: folderId,
-        tags: ["knowledge:feature-work"],
+        tags: this.projectTag ? [this.projectTag] : ["knowledge:feature-work"],
         max_tokens: PAGE_MAX_TOKENS,
-        trigger: pageTriggerFor(args.pageTrigger ?? buildPageTrigger(), this.bank, args.title),
+        trigger: this.scopedPageTrigger(args.pageTrigger ?? buildPageTrigger(), args.title),
       });
       try {
         const j = (await r?.json()) as { page_id?: string; id?: string } | undefined;
@@ -1274,13 +1375,15 @@ export class HindsightClient {
   }
 
   /** Find a root folder by name (case-insensitive) or create it; returns its id. Fail-open to undefined. */
-  async ensureFolder(name: string): Promise<string | undefined> {
+  async ensureFolder(name: string, parentId?: string): Promise<string | undefined> {
     try {
       const r = await this.pagesReq("GET", "/tree");
-      const tree = (await r?.json()) as
-        | { roots?: { id?: string; kind?: string; name?: string }[] }
-        | undefined;
-      const hit = (tree?.roots || []).find(
+      const tree = (await r?.json()) as { roots?: PageNode[] } | undefined;
+      const roots = tree?.roots ?? [];
+      const siblings = parentId
+        ? (roots.find((node) => node.id === parentId)?.children ?? [])
+        : roots;
+      const hit = siblings.find(
         (n) => n.kind === "folder" && (n.name || "").toLowerCase() === name.toLowerCase()
       );
       if (hit?.id) return hit.id;
@@ -1288,7 +1391,14 @@ export class HindsightClient {
       /* fall through to create */
     }
     try {
-      const r = await this.pagesReq("POST", "/folders", { name });
+      const r = await this.pagesReq("POST", "/folders", { name, parent_id: parentId }, [409]);
+      if (r?.status === 409) {
+        const roots = await this.tree();
+        const siblings = parentId
+          ? (roots.find((node) => node.id === parentId)?.children ?? [])
+          : roots;
+        return siblings.find((node) => node.kind === "folder" && node.name === name)?.id;
+      }
       return ((await r?.json()) as { id?: string } | undefined)?.id;
     } catch {
       return undefined;

@@ -8,16 +8,79 @@
   let port;
   let pending = null;
   let loading = false;
+  let llmTouched = false;
+  const escapeHtml = (value) =>
+    String(value).replace(
+      /[&<>"']/g,
+      (char) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]
+    );
   const disable = () =>
-    actions.forEach((action) => {
+    [...actions, "syncLlm"].forEach((action) => {
       element(action).disabled = true;
     });
+  function renderLlm(state, fresh, busy) {
+    const llm = state?.llm;
+    const select = element("llmModel");
+    const button = element("syncLlm");
+    if (!llm) {
+      element("llmStatus").textContent = "未上报";
+      element("llmHost").textContent = "—";
+      element("llmConfigured").textContent = "—";
+      element("llmMode").textContent = "—";
+      select.disabled = true;
+      button.disabled = true;
+      element("llmNote").textContent = "等待插件宿主上报 LLM 状态。";
+      return;
+    }
+    const labels = {
+      synced: "已接入",
+      pending: "同步中",
+      updated: "已更新",
+      manual: "手动配置",
+      unavailable: "不可用",
+      error: "错误",
+    };
+    element("llmStatus").textContent = fresh ? labels[llm.status] || llm.status : "状态未更新";
+    element("llmHost").textContent = llm.hostModel || "—";
+    element("llmConfigured").textContent = llm.configuredModel || "—";
+    element("llmMode").textContent = llm.mode === "fixed" ? "固定模型" : "跟随 Magpie";
+
+    const models = Array.isArray(llm.models) ? llm.models : [];
+    const optionsHtml = [
+      '<option value="">跟随 Magpie 当前模型</option>',
+      ...models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`),
+    ];
+    if (llm.configuredModel && !models.includes(llm.configuredModel))
+      optionsHtml.push(
+        `<option value="${escapeHtml(llm.configuredModel)}">${escapeHtml(llm.configuredModel)}（当前）</option>`
+      );
+    const html = optionsHtml.join("");
+    if (select.dataset.options !== html) {
+      select.innerHTML = html;
+      select.dataset.options = html;
+    }
+    if (!llmTouched) select.value = llm.mode === "fixed" ? llm.configuredModel || "" : "";
+
+    const hasChoice = optionsHtml.length > 1;
+    select.disabled = !fresh || busy || !hasChoice;
+    button.disabled = !fresh || busy || llm.status === "unavailable" || !llm.hostModel;
+    element("llmNote").textContent = [
+      llm.message,
+      llm.restartRequired
+        ? "记忆服务正在运行，点击“同步并应用”会重启它以使用新配置。"
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   function render() {
     const state = window.hindsightProcessState;
     disable();
     if (!state || state.port !== port || Date.now() - state.checkedAt > 15000) {
       element("running").textContent = "状态未更新";
       status.textContent = "等待插件宿主更新状态。可点击“刷新状态”重新读取。";
+      renderLlm(state, false, true);
       return;
     }
     element("running").textContent = state.running ? "运行中" : "已停止";
@@ -43,6 +106,7 @@
       pending = null;
     }
     const busy = pending || operation?.phase === "running";
+    renderLlm(state, true, Boolean(busy));
     if (busy) {
       status.textContent = "正在执行，请稍候…";
       return;
@@ -106,6 +170,31 @@
         }
       });
     }
+    element("llmModel").addEventListener("change", () => {
+      llmTouched = true;
+    });
+    element("syncLlm").addEventListener("click", async () => {
+      disable();
+      pending = Date.now() + "-" + Math.random().toString(36).slice(2, 12).padEnd(10, "0");
+      status.textContent = "正在同步 LLM 配置…";
+      try {
+        options = await window.magpie.options.get();
+        await window.magpie.options.set({
+          ...options,
+          port,
+          processRequest: {
+            id: pending,
+            action: "sync-llm",
+            model: element("llmModel").value || null,
+          },
+        });
+        refresh();
+      } catch (error) {
+        pending = null;
+        render();
+        status.textContent = error.message;
+      }
+    });
     element("refresh").addEventListener("click", refresh);
     refresh();
     setInterval(refresh, 3000);

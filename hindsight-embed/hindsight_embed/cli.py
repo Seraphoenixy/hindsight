@@ -189,10 +189,10 @@ def _do_configure_web() -> int:
     on the same page rather than behind a second URL, a second token and a second
     process to supervise.
 
-    The daemon is ensured first because the page reads banks from it, and because
-    the profile settings it edits are what the daemon starts with. A daemon that
-    fails to start does not stop the page from opening — that page is where the
-    broken profile gets fixed — but it is reported rather than swallowed.
+    The daemon is deliberately not touched here. ``/local`` is where a profile is
+    configured and where the daemon gets started, so the page must open even when
+    the daemon is absent or broken. Its absence is reported rather than treated
+    as a launch failure.
     """
     import webbrowser
 
@@ -213,20 +213,16 @@ def _do_configure_web() -> int:
     print(f"Open the local settings page: {url}")
     if not result.daemon_ok:
         # Not fatal, and deliberately not a failure exit: the page opens, and it is
-        # the one place the profile can be fixed. Say so, or the empty bank list
-        # reads as a bug in the UI.
+        # the one place the profile can be fixed and its daemon started. Say so, or
+        # the empty bank list reads as a bug in the UI.
         #
         # The leading newline is not cosmetic: `start_ui` renders its progress as a
         # Rich panel, and Rich leaves the cursor at the panel's right edge when it
         # writes to a pipe. Without it this warning is glued to the border and reads
         # as part of the panel that just said the UI started.
         print(
-            "\nWarning: the daemon did not start; /local will show it as stopped and its LLM settings "
-            "can be corrected there.",
-            file=sys.stderr,
-        )
-        print(
-            f"  Its log: {ProfileManager().resolve_profile_paths(profile).log}",
+            "\nNote: the daemon is not running; /local shows it as stopped and starts it once the "
+            "profile is configured.",
             file=sys.stderr,
         )
     try:
@@ -735,8 +731,12 @@ def do_ui(args, config: dict, logger):
             )
             return 0
 
-        # Ensure daemon is running first
-        if not daemon_client.is_daemon_running(profile):
+        # The UI and the memory daemon have independent lifecycles. The UI's
+        # /local page is where a profile is configured and the daemon is started
+        # explicitly, so opening the UI must not bootstrap memory. `--with-daemon`
+        # restores the old one-command convenience for callers that want the
+        # whole stack up. `--no-daemon` is kept as a compatibility no-op.
+        if getattr(args, "with_daemon", False) and not daemon_client.is_daemon_running(profile):
             console.print("[dim]Daemon not running, starting it first...[/dim]")
             if not daemon_client.ensure_daemon_running(config, profile):
                 console.print(
@@ -748,7 +748,7 @@ def do_ui(args, config: dict, logger):
                 )
                 return 1
 
-        if daemon_client.start_ui(profile, ui_port, hostname):
+        if daemon_client.start_ui(profile, ui_port, hostname, check_running=False):
             return 0
         else:
             return 1
@@ -1409,7 +1409,7 @@ def main() -> None:
             if getattr(args, "web", False):
                 # The browser wizard is the control plane's local-management page
                 # now: one UI, one place to configure the stack. Bring the control
-                # plane up (starting the daemon first) and send the user there.
+                # plane up and send the user there; the page starts the daemon.
                 exit_code = _do_configure_web()
                 sys.exit(exit_code)
             exit_code = do_configure(args)
@@ -1454,6 +1454,16 @@ def main() -> None:
             start_parser.add_argument("--port", type=int, help="Port for the UI (default: daemon_port + 10000)")
             start_parser.add_argument(
                 "--hostname", "-H", default="0.0.0.0", help="Hostname to bind to (default: 0.0.0.0)"
+            )
+            start_parser.add_argument(
+                "--no-daemon",
+                action="store_true",
+                help=argparse.SUPPRESS,
+            )
+            start_parser.add_argument(
+                "--with-daemon",
+                action="store_true",
+                help="Also start the API daemon before opening the UI",
             )
             stop_parser = subparsers.add_parser("stop", help="Stop the UI")
             stop_parser.add_argument("--port", type=int, help="Port the UI is running on")
@@ -1546,7 +1556,9 @@ Daemon management:
     daemon logs [-f] [-n]  View daemon logs
 
 UI (control plane):
-    ui start [--port PORT] [--hostname HOST]  Start the web UI (default port: daemon_port + 10000)
+    ui start [--port PORT] [--hostname HOST] [--with-daemon]
+                                              Start the web UI (default port: daemon_port + 10000);
+                                              add --with-daemon to start the API first
     ui stop [--port PORT]                     Stop the web UI
     ui status [--port PORT]                   Check UI status
     ui logs [-f] [-n]                         View UI logs
@@ -1554,6 +1566,7 @@ UI (control plane):
 Local management (machine-readable, JSON on stdout):
     ops profiles                    List every profile with its daemon status
     ops settings [-p PROFILE]       The grouped settings catalog with current values
+    ops models [-p PROFILE]         Model ids a provider advertises (JSON request on stdin; nothing is saved)
     ops config [-p PROFILE]         The profile's editable configuration (API key masked)
     ops env [-p PROFILE]            The profile's raw .env contents
     ops paths [-p PROFILE]          On-disk references and URLs for the profile

@@ -2816,6 +2816,7 @@
     "start": "開始",
     "stop": "停止",
     "restart": "重啟",
+    "openMemory": "開啟記憶管理",
     "deleteProfile": "刪除設定檔",
     "failed": "失敗",
     "savedRestart": "已儲存。重啟守護程式後生效。",
@@ -2859,6 +2860,12 @@
     "deleteConfirm": "刪除設定檔「{name}」？會停咗佢嘅守護程式，再刪設定同日誌，唔可以還原。",
     "optionDefault": "（預設）",
     "optionCustom": "自訂…",
-    "defaultHint": "（預設：{value}）"
+    "defaultHint": "（預設：{value}）",
+    "fetchModels": "攞模型",
+    "fetchingModels": "正在攞模型…",
+    "modelsAvailable": "可用模型：{count}",
+    "modelsEmpty": "供應商冇回傳任何模型。",
+    "modelsNeedProvider": "請先揀供應商。",
+    "modelsHint": "用上面嘅供應商、金鑰同基礎 URL 查詢，唔會儲存任何內容。"
   }
 }

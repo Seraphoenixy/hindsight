@@ -52,6 +52,15 @@
       button {
         min-height: 34px;
       }
+      select {
+        min-height: 34px;
+        max-width: 320px;
+        padding: 0 8px;
+        border: 1px solid var(--magpie-line);
+        border-radius: 8px;
+        background: var(--magpie-card);
+        color: inherit;
+      }
     </style>
   </head>
   <body>
@@ -84,6 +93,30 @@
         </div>
         <p class="note">
           管理界面独立运行，Magpie 退出或重载后仍会保持运行。完整管理界面在系统浏览器中打开。
+        </p>
+      </section>
+      <section class="card">
+        <div class="row">
+          <h2>LLM 接入</h2>
+          <strong id="llmStatus">正在检测…</strong>
+        </div>
+        <dl>
+          <dt>Magpie 模型</dt>
+          <dd id="llmHost">—</dd>
+          <dt>Hindsight 模型</dt>
+          <dd id="llmConfigured">—</dd>
+          <dt>接入方式</dt>
+          <dd id="llmMode">—</dd>
+        </dl>
+        <div class="row">
+          <label for="llmModel">使用模型</label>
+          <select id="llmModel" disabled>
+            <option value="">跟随 Magpie 当前模型</option>
+          </select>
+          <button id="syncLlm" type="button" disabled>同步并应用</button>
+        </div>
+        <p class="note" id="llmNote">
+          自动使用 Magpie 已经连接的模型。Hindsight 的 LLM 若被手动改过，不会被自动覆盖。
         </p>
       </section>
       <p id="status" role="status">正在连接 Magpie…</p>

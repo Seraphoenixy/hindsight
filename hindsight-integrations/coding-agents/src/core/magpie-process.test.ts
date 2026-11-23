@@ -11,6 +11,7 @@ import {
 } from "./control-plane";
 import { isServerHealthy } from "./daemon";
 import { openManagementPage } from "./management-browser";
+import { inspectMagpieLlm, syncMagpieLlm } from "./magpie-llm";
 
 const state = vi.hoisted(() => ({ home: "", running: false }));
 vi.mock("node:os", async (original) => ({
@@ -24,6 +25,10 @@ vi.mock("./control-plane", () => ({
 }));
 vi.mock("./daemon", () => ({ isServerHealthy: vi.fn() }));
 vi.mock("./management-browser", () => ({ openManagementPage: vi.fn() }));
+vi.mock("./magpie-llm", () => ({
+  inspectMagpieLlm: vi.fn(),
+  syncMagpieLlm: vi.fn(),
+}));
 const cfg = resolveConfig({ daemonProfile: "coding-agent" });
 let file: string;
 beforeEach(() => {
@@ -33,6 +38,28 @@ beforeEach(() => {
   file = join(state.home, "runtime-state.js");
   vi.mocked(isControlPlaneHealthy).mockImplementation(async () => state.running);
   vi.mocked(isServerHealthy).mockResolvedValue(true);
+  vi.mocked(inspectMagpieLlm).mockResolvedValue({
+    status: "synced",
+    mode: "follow",
+    hostModel: "codearts/deepseek-v4.1-flash-1017",
+    configuredModel: "codearts/deepseek-v4.1-flash-1017",
+    provider: "openai-responses",
+    models: ["codearts/deepseek-v4.1-flash-1017"],
+    restartRequired: false,
+    message: "已跟随 Magpie 当前模型",
+    checkedAt: Date.now(),
+  });
+  vi.mocked(syncMagpieLlm).mockResolvedValue({
+    status: "updated",
+    mode: "fixed",
+    hostModel: "codearts/deepseek-v4.1-flash-1017",
+    configuredModel: "codearts/glm-5.3-flash",
+    provider: "openai-responses",
+    models: ["codearts/deepseek-v4.1-flash-1017", "codearts/glm-5.3-flash"],
+    restartRequired: false,
+    message: "已同步 Magpie 的模型，并重启记忆服务",
+    checkedAt: Date.now(),
+  });
   vi.mocked(stopControlPlane).mockImplementation(async () => {
     state.running = false;
     return true;
@@ -117,4 +144,21 @@ it("rejects malformed requests before running lifecycle commands", async () => {
     executeProcessRequest(cfg, 19100, { id: "../bad", action: "start" }, file)
   ).rejects.toThrow("Invalid");
   expect(ensureControlPlaneStarted).not.toHaveBeenCalled();
+});
+it("applies a page-selected LLM model without touching the UI lifecycle", async () => {
+  const sync = { id: "1795380000000-abcdefghij", action: "sync-llm" as const, model: "codearts/glm-5.3-flash" };
+  await executeProcessRequest(cfg, 19100, sync, file);
+  expect(syncMagpieLlm).toHaveBeenCalledWith(cfg, {
+    mode: "fixed",
+    model: "codearts/glm-5.3-flash",
+    force: true,
+    restart: true,
+    noCache: true,
+  });
+  expect(ensureControlPlaneStarted).not.toHaveBeenCalled();
+  expect(stopControlPlane).not.toHaveBeenCalled();
+  expect((await publishProcessState(cfg, 19100, file, sync)).operation).toMatchObject({
+    phase: "done",
+    message: "已同步 Magpie 的模型，并重启记忆服务",
+  });
 });

@@ -102,7 +102,8 @@ const log = (m: string) => {
 // Previously a pid + 30-minute TTL file: a run longer than 30 minutes lost it to the next session
 // start and two runs ingested the same bank at once (#4569). Same lease as the survey's.
 const LEASE_ROOT = join(tmpdir(), "hindsight-coding-agent", "deepen");
-const lease = acquireLease(LEASE_ROOT, encodeURIComponent(FINAL_BANK ?? ""));
+const leaseKey = cfg.projectScope ? `${FINAL_BANK}/${cfg.projectScope.id}` : (FINAL_BANK ?? "");
+const lease = acquireLease(LEASE_ROOT, encodeURIComponent(leaseKey));
 if (lease) {
   setInterval(() => {
     // Lost the lease (the machine slept past the stale window and another run took it): stop
@@ -133,6 +134,7 @@ async function main() {
       // `banks.<id>.bank` rename below it can point many repos at one destination, so a renamed
       // bank is not this repo's either. Undefined gives the shared-bank scope (#4490).
       project: PAGE_PROJECT,
+      projectScope: cfg.projectScope,
       maxParallelRetains: cfg.maxParallelRetains,
       observationScopes: cfg.observationScopes,
       // Nobody waits on a background seed, and a 429 it gives up on is history missing from the
@@ -176,7 +178,7 @@ async function main() {
     let sessions: ChatSession[] = [];
     if (!cfg.retainSessions) {
       log("[chat] retainSessions: false — skipping conversation import");
-    } else {
+    } else if (CONV || cfg.importChatHistory) {
       const chatIds = await client
         .listDocumentIds("source:chat", "all_strict")
         .catch(() => new Set<string>());

@@ -23,6 +23,7 @@ def setup_test_env():
         "HINDSIGHT_API_RETAIN_STRUCTURED_CHUNK_SIZE",
         "HINDSIGHT_API_LLM_PROVIDER",
         "HINDSIGHT_API_LLM_MODEL",
+        "HINDSIGHT_API_LLM_API_KEY",
         "HINDSIGHT_API_LLM_REASONING_EFFORT",
         "HINDSIGHT_API_LLM_BEDROCK_SERVICE_TIER",
         "HINDSIGHT_API_LLM_GEMINI_SERVICE_TIER",
@@ -1019,3 +1020,25 @@ def test_worker_reserved_and_legacy_both_set_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="RESERVED_SLOTS"):
         HindsightConfig.from_env()
+
+
+def test_missing_api_key_fails_startup_for_keyed_provider(monkeypatch):
+    """A keyed provider without a key cannot serve memory, so config load fails."""
+    from hindsight_api.config import HindsightConfig
+
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "openai")
+    monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="HINDSIGHT_API_LLM_API_KEY"):
+        HindsightConfig.from_env()
+
+
+def test_keyless_provider_starts_without_api_key(monkeypatch):
+    """Providers that authenticate out-of-band still start with no key."""
+    from hindsight_api.config import HindsightConfig
+
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "ollama")
+    monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
+
+    config = HindsightConfig.from_env()
+    config.validate()

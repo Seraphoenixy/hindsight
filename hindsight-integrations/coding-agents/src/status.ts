@@ -32,6 +32,7 @@ const resolved0 = BANK ? applyBankConfig(cfg0, BANK, REPO) : { cfg: cfg0, bankId
 const cfg = resolved0.cfg;
 const FINAL_BANK = resolved0.bankId ?? BANK;
 const client = new HindsightClient({
+  projectScope: resolved0.cfg.projectScope,
   apiUrl: arg("api-url") ?? cfg.apiUrl,
   apiToken: arg("api-token") ?? cfg.apiToken,
   bank: FINAL_BANK!,

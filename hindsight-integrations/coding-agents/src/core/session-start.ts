@@ -349,10 +349,13 @@ export async function buildSessionStartContext(args: {
           }
         }
       }
+    } else if (cfg.projectScope) {
+      startSeed(cwd, { limit: cfg.seedLimit, harness });
+      deepening = true;
     }
   }
 
-  if (!deepening) {
+  if (!deepening && cfg.bankMode !== "shared") {
     // The deepen engine is what configures the bank; without it a session write-back would name a
     // `conversation` strategy the bank does not have, and the server would extract it with its
     // generic rules (CL-Bench: "The user is working on Question 11", "The agent ran a query").
@@ -449,7 +452,7 @@ export async function runSessionStartHook(
     const sessionRoot = sessionRootDir(harness, sessionId, cwd);
     const derived = deriveBankIdOrSkip(cfg, cwd, harness, sessionRoot);
     if (derived === null) return; // repository unidentifiable: no bank, no seed, no injection
-    const resolved = applyBankConfig(cfg, derived, cwd);
+    const resolved = applyBankConfig(cfg, derived, cwd, sessionRoot);
     cfg = resolved.cfg;
     const bankId = resolved.bankId;
     if (cfg.disabled) return; // per-bank opt-out (banks.<id> override)
@@ -464,6 +467,7 @@ export async function runSessionStartHook(
       apiUrl: cfg.apiUrl,
       apiToken: cfg.apiToken,
       bank: bankId,
+      projectScope: cfg.projectScope,
       maxParallelRetains: cfg.maxParallelRetains,
       observationScopes: cfg.observationScopes,
     });
@@ -474,10 +478,12 @@ export async function runSessionStartHook(
     if (mcpHint)
       out.systemMessage = out.systemMessage ? `${out.systemMessage}\n${mcpHint}` : mcpHint;
     if (out.deferInitialReflect && sessionId) {
-      writeSessionCache(sessionCacheFile(harness, sessionId), { deferInitialReflect: true });
+      writeSessionCache(sessionCacheFile(harness, sessionId, cfg.projectScope?.id), {
+        deferInitialReflect: true,
+      });
     }
     if (spec.deferContextToToolHook && out.additionalContext && sessionId) {
-      stashPendingContext(harness, sessionId, out.additionalContext);
+      stashPendingContext(harness, sessionId, out.additionalContext, cfg.projectScope?.id);
       out.additionalContext = undefined;
     }
     // The lifecycle computes one host-neutral output; the registry owns each host's wire schema.

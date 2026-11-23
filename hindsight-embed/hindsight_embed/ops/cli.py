@@ -73,6 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add("profiles", "List every profile with its daemon status")
     add("config", "The profile's editable configuration (API key masked)")
     add("settings", "The grouped settings catalog with current values")
+    add("models", "List model ids available from a provider, using an unsaved request body")
     add("env", "The profile's raw .env contents")
     add("paths", "On-disk references and URLs for the profile")
     add("health", "Live daemon health for the profile")
@@ -125,6 +126,21 @@ def _run(args: argparse.Namespace) -> Any:
 
     if command == "settings":
         return service.to_json(service.get_settings(name))
+
+    if command == "models":
+        body = _read_body()
+        for field in ("provider", "api_key", "base_url"):
+            value = body.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{field} must be a string or null")
+        return service.to_json(
+            service.list_models(
+                name,
+                provider=body.get("provider"),
+                api_key=body.get("api_key"),
+                base_url=body.get("base_url"),
+            )
+        )
 
     if command == "env":
         return service.to_json(service.read_env_file(name))

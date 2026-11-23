@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import plugin from "./magpie";
 import { executeProcessRequest, publishProcessState } from "./core/magpie-process";
+import { autoSyncMagpieLlm } from "./core/magpie-llm";
 vi.mock("./core/magpie-process", () => ({
   executeProcessRequest: vi.fn(),
   publishProcessState: vi.fn(),
 }));
+vi.mock("./core/magpie-llm", () => ({ autoSyncMagpieLlm: vi.fn() }));
 vi.mock("./core/config", () => ({ loadConfig: () => ({ daemonProfile: "coding-agent" }) }));
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(publishProcessState).mockResolvedValue({ running: false } as never);
+  vi.mocked(autoSyncMagpieLlm).mockResolvedValue({ status: "synced" } as never);
   vi.useFakeTimers();
 });
 afterEach(() => {
@@ -52,6 +55,8 @@ it("renders live status and submits controls through the sandbox bridge", async 
       textContent: string;
       disabled: boolean;
       dataset: Record<string, string>;
+      value: string;
+      innerHTML: string;
       addEventListener: (event: string, fn: () => Promise<void>) => void;
     }
   >();
@@ -68,11 +73,20 @@ it("renders live status and submits controls through the sandbox bridge", async 
     "port",
     "daemon",
     "checked",
+    "llmStatus",
+    "llmHost",
+    "llmConfigured",
+    "llmMode",
+    "llmModel",
+    "syncLlm",
+    "llmNote",
   ]) {
     elements.set(id, {
       textContent: "",
       disabled: true,
       dataset: {},
+      value: "",
+      innerHTML: "",
       addEventListener: (_event, fn) => {
         handlers.set(id, fn);
       },
@@ -88,6 +102,17 @@ it("renders live status and submits controls through the sandbox bridge", async 
       url: "http://127.0.0.1:19100",
       checkedAt: Date.now(),
       operation: null,
+      llm: {
+        status: "synced",
+        mode: "follow",
+        hostModel: "codearts/deepseek-v4.1-flash-1017",
+        configuredModel: "codearts/deepseek-v4.1-flash-1017",
+        provider: "openai-responses",
+        models: ["codearts/deepseek-v4.1-flash-1017", "codearts/glm-5.3-flash"],
+        restartRequired: false,
+        message: "已跟随 Magpie 当前模型",
+        checkedAt: Date.now(),
+      },
     },
     magpie: {
       ready: Promise.resolve({}),
@@ -106,6 +131,8 @@ it("renders live status and submits controls through the sandbox bridge", async 
     },
   });
   expect(elements.get("running")?.textContent).toBe("运行中");
+  expect(elements.get("llmStatus")?.textContent).toBe("已接入");
+  expect(elements.get("llmModel")?.disabled).toBe(false);
   expect(elements.get("start")?.disabled).toBe(true);
   expect(elements.get("stop")?.disabled).toBe(false);
   expect(setOptions).not.toHaveBeenCalled();
@@ -115,4 +142,14 @@ it("renders live status and submits controls through the sandbox bridge", async 
     processRequest: { action: "stop", id: expect.stringMatching(/^\d{13}-[a-z0-9]{10}$/) },
   });
   expect(elements.get("open")?.disabled).toBe(true);
+  elements.get("llmModel")!.value = "codearts/glm-5.3-flash";
+  await handlers.get("syncLlm")!();
+  expect(setOptions).toHaveBeenLastCalledWith({
+    port: 19100,
+    processRequest: {
+      action: "sync-llm",
+      id: expect.stringMatching(/^\d{13}-[a-z0-9]{10}$/),
+      model: "codearts/glm-5.3-flash",
+    },
+  });
 });

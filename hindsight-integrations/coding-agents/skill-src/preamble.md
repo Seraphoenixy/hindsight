@@ -11,23 +11,21 @@ explains what happens automatically, which tools you have, and how to configure 
 
 ## What happens automatically (no action needed)
 
-- **Per-repo memory bank**: each repository resolves to a bank (shown in the session banner:
-  `↳ memory bank “coding-agent::<repo>”`). Worktrees share the main repo's bank.
-- **Ingestion builds itself**: on first open, the bank is seeded from recent commit messages and a
-  read-only codebase survey; every session start, a background engine tops it up (new commits, new
-  conversations) and keeps 5 pages current. There is NO ingest command to run.
-- **Session synthesis**: by default, the first prompt of a session triggers one deep memory
-  synthesis (`reflect`) injected into context. `autoInject` switches the source: `pages` (page
-  search hits), `recall` (recalled observations), or `none` (nothing injected; the agent
-  searches the pages first and reflects only when they are too shallow).
-- **Write-back**: the session transcript is retained into the bank automatically at session end
-  (per-turn on opencode). The user never needs to "save" a conversation.
+- **Shared memory bank**: approved projects use `工程知识与经验` by default.
+  Worktrees share their main checkout's project scope within the bank.
+- **Project approval**: projects listed in `optInPaths` can initialize their pages.
+  Git history, codebase surveys, session write-back, and historical session import
+  have separate controls and default to off in shared mode.
+- **Session synthesis**: the first prompt can inject context via `autoInject`. Recall and
+  Reflect default to the current project plus explicitly shared references.
+- **Cross-project lookup**: pass `all_projects: true` to page search or Reflect when the
+  task spans projects. Pass `shared: true` when ingesting a reference intended for every project.
 
 ## Storing things deliberately
 
 When the user says "store this in hindsight" / "remember this":
 
-- The **current conversation** is captured automatically at session end — say so; no tool needed.
+- The **current conversation** is captured at session end if session write-back is enabled. Otherwise, use `hindsight_ingest_document` for the notes the user wants to retain.
 - An **external document, notes, or durable findings** → `hindsight_ingest_document(title, content)`.
 - A **new feature/initiative being started** → `hindsight_capture_initiative(title, summary)`,
   right after the plan is agreed and before code is written.
@@ -41,7 +39,7 @@ When the user says "store this in hindsight" / "remember this":
 - `hindsight_search_pages(query)` — FIRST STOP for project questions (components,
   conventions, past decisions, initiatives). Server-side hybrid search, fast.
 - `hindsight_read_page(page_id)` / `hindsight_list_pages` — read pages fully.
-- `hindsight_reflect(query)` — deep reasoning over the whole memory for WHY questions and exact
+- `hindsight_reflect(query)` — deep reasoning over scoped memory for WHY questions and exact
   decided values; slower (seconds), use deliberately.
 - Credit visibly whenever memory informs an answer: start that part with
   `🧠 From Hindsight memory (<page>): …` — and never credit memory that didn't contribute.

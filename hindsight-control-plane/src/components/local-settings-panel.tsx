@@ -13,8 +13,10 @@
  * The token arrives as a prop from the server component that renders this page —
  * it is never fetched by the browser (see `lib/local-access.ts`).
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import Link from "next/link";
+import { RefreshCw } from "lucide-react";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useTheme } from "@/lib/theme-context";
 import { useLocale } from "next-intl";
@@ -109,6 +111,10 @@ function Loaded({ token }: { token: string }) {
 
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [models, setModels] = useState<string[]>([]);
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
 
   const [envFile, setEnvFile] = useState<EnvFileView | null>(null);
   const [envText, setEnvText] = useState("");
@@ -151,6 +157,10 @@ function Loaded({ token }: { token: string }) {
     async (name: string) => {
       setCurrent(name);
       setDraft({});
+      setModels([]);
+      setModelBusy(false);
+      setModelError(null);
+      setModelNotice(null);
       setError(null);
       setNotice(null);
       setSettings(null);
@@ -303,6 +313,55 @@ function Loaded({ token }: { token: string }) {
     }, t("savedRestart"));
   };
 
+  const effectiveSetting = useCallback(
+    (key: string) => {
+      if (!settings) return "";
+      for (const group of settings.groups) {
+        const field = group.fields.find((entry) => entry.key === key);
+        if (field) return draft[key] ?? field.value;
+      }
+      return "";
+    },
+    [draft, settings]
+  );
+
+  const fetchModels = async () => {
+    if (!current) return;
+    const requestedProfile = current;
+    const provider = effectiveSetting("HINDSIGHT_API_LLM_PROVIDER").trim();
+    if (!provider) {
+      setModels([]);
+      setModelNotice(null);
+      setModelError(t("modelsNeedProvider"));
+      return;
+    }
+    setModelBusy(true);
+    setModelError(null);
+    setModelNotice(null);
+    try {
+      const result = await localApi.listModels(token, requestedProfile, {
+        provider,
+        // null means "use the saved key"; a string (including "") is the form's
+        // current value, so testing a new key never writes it to the profile.
+        api_key: "HINDSIGHT_API_LLM_API_KEY" in draft ? draft["HINDSIGHT_API_LLM_API_KEY"] : null,
+        base_url: effectiveSetting("HINDSIGHT_API_LLM_BASE_URL"),
+      });
+      if (currentRef.current !== requestedProfile) return;
+      setModels(result.models);
+      setModelNotice(
+        result.models.length
+          ? t("modelsAvailable", { count: result.models.length })
+          : t("modelsEmpty")
+      );
+    } catch (e) {
+      if (currentRef.current !== requestedProfile) return;
+      setModels([]);
+      setModelError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (currentRef.current === requestedProfile) setModelBusy(false);
+    }
+  };
+
   const saveEnv = async () => {
     if (!current) return;
     await run(async () => {
@@ -384,6 +443,11 @@ function Loaded({ token }: { token: string }) {
                   </p>
                 </div>
                 <div className="ml-auto flex flex-wrap gap-2">
+                  {health?.api_ok && (
+                    <Button asChild size="sm">
+                      <Link href="/dashboard">{t("openMemory")}</Link>
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -518,9 +582,23 @@ function Loaded({ token }: { token: string }) {
                                 changed={field.key in draft}
                                 label={label(field)}
                                 description={description(field)}
-                                onChange={(value) =>
-                                  setDraft((d) => ({ ...d, [field.key]: value }))
-                                }
+                                models={models}
+                                modelBusy={modelBusy}
+                                modelError={modelError}
+                                modelNotice={modelNotice}
+                                onFetchModels={() => void fetchModels()}
+                                onChange={(value) => {
+                                  setDraft((d) => ({ ...d, [field.key]: value }));
+                                  if (
+                                    field.key === "HINDSIGHT_API_LLM_PROVIDER" ||
+                                    field.key === "HINDSIGHT_API_LLM_BASE_URL" ||
+                                    field.key === "HINDSIGHT_API_LLM_API_KEY"
+                                  ) {
+                                    setModels([]);
+                                    setModelError(null);
+                                    setModelNotice(null);
+                                  }
+                                }}
                               />
                             ))}
                           </div>
@@ -698,6 +776,11 @@ function SettingControl({
   changed,
   label,
   description,
+  models,
+  modelBusy,
+  modelError,
+  modelNotice,
+  onFetchModels,
   onChange,
 }: {
   field: SettingField;
@@ -705,9 +788,15 @@ function SettingControl({
   changed: boolean;
   label: string;
   description: string;
+  models?: string[];
+  modelBusy?: boolean;
+  modelError?: string | null;
+  modelNotice?: string | null;
+  onFetchModels?: () => void;
   onChange: (value: string) => void;
 }) {
   const t = useTranslations("local");
+  const modelListId = useId();
   const options = field.option_labels.length > 0 ? field.option_labels : null;
   const isCustom = field.kind === "combo" && value !== "" && !field.options.includes(value);
 
@@ -775,6 +864,56 @@ function SettingControl({
             />
           )}
         </div>
+      ) : field.key === "HINDSIGHT_API_LLM_MODEL" && onFetchModels ? (
+        <div className="space-y-1">
+          <div className="flex gap-2">
+            <Input
+              list={models && models.length > 0 ? modelListId : undefined}
+              value={value}
+              placeholder={field.placeholder || field.default}
+              onChange={(e) => onChange(e.target.value)}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={modelBusy}
+              title={t("modelsHint")}
+              onClick={onFetchModels}
+            >
+              {modelBusy ? <Spinner size="sm" /> : <RefreshCw />}
+              {modelBusy ? t("fetchingModels") : t("fetchModels")}
+            </Button>
+          </div>
+          {models && models.length > 0 ? (
+            <>
+              <datalist id={modelListId}>
+                {models.map((model) => (
+                  <option key={model} value={model} />
+                ))}
+              </datalist>
+              <div className="flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-md border bg-muted/30 p-1.5">
+                {models.map((model) => (
+                  <button
+                    key={model}
+                    type="button"
+                    title={model}
+                    onClick={() => onChange(model)}
+                    className={cn(
+                      "max-w-full truncate rounded px-1.5 py-0.5 text-[11px]",
+                      value === model
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background hover:bg-accent hover:text-accent-foreground"
+                    )}
+                  >
+                    {model}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </div>
       ) : (
         <Input
           type={
@@ -784,6 +923,15 @@ function SettingControl({
           placeholder={field.placeholder || field.default}
           onChange={(e) => onChange(e.target.value)}
         />
+      )}
+
+      {field.key === "HINDSIGHT_API_LLM_MODEL" && modelNotice && (
+        <p className="text-[11px] text-muted-foreground">{modelNotice}</p>
+      )}
+      {field.key === "HINDSIGHT_API_LLM_MODEL" && modelError && (
+        <p className="text-[11px] text-red-600 dark:text-red-400" role="alert">
+          {modelError}
+        </p>
       )}
 
       <p className="text-[11px] text-muted-foreground">
