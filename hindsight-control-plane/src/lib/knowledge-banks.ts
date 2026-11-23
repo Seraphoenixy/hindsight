@@ -114,6 +114,8 @@ export interface KnowledgeSearchRequest {
   tag_groups?: TagGroup[];
   document_ids?: string[];
   media_types?: MediaType[];
+  /** Rerank this search (true) or not (false); unset reranks when the server has a reranker. */
+  enable_reranking?: boolean;
   /** Also return how the search ranked and what the token budget kept. */
   trace?: boolean;
 }
@@ -139,7 +141,6 @@ export interface KnowledgeSearchTraceHit {
   passage_score: number;
   with_document: number;
   keyword: number;
-  reference_page: boolean;
 }
 
 /** One step of filling max_tokens, in order. */
@@ -166,7 +167,7 @@ export interface KnowledgeSearchTrace {
   timings_ms: Record<string, number>;
   /** Step 1: each candidate search's own list, best first. */
   candidate_searches: {
-    name: "vector" | "extra_vectors" | "keyword";
+    name: "vector" | "extra_vectors" | "keyword" | "document";
     results: { document_id: string; index: number; score: number }[];
   }[];
   /** Every candidate scored, best first. */

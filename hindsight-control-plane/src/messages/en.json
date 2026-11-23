@@ -2722,7 +2722,7 @@
         },
         "media_overlap_seconds": {
           "label": "Overlap (seconds)",
-          "description": "How many seconds each passage shares with the next, so nothing on a cut is lost; it must be shorter than both lengths."
+          "description": "How many seconds each passage shares with the next, so nothing on a cut is lost; at most half of both lengths."
         },
         "max_media_seconds": {
           "label": "Longest file (seconds)",
@@ -2738,6 +2738,8 @@
       "arm_extra_vectors_help": "A PDF page's bands, text and text units, searched the same way.",
       "arm_keyword": "Keywords",
       "arm_keyword_help": "Full-text matches of the query's rarer words, in every document and language.",
+      "arm_document": "Whole documents",
+      "arm_document_help": "Every text passage of the 3 documents the searches above rank best, so a part worded unlike the query is still scored.",
       "armScore": "Score in this search",
       "meaningTitle": "Meaning score",
       "meaningHelp": "Each of the {count} candidates, scored from all its vectors, then averaged with its document's best passage.",
@@ -2751,7 +2753,6 @@
       "rankingHelp": "Meaning and keywords scaled 0-1 and mixed, keywords {weight}%. Words used, with their rarity:",
       "noKeywords": "No keyword search for this query.",
       "idfHelp": "How rare the word is in this bank (IDF): rarer words count more.",
-      "referencePage": "reference list, pushed down",
       "depthTitle": "Depth cut (budget {budget})",
       "depthHelp": "Keeps the top {depth} of {total} for the token budget.",
       "budgetTitle": "Filling max_tokens",

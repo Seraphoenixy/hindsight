@@ -2722,7 +2722,7 @@
         },
         "media_overlap_seconds": {
           "label": "Überlappung (Sekunden)",
-          "description": "Wie viele Sekunden sich ein Abschnitt mit dem nächsten teilt, damit an einem Schnitt nichts verloren geht; muss kürzer als beide Längen sein."
+          "description": "Wie viele Sekunden sich ein Abschnitt mit dem nächsten teilt, damit an einem Schnitt nichts verloren geht; höchstens die Hälfte beider Längen."
         },
         "max_media_seconds": {
           "label": "Längste Datei (Sekunden)",
@@ -2738,6 +2738,8 @@
       "arm_extra_vectors_help": "Streifen, Text und Texteinheiten einer PDF-Seite, gleich durchsucht.",
       "arm_keyword": "Schlüsselwörter",
       "arm_keyword_help": "Volltexttreffer der selteneren Wörter der Anfrage, in jedem Dokument und jeder Sprache.",
+      "arm_document": "Ganze Dokumente",
+      "arm_document_help": "Jede Textpassage der 3 Dokumente, die die Suchen oben am besten einstufen, damit auch ein anders formulierter Teil bewertet wird.",
       "armScore": "Score in dieser Suche",
       "meaningTitle": "Bedeutungsscore",
       "meaningHelp": "Jeder der {count} Kandidaten, aus allen Vektoren bewertet und mit der besten Passage seines Dokuments gemittelt.",
@@ -2751,7 +2753,6 @@
       "rankingHelp": "Bedeutung und Schlüsselwörter auf 0-1 skaliert und gemischt, Schlüsselwörter {weight}%. Verwendete Wörter mit ihrer Seltenheit:",
       "noKeywords": "Keine Schlüsselwortsuche für diese Anfrage.",
       "idfHelp": "Wie selten das Wort in dieser Bank ist (IDF): seltenere zählen mehr.",
-      "referencePage": "Literaturliste, abgewertet",
       "depthTitle": "Tiefenschnitt (Budget {budget})",
       "depthHelp": "Behält die besten {depth} von {total} für das Token-Budget.",
       "budgetTitle": "max_tokens füllen",

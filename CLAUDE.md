@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
+For this private customization branch, start with [the private maintenance index](hindsight-docs/docs-private/index.md). Check [upstream sync status](hindsight-docs/docs-private/upstream/index.md) before importing upstream changes; current architecture, individual ADRs, sync batches, and troubleshooting are maintained separately there.
+
 Hindsight is an agent memory system that provides long-term memory for AI agents using biomimetic data structures. Memories are organized as:
 - **World facts**: General knowledge ("The sky is blue")
 - **Experience facts**: Personal experiences ("I visited Paris in 2023")
@@ -115,7 +117,7 @@ uv run run-amb --dataset longmemeval --split s -- --category single-session-user
 - **hindsight-clients/**: Generated SDK clients (Python, TypeScript, Rust, Go)
 - **hindsight-docs/**: Docusaurus documentation site
 - **hindsight-integrations/**: Framework integrations (LiteLLM, CrewAI, LangGraph, Pydantic AI, AG2, Claude Code, coding-agents, etc.)
-- **hindsight-embed/**: Embedded Python CLI and local daemon manager (connects to local API or falls back to uvx hindsight-api). Its `ops` subcommand is the machine-readable management surface (`hindsight-embed ops <command>`, one JSON document per invocation); the control plane's `/local` page calls it for profile/`.env`/daemon operations. The embed's own control center (port 7878) was removed — see [ADR-006](hindsight-docs/docs-private/architecture-decisions.md).
+- **hindsight-embed/**: Embedded Python CLI and local daemon manager (connects to local API or falls back to uvx hindsight-api). Its `ops` subcommand is the machine-readable management surface (`hindsight-embed ops <command>`, one JSON document per invocation); the control plane's `/local` page calls it for profile/`.env`/daemon operations. The embed's own control center (port 7878) was removed — see [ADR-006](hindsight-docs/docs-private/architecture/decisions/006-local-ops-control-plane.md).
 - **hindsight-system-tests/**: Blackbox end-to-end integration test suite driven through SDK against local stubs
 - **hindsight-system-evals/**: End-to-end quality evaluation suites scored by independent LLM judges against real providers
 - **hindsight-integration-tests/**: E2E and integration test suites requiring a running server (live API or docker-compose)

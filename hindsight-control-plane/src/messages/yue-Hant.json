@@ -2722,7 +2722,7 @@
         },
         "media_overlap_seconds": {
           "label": "重疊（秒）",
-          "description": "每個段落同下一段共用幾多秒，等切開嗰度唔會漏嘢；一定要短過兩個長度。"
+          "description": "每個段落同下一段共用幾多秒，等切開嗰度唔會漏嘢；最多係兩個長度嘅一半。"
         },
         "max_media_seconds": {
           "label": "最長檔案（秒）",
@@ -2738,6 +2738,8 @@
       "arm_extra_vectors_help": "PDF 頁嘅條帶、文字同文字單元，用同樣方法搵。",
       "arm_keyword": "關鍵詞",
       "arm_keyword_help": "查詢入面較罕見字詞嘅全文配對（所有文件同語言）。",
+      "arm_document": "成份文件",
+      "arm_document_help": "上面搜尋排得最高嘅 3 份文件嘅每段文字，同查詢講法唔同嘅部分都會評分。",
       "armScore": "喺呢個搜尋嘅分數",
       "meaningTitle": "意思分數",
       "meaningHelp": "{count} 個候選逐個用所有向量評分，再同文件最好段落平均。",
@@ -2751,7 +2753,6 @@
       "rankingHelp": "意思同關鍵詞縮放到 0-1 再混合，關鍵詞佔 {weight}%。用到嘅字詞同罕見度：",
       "noKeywords": "呢個查詢冇關鍵詞搜尋。",
       "idfHelp": "呢個詞喺呢個庫有幾罕見（IDF）：越罕見越重要。",
-      "referencePage": "參考文獻列表，排低",
       "depthTitle": "深度截斷（預算 {budget}）",
       "depthHelp": "為 token 預算保留 {total} 個入面頭 {depth} 個。",
       "budgetTitle": "填滿 max_tokens",

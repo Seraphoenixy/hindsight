@@ -2722,7 +2722,7 @@
         },
         "media_overlap_seconds": {
           "label": "Sobreposição (segundos)",
-          "description": "Quantos segundos cada passagem compartilha com a próxima, para nada se perder num corte; deve ser menor que as duas durações."
+          "description": "Quantos segundos cada passagem compartilha com a próxima, para nada se perder num corte; no máximo metade das duas durações."
         },
         "max_media_seconds": {
           "label": "Arquivo mais longo (segundos)",
@@ -2738,6 +2738,8 @@
       "arm_extra_vectors_help": "Faixas, texto e unidades de texto de uma página PDF, buscados igual.",
       "arm_keyword": "Palavras-chave",
       "arm_keyword_help": "Correspondências de texto completo das palavras mais raras da consulta, em todo documento e idioma.",
+      "arm_document": "Documentos inteiros",
+      "arm_document_help": "Cada passagem de texto dos 3 documentos mais bem classificados pelas buscas acima, para pontuar também uma parte escrita de outro jeito que a consulta.",
       "armScore": "Pontuação nesta busca",
       "meaningTitle": "Pontuação de significado",
       "meaningHelp": "Cada um dos {count} candidatos, pontuado por todos os seus vetores e com média do melhor trecho do documento.",
@@ -2751,7 +2753,6 @@
       "rankingHelp": "Significado e palavras-chave escalados 0-1 e misturados, palavras-chave {weight}%. Palavras usadas, com sua raridade:",
       "noKeywords": "Sem busca por palavras-chave para esta consulta.",
       "idfHelp": "Quão rara a palavra é neste banco (IDF): raras contam mais.",
-      "referencePage": "lista de referências, rebaixada",
       "depthTitle": "Corte de profundidade (orçamento {budget})",
       "depthHelp": "Mantém os {depth} melhores de {total} para o orçamento de tokens.",
       "budgetTitle": "Preenchendo max_tokens",
