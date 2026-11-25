@@ -76,6 +76,9 @@ class BankTemplateConfig(BaseModel):
     )
     enable_observations: bool | None = Field(default=None, description="Toggle observation consolidation")
     observations_mission: str | None = Field(default=None, description="Controls what gets synthesised")
+    consolidation_group_by_conclusion: bool | None = Field(
+        default=None, description="Consolidate related facts into actionable conclusions"
+    )
     enable_text_search: bool | None = Field(
         default=None, description="Toggle the keyword (BM25) arm during recall, leaving pure vector search"
     )
@@ -258,7 +261,7 @@ class BankTemplateConfig(BaseModel):
     default_timezone: str | None = Field(
         default=None,
         description="IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, "
-        "is read in when it carries no UTC offset.",
+        "is read in when it carries no UTC offset, and the zone the LLM reads memory times in.",
     )
     enable_auto_consolidation: bool | None = Field(
         default=None, description="Automatically consolidate observations after retain"

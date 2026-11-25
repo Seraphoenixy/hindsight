@@ -64,7 +64,8 @@ def generate_openapi_spec(output_path: str = None):
 
     # Write to file
     output_file = Path(output_path)
-    with open(output_file, "w") as f:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open("w", encoding="utf-8") as f:
         json.dump(openapi_schema, f, indent=2)
 
     print(f"✓ OpenAPI specification generated: {output_file.absolute()}")

@@ -6,9 +6,9 @@
 | --- | --- |
 | private 初始快照 | `ea5330491a69802747adb503b31e81906f381dd4` |
 | 对应上游基准 | `55dde528`；其完整文件树与初始快照相同 |
-| 最近评估边界 | `62a03bfc96f175e9ac155acc72f292bed9ac4449` |
+| 最近评估边界 | `291cede18f9fa14424a8bde924e0840d98494db7` |
 | 同步方式 | 筛选上游提交，按顺序移植保留目录的补丁 |
-| 最近批次 | [2026-11-23：3 项核心修复和 12 项知识库更新](2026-11-23.md) |
+| 最近批次 | [2026-11-24：记忆、知识库与模型后端](2026-11-24.md) |
 | 暂缓功能 | `8f26559e`，每个记忆库的 HTTP MCP 初始化说明 |
 
 `private` 是独立初始提交，当前与上游无共同祖先。文件树一致确认了初始内容来源，但不会让 Git 自动建立祖先关系。因此不能直接用 `main..private` 的提交数判断落后范围，也不能把“已评估到某个 SHA”写成“已完整合并该 SHA”。
@@ -36,7 +36,7 @@
 ```bash
 git status --short
 git fetch --filter=blob:none origin refs/heads/main:refs/remotes/origin/main
-git log --reverse --oneline 62a03bfc96f175e9ac155acc72f292bed9ac4449..origin/main
+git log --reverse --oneline 291cede18f9fa14424a8bde924e0840d98494db7..origin/main
 git show <待评估提交>
 ```
 

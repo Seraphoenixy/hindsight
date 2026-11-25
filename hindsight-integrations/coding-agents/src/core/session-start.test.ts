@@ -38,6 +38,38 @@ vi.mock("./config", async (importOriginal) => {
 const listPagesOk = async () => ({ items: [{ id: "p1", name: "Component map" }] });
 
 describe("buildSessionStartContext", () => {
+  it("clears earlier working rules when resuming with an empty projection", async () => {
+    const getWorkingRulesProjection = vi.fn(async () => ({
+      revision: "empty",
+      text: "",
+      entries: [],
+      total_active_entries: 0,
+      minimum_characters: 0,
+      truncated: false,
+    }));
+    const args = {
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig({ autoSeed: false }),
+      client: {
+        listDocumentIds: async () => new Set<string>(),
+        listPages: listPagesOk,
+        getWorkingRulesProjection,
+      },
+      detectLegacyPlugin: () => undefined,
+    };
+    const started = await buildSessionStartContext(args);
+    expect(started.additionalContext).not.toContain("<hindsight_working_rules");
+    const resumed = await buildSessionStartContext({
+      ...args,
+      workingRulesRevision: "previous-rules",
+    });
+    expect(resumed.additionalContext).toContain(
+      '<hindsight_working_rules revision="empty" entries="0">'
+    );
+    expect(resumed.additionalContext).toContain("No standing working rules apply");
+  });
+
   it("warns in the user-visible banner when the old Claude Code plugin is still active", async () => {
     const client = { listDocumentIds: async () => new Set(["git:a"]), listPages: listPagesOk };
     const detectLegacyPlugin = vi.fn().mockReturnValue("hindsight-memory@hindsight");

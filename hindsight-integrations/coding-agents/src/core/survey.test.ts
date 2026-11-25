@@ -473,7 +473,7 @@ describe("startCodebaseSurvey", () => {
 
   // Real processes end to end: bundled hook + bundled supervisor + a stand-in agent.
   it("single-flights independent hooks, survives their exit, and recovers a dead supervisor", async () => {
-    const build = (entry: string, outfile: string) =>
+    const build = (entry: string, outfile: string, setup = "") =>
       buildSync({
         entryPoints: [fileURLToPath(new URL(entry, import.meta.url))],
         bundle: true,
@@ -481,13 +481,21 @@ describe("startCodebaseSurvey", () => {
         format: "esm",
         outfile,
         banner: {
-          js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
+          js:
+            'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' +
+            setup,
         },
       });
     const bundle = join(lockDir, "survey.mjs");
     const supervisor = join(lockDir, "survey-supervisor.mjs");
     build("./survey.ts", bundle);
-    build("../survey-supervisor.ts", supervisor);
+    // Windows can reuse the OS parent PID after a detached process exits. Stamp the known
+    // supervisor's PID explicitly so cleanup never signals an unrelated Vitest worker.
+    build(
+      "../survey-supervisor.ts",
+      supervisor,
+      "process.env.HINDSIGHT_TEST_SUPERVISOR_PID = String(process.pid);"
+    );
     const config = join(lockDir, "config.json");
     writeFileSync(
       config,
@@ -499,7 +507,7 @@ describe("startCodebaseSurvey", () => {
       })
     );
     // The stand-in agent records its pid and its supervisor's, then idles like a long survey.
-    const agent = `const fs = require('node:fs'); if (process.env.${SURVEY_SPEC_ENV}) fs.writeFileSync(${JSON.stringify(lockDir)} + '/leaked-spec', ''); fs.writeFileSync(${JSON.stringify(lockDir)} + '/pid-' + process.pid + '-' + process.ppid, ''); setInterval(() => {}, 1000);`;
+    const agent = `const fs = require('node:fs'); if (process.env.${SURVEY_SPEC_ENV}) fs.writeFileSync(${JSON.stringify(lockDir)} + '/leaked-spec', ''); fs.writeFileSync(${JSON.stringify(lockDir)} + '/pid-' + process.pid + '-' + process.env.HINDSIGHT_TEST_SUPERVISOR_PID, ''); setInterval(() => {}, 1000);`;
     const staleMs = 2_000;
     const hook = `
       import { startCodebaseSurvey } from ${JSON.stringify(pathToFileURL(bundle).href)};
@@ -564,10 +572,11 @@ describe("startCodebaseSurvey", () => {
       process.kill(first.pid, "SIGTERM");
       await vi.waitFor(() => expect(alive(first.ppid)).toBe(false));
       expect(await race()).toBe(1);
-      await vi.waitFor(() => expect(agents().filter((a) => alive(a.pid))).toHaveLength(1));
+      const laterAgents = () => agents().filter((a) => a.pid !== first.pid && alive(a.pid));
+      await vi.waitFor(() => expect(laterAgents()).toHaveLength(1));
 
       // The supervisor dies without releasing: its lease goes stale, and one reclaimer wins.
-      const second = agents().find((a) => alive(a.pid))!;
+      const second = laterAgents()[0];
       process.kill(second.ppid, "SIGKILL");
       expect(await runHook()).toBe(false); // not stale yet
       await sleep(staleMs * 2);

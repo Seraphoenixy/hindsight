@@ -38,6 +38,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { countLogLevels, parseLogLines, type LogLevel, type ParsedLogLine } from "@/lib/log-levels";
 
 type Tab = "quick" | "settings" | "config" | "files" | "logs";
 
@@ -127,6 +128,7 @@ function Loaded({ token }: { token: string }) {
   const [logSource, setLogSource] = useState<"daemon" | "ui">("daemon");
   const [logLines, setLogLines] = useState(200);
   const [logAuto, setLogAuto] = useState(true);
+  const [logLevelFilter, setLogLevelFilter] = useState<"all" | LogLevel>("all");
 
   // A request that lands after the user picked another profile must not paint
   // that profile's data onto the new selection. Every loader checks it.
@@ -255,6 +257,16 @@ function Loaded({ token }: { token: string }) {
     }, 4000);
     return () => clearInterval(id);
   }, [current, token]);
+
+  const parsedLogLines = useMemo(() => parseLogLines(logText), [logText]);
+  const logLevelCounts = useMemo(() => countLogLevels(parsedLogLines), [parsedLogLines]);
+  const filteredLogLines = useMemo(
+    () =>
+      logLevelFilter === "all"
+        ? parsedLogLines
+        : parsedLogLines.filter((entry) => entry.level === logLevelFilter),
+    [parsedLogLines, logLevelFilter]
+  );
 
   // Log tail poll, only while the Logs tab is open and auto-refresh is on.
   useEffect(() => {
@@ -706,9 +718,45 @@ function Loaded({ token }: { token: string }) {
                       {logPath}
                     </span>
                   </div>
-                  <pre className="max-h-[60vh] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap">
-                    {logText || "—"}
-                  </pre>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(
+                      [
+                        { id: "all", label: t("logLevelAll"), count: parsedLogLines.length },
+                        { id: "error", label: "ERROR", count: logLevelCounts.error },
+                        { id: "warn", label: "WARNING", count: logLevelCounts.warn },
+                        { id: "info", label: "INFO", count: logLevelCounts.info },
+                        { id: "debug", label: "DEBUG", count: logLevelCounts.debug },
+                      ] as const
+                    ).map((item) => {
+                      const active = logLevelFilter === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => setLogLevelFilter(item.id)}
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-colors",
+                            active ? LOG_FILTER_ACTIVE[item.id] : LOG_FILTER_IDLE[item.id]
+                          )}
+                        >
+                          <span>{item.label}</span>
+                          <span className="tabular-nums opacity-75">{item.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div
+                    role="log"
+                    className="max-h-[60vh] overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs space-y-0.5"
+                  >
+                    {filteredLogLines.length > 0 ? (
+                      filteredLogLines.map((entry, idx) => <LogLineRow key={idx} entry={entry} />)
+                    ) : (
+                      <div className="px-2 py-1 text-muted-foreground">
+                        {logText ? t("logsNoMatch") : "—"}
+                      </div>
+                    )}
+                  </div>
                 </section>
               )}
             </Fragment>
@@ -938,6 +986,68 @@ function SettingControl({
         {description}
         {!field.is_set && field.default ? ` ${t("defaultHint", { value: field.default })}` : ""}
       </p>
+    </div>
+  );
+}
+
+const LOG_FILTER_ACTIVE: Record<"all" | LogLevel, string> = {
+  all: "border-foreground bg-foreground text-background",
+  error: "border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-300",
+  warn: "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  info: "border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300",
+  debug: "border-border bg-muted text-foreground",
+  other: "border-border bg-muted text-foreground",
+};
+
+const LOG_FILTER_IDLE: Record<"all" | LogLevel, string> = {
+  all: "border-border bg-background text-muted-foreground hover:text-foreground",
+  error: "border-border bg-background text-red-600/80 dark:text-red-400/80 hover:bg-red-500/10",
+  warn: "border-border bg-background text-amber-600/80 dark:text-amber-400/80 hover:bg-amber-500/10",
+  info: "border-border bg-background text-sky-600/80 dark:text-sky-400/80 hover:bg-sky-500/10",
+  debug: "border-border bg-background text-muted-foreground hover:text-foreground",
+  other: "border-border bg-background text-muted-foreground hover:text-foreground",
+};
+
+const LOG_ROW_CLASS: Record<LogLevel, string> = {
+  error: "border-l-2 border-red-500 bg-red-500/10 text-red-700 dark:text-red-300",
+  warn: "border-l-2 border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  info: "border-l-2 border-sky-500/40 text-foreground",
+  debug: "border-l-2 border-transparent text-muted-foreground",
+  other: "border-l-2 border-transparent text-foreground/85",
+};
+
+const LOG_TOKEN_CLASS: Record<Exclude<LogLevel, "other">, string> = {
+  error: "rounded px-1 py-0.5 font-semibold bg-red-500/20 text-red-700 dark:text-red-300",
+  warn: "rounded px-1 py-0.5 font-semibold bg-amber-500/20 text-amber-700 dark:text-amber-300",
+  info: "rounded px-1 py-0.5 font-semibold bg-sky-500/15 text-sky-700 dark:text-sky-300",
+  debug: "rounded px-1 py-0.5 font-semibold bg-muted text-muted-foreground",
+};
+
+/** Single log line with level-based border/tint and highlighted severity token. */
+function LogLineRow({ entry }: { entry: ParsedLogLine }) {
+  const { line, level, matchStart, matchEnd } = entry;
+  const hasToken =
+    level !== "other" &&
+    matchStart !== undefined &&
+    matchEnd !== undefined &&
+    matchEnd > matchStart;
+
+  return (
+    <div
+      className={cn(
+        "rounded-r px-2 py-0.5 leading-5 whitespace-pre-wrap break-words",
+        LOG_ROW_CLASS[level]
+      )}
+    >
+      {hasToken ? (
+        <>
+          {line.slice(0, matchStart)}
+          <span className={LOG_TOKEN_CLASS[level]}>{line.slice(matchStart, matchEnd)}</span>
+          {line.slice(matchEnd)}
+        </>
+      ) : (
+        line || " "
+      )}
     </div>
   );
 }

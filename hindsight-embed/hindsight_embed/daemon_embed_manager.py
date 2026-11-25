@@ -20,6 +20,7 @@ import sysconfig
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
 from typing import IO, Optional
@@ -969,6 +970,11 @@ class DaemonEmbedManager(EmbedManager):
         if not handle:
             return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: already exited
         try:
+            # Terminate the full process tree first so child processes (e.g. pg0
+            # postgres.exe and its workers) are not orphaned when the daemon dies.
+            _kill_process_tree(pid)
+            if kernel.WaitForSingleObject(handle, 5000) == 0:  # WAIT_OBJECT_0
+                return True
             kernel.TerminateProcess(handle, 1)
             return kernel.WaitForSingleObject(handle, 5000) == 0  # WAIT_OBJECT_0
         finally:
@@ -1771,6 +1777,25 @@ class DaemonEmbedManager(EmbedManager):
             return True
         return self._start_daemon(config, profile, extra_args=extra_args)
 
+    def _stop_profile_pg0(self, profile: str) -> None:
+        """Stop an orphaned pg0 instance owned by `profile`, if one is running."""
+        try:
+            database_url = self.resolve_database_url(profile)
+        except Exception:
+            return
+        if not database_url.startswith("pg0://"):
+            return
+        instance = database_url.removeprefix("pg0://").split("?", 1)[0].strip("/")
+        if not instance:
+            return
+        postmaster_pid = Path.home() / ".pg0" / "instances" / instance / "data" / "postmaster.pid"
+        if not postmaster_pid.exists():
+            return
+        try:
+            import_module("pg0").Pg0(name=instance).stop()
+        except Exception as exc:
+            logger.debug(f"Could not stop pg0 instance '{instance}': {exc}")
+
     def stop(self, profile: str) -> bool:
         """
         Stop the daemon for this profile.
@@ -1792,6 +1817,7 @@ class DaemonEmbedManager(EmbedManager):
         # applies on the start path.
         if not self._is_port_in_use(port):
             logger.debug(f"Daemon not running for profile '{profile}'")
+            self._stop_profile_pg0(profile)
             return True
 
         pid = self._owned_pid_on_port(port, DAEMON_PROCESS_MARKERS, "hindsight daemon")
@@ -1803,6 +1829,8 @@ class DaemonEmbedManager(EmbedManager):
         if not self._kill_process(pid):
             logger.warning(f"Daemon process (PID {pid}) did not stop in time")
             return False
+
+        self._stop_profile_pg0(profile)
 
         # The process is gone; wait for the listener to disappear so a
         # follow-up start doesn't race the closing socket.

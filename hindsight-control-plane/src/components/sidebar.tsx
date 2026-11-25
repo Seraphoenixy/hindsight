@@ -18,6 +18,7 @@ import {
   Settings,
   Menu,
   X,
+  ListChecks,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,7 @@ type NavItem =
   | "recall"
   | "reflect"
   | "data"
+  | "organize"
   | "documents"
   | "entities"
   | "pages"
@@ -86,6 +88,7 @@ export function Sidebar<T extends string = NavItem>({
   const t = useTranslations("bank.sidebar");
   const tBank = useTranslations("bank");
   const tCommon = useTranslations("common");
+  const tMemoryOrganization = useTranslations("memoryOrganization");
   const { currentBank, currentBankName } = useBank();
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -111,6 +114,11 @@ export function Sidebar<T extends string = NavItem>({
   const memoryItems: SidebarItem<NavItem>[] = [
     { id: "home" as NavItem, label: t("home"), icon: Home },
     { id: "data" as NavItem, label: t("memories"), icon: Database },
+    {
+      id: "organize" as NavItem,
+      label: tMemoryOrganization("navLabel"),
+      icon: ListChecks,
+    },
     { id: "pages" as NavItem, label: t("pages"), icon: Network },
     { id: "recall" as NavItem, label: t("recall"), icon: Search },
     { id: "reflect" as NavItem, label: t("reflect"), icon: Sparkles },

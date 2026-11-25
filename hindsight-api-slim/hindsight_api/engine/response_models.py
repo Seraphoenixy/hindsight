@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationInfo, field_validator, model_validator
 
 from .metadata_utils import as_string_metadata
 from .search.tag_resolution import needs_resolution
@@ -890,6 +890,7 @@ class ConsolidationStrategySpec(BaseModel):
         default_factory=list, description="Alternatives: the strategy claims a scope when any rule matches it"
     )
     observations_mission: str | None = None
+    consolidation_group_by_conclusion: StrictBool | None = None
     max_observations_per_scope: int | None = None
     consolidation_source_facts_max_tokens: int | None = None
     consolidation_source_facts_max_tokens_per_observation: int | None = None

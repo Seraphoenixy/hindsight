@@ -146,7 +146,11 @@ it("rejects malformed requests before running lifecycle commands", async () => {
   expect(ensureControlPlaneStarted).not.toHaveBeenCalled();
 });
 it("applies a page-selected LLM model without touching the UI lifecycle", async () => {
-  const sync = { id: "1795380000000-abcdefghij", action: "sync-llm" as const, model: "codearts/glm-5.3-flash" };
+  const sync = {
+    id: "1795380000000-abcdefghij",
+    action: "sync-llm" as const,
+    model: "codearts/glm-5.3-flash",
+  };
   await executeProcessRequest(cfg, 19100, sync, file);
   expect(syncMagpieLlm).toHaveBeenCalledWith(cfg, {
     mode: "fixed",

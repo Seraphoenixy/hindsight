@@ -78,3 +78,31 @@ export function stripBasePath(path: string): string {
 
   return normalizedPath;
 }
+
+const STANDALONE_ROUTES = ["/local", "/login"];
+const DEFERRED_DATAPLANE_ROUTES = [...STANDALONE_ROUTES, "/dashboard"];
+
+/**
+ * Routes that operate without a running dataplane (e.g. local daemon
+ * configuration and login). Providers skip dataplane-backed startup fetches
+ * while on these routes so opening `/local` when the daemon is stopped does
+ * not trigger failing `/api/version` or `/api/banks` requests.
+ */
+export function isStandaloneRoute(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  const appPath = stripBasePath(pathname);
+  return STANDALONE_ROUTES.some((route) => appPath === route || appPath.startsWith(`${route}/`));
+}
+
+/**
+ * Routes where providers should not eagerly fetch dataplane endpoints on mount:
+ * standalone routes never need them, and `/dashboard` checks `/api/health`
+ * first and redirects to `/local` when the dataplane is down.
+ */
+export function shouldDeferDataplaneFetch(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  const appPath = stripBasePath(pathname);
+  return DEFERRED_DATAPLANE_ROUTES.some(
+    (route) => appPath === route || appPath.startsWith(`${route}/`)
+  );
+}

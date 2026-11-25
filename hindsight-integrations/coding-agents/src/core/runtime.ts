@@ -33,7 +33,7 @@ import { buildSessionStartContext } from "./session-start";
 import { syncCompanionSkill } from "./skill-sync";
 import { buildHookOutput } from "./hook";
 import { stripInjectedMemory } from "./transcript-util";
-import { sessionCacheFile, writeSessionCache } from "./session-cache";
+import { readSessionCache, sessionCacheFile, writeSessionCache } from "./session-cache";
 
 const HARNESS = "opencode";
 /** How long `flush` holds a host's exit for in-flight write-backs: room for one retain request. */
@@ -182,7 +182,10 @@ export class RuntimeCore {
       // `seedIfCold` has no session id. Transfer its SessionStart decision to the first concrete
       // session here; `buildHookOutput` consumes it exactly once, like hook harnesses do.
       this.deferInitialReflect = false;
-      writeSessionCache(cacheFile, { deferInitialReflect: true });
+      writeSessionCache(cacheFile, {
+        deferInitialReflect: true,
+        workingRulesRevision: readSessionCache(cacheFile).workingRulesRevision,
+      });
     }
     const output = await buildHookOutput({
       harness: this.harness,
@@ -190,6 +193,7 @@ export class RuntimeCore {
       cfg: this.cfg,
       client: this.client,
       cacheFile,
+      cwd: this.projectDir,
       preambleOnFirstTurn: true,
     });
 
@@ -202,6 +206,7 @@ export class RuntimeCore {
     if (turns === 1) {
       blocks.push(
         buildPagesPreamble(output.pages, {
+          engineering: Boolean(this.cfg.projectScope),
           reflectOnNewGoals: this.cfg.autoInject !== "reflect",
           extra: this.cfg.toolGuideExtra,
         })

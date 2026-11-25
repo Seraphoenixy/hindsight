@@ -74,6 +74,7 @@ import {
   Copy,
   Globe,
   MoreHorizontal,
+  ScrollText,
   ServerCog,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
@@ -134,6 +135,7 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
   const tNav = useTranslations("nav");
   const tNavBank = useTranslations("nav.bank");
   const tLocal = useTranslations("local");
+  const tWorkingRules = useTranslations("workingRules");
   const tKb = useTranslations("knowledgeBanks.selector");
   const tCommon = useTranslations("common");
   const tAddDocument = useTranslations("addDocument");
@@ -996,6 +998,16 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
         {/* Spacer */}
         <div className="hidden sm:block flex-1" />
 
+        {/* Global Working Rules management page */}
+        <Link
+          href="/working-rules"
+          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+          title={tWorkingRules("title")}
+        >
+          <ScrollText className="h-5 w-5" />
+          <span className="text-sm font-medium">{tWorkingRules("title")}</span>
+        </Link>
+
         {/* Local management: this machine's profiles, their .env and their
             daemon. A separate page rather than a bank view because it is not
             about one bank — it is about the stack serving all of them, and it is
@@ -1032,6 +1044,12 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
                 <Github className="h-4 w-4 mr-2" />
                 GitHub
               </a>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/working-rules">
+                <ScrollText className="h-4 w-4 mr-2" />
+                {tWorkingRules("title")}
+              </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link href="/local">

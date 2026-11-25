@@ -1116,3 +1116,44 @@ def test_kill_process_waits_for_windows_child_without_pid_zero_probe():
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows native process handles")
 def test_kill_process_accepts_already_exited_windows_pid():
     assert DaemonEmbedManager._kill_process(2147483647)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native process tree termination")
+def test_kill_process_terminates_windows_child_tree(tmp_path):
+    import time
+
+    child_pid_file = tmp_path / "grandchild.pid"
+    script = (
+        "import pathlib, subprocess, sys, time; "
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], creationflags=0x08000000); "
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(p.pid)); "
+        "time.sleep(30)"
+    )
+    parent = subprocess.Popen([sys.executable, "-c", script], creationflags=0x08000000)
+    grandchild_pid = None
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not child_pid_file.exists():
+            time.sleep(0.05)
+        assert child_pid_file.exists()
+        grandchild_pid = int(child_pid_file.read_text().strip())
+
+        assert DaemonEmbedManager._kill_process(parent.pid)
+        assert parent.wait(timeout=3) != 0
+        # Grandchild must also be gone rather than left orphaned.
+        assert DaemonEmbedManager._process_command_line(grandchild_pid) is None
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+        if grandchild_pid is not None:
+            DaemonEmbedManager._run_probe(["taskkill", "/T", "/F", "/PID", str(grandchild_pid)])
+
+
+def test_stop_cleans_up_orphaned_pg0_when_daemon_port_free(monkeypatch):
+    manager = DaemonEmbedManager()
+    called: list[str] = []
+    monkeypatch.setattr(manager, "_is_port_in_use", lambda _port: False)
+    monkeypatch.setattr(manager, "_stop_profile_pg0", lambda profile: called.append(profile))
+
+    assert manager.stop("coding-agent") is True
+    assert called == ["coding-agent"]

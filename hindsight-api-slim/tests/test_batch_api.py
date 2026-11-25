@@ -291,6 +291,27 @@ async def test_batch_api_usage_keeps_cached_and_reasoning_tokens(mock_llm_config
     assert extraction.usage == usage
 
 
+def test_batch_result_from_chat_completion_reads_typed_content_blocks_as_text():
+    """A batch line whose content is Mistral-style typed blocks reads as its text blocks (#6758)."""
+    result = batch_result_from_chat_completion(
+        "chunk_0",
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "thinking", "thinking": [{"type": "text", "text": "hmm"}]},
+                            {"type": "text", "text": '{"facts": []}'},
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+    assert result.content == '{"facts": []}'
+
+
 def test_batch_result_from_chat_completion_reads_usage_like_a_live_call():
     """An OpenAI batch output line's usage is read like a live call's: cached prompt
     and reasoning tokens survive, and folded reasoning is split out of output (#5487)."""
@@ -665,8 +686,6 @@ async def test_batch_api_crash_recovery(mock_llm_config, test_contents, hindsigh
             schema=schema,
         )
         facts = extraction.facts
-        chunks = extraction.chunks
-        usage = extraction.usage
 
         # Verify results
         assert len(facts) == 2, "Should extract 2 facts after recovery"
@@ -911,7 +930,7 @@ async def test_batch_api_via_extract_facts_from_contents(
         )
 
         # Call main extract_facts_from_contents (should route to batch API)
-        extraction = await extract_facts_from_contents(
+        await extract_facts_from_contents(
             contents=test_contents,
             llm_config=mock_llm_config,
             config=hindsight_config,
@@ -919,9 +938,6 @@ async def test_batch_api_via_extract_facts_from_contents(
             operation_id=None,
             schema=None,
         )
-        facts = extraction.facts
-        chunks = extraction.chunks
-        usage = extraction.usage
 
         # Verify batch API was called
         mock_llm_config._provider_impl.submit_batch.assert_called_once()

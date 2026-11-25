@@ -13,9 +13,10 @@ explains what happens automatically, which tools you have, and how to configure 
 
 - **Shared memory bank**: approved projects use `工程知识与经验` by default.
   Worktrees share their main checkout's project scope within the bank.
-- **Project approval**: projects listed in `optInPaths` can initialize their pages.
-  Git history, codebase surveys, session write-back, and historical session import
-  have separate controls and default to off in shared mode.
+- **Project initialization** happens automatically in the shared bank. With `optInOnly: true`,
+  only projects covered by `optInPaths` can initialize their pages.
+  Codebase surveys and session write-back are enabled by default.
+  Git history and historical session import default to off in shared mode.
 - **Session synthesis**: the first prompt can inject context via `autoInject`. Recall and
   Reflect default to the current project plus explicitly shared references.
 - **Cross-project lookup**: pass `all_projects: true` to page search or Reflect when the
@@ -25,6 +26,8 @@ explains what happens automatically, which tools you have, and how to configure 
 
 When the user says "store this in hindsight" / "remember this":
 
+- A **standing rule / workflow preference for future sessions** → `hindsight_manage_working_rules(action, content, ...)`
+  (`scope='global'` across projects or `scope='project'` for the current workspace). Use `hindsight_working_rules` to read effective or stored rules.
 - The **current conversation** is captured at session end if session write-back is enabled. Otherwise, use `hindsight_ingest_document` for the notes the user wants to retain.
 - An **external document, notes, or durable findings** → `hindsight_ingest_document(title, content)`.
 - A **new feature/initiative being started** → `hindsight_capture_initiative(title, summary)`,

@@ -11,6 +11,7 @@
 | [ADR-005：仓库裁剪](decisions/005-repository-trimming.md) | 2026-11-20 | 已采纳；同步时结合裁剪边界筛选路径 |
 | [ADR-006：本地运维并入控制平面](decisions/006-local-ops-control-plane.md) | 2026-11-21 | ops 架构保留；DSH 入口由 ADR-007 取代 |
 | [ADR-007：Magpie 统一管理入口](decisions/007-magpie-management.md) | 2026-11-23 | 已采纳；管理进程独立生命周期 |
+| [ADR-008：工作准则（Working Rules）独立子系统](decisions/008-working-rules.md) | 2026-11-24 | 已采纳；独立于 bank directives 的全局/项目准则 |
 
 ## 新增决策的格式
 

@@ -166,7 +166,10 @@ async function main() {
       });
     }
 
-    const gitIds = await client.listDocumentIds("source:git", "all_strict");
+    const gitIds =
+      GIT_INGEST === "full"
+        ? await client.listDocumentIds("source:git", "all_strict")
+        : new Set<string>();
 
     // chats FIRST: few, and they carry the decisions that make memory necessary — never starved
     // behind the git flood. Dedup against what's already in the bank (chat:<id>).

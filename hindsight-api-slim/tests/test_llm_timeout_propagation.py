@@ -42,13 +42,6 @@ def _spy_provider_call(monkeypatch, llm: LLMConfig) -> dict:
     return captured
 
 
-def test_litellm_provider_impl_receives_timeout():
-    """LLMConfig -> create_llm_provider -> LiteLLMLLM carries the resolved timeout."""
-    llm = LLMConfig(provider="litellm", api_key="k", base_url="", model="gpt-4o-mini", timeout=300.0)
-    assert llm.timeout == 300.0
-    assert llm._provider_impl.timeout == 300.0
-
-
 def test_openai_compatible_provider_impl_receives_timeout():
     """The OpenAI-compatible path (openai/groq/ollama/...) carries the timeout too."""
     llm = LLMConfig(provider="openai", api_key="k", base_url="", model="gpt-4o-mini", timeout=250.0)
@@ -63,6 +56,7 @@ def test_openai_compatible_provider_impl_receives_timeout():
         ("gemini", {}),
         ("github-copilot", {}),
         ("cursor", {}),
+        ("antigravity", {}),
         ("llamacpp", {}),
     ],
 )
@@ -84,6 +78,7 @@ async def test_every_network_provider_receives_the_resolved_timeout(provider, ex
         patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
         # The cursor provider resolves its CLI at construction; CI has no cursor-agent.
         patch("hindsight_api.engine.providers.cursor_llm.shutil.which", return_value="/usr/bin/cursor-agent"),
+        patch("hindsight_api.engine.providers.antigravity_llm.shutil.which", return_value="/usr/bin/agy"),
     ):
         llm = LLMConfig(provider=provider, api_key="k", base_url="", model="m", timeout=222.0, **extra)
     try:
@@ -152,7 +147,7 @@ def test_timeout_none_falls_back_to_provider_default(monkeypatch):
     one made this fail only in some runs (#6684).
     """
     monkeypatch.delenv(ENV_LLM_TIMEOUT, raising=False)
-    llm = LLMConfig(provider="litellm", api_key="k", base_url="", model="gpt-4o-mini")
+    llm = LLMConfig(provider="openai", api_key="k", base_url="", model="gpt-4o-mini")
     assert llm._provider_impl.timeout == DEFAULT_LLM_TIMEOUT
 
 

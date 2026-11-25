@@ -15,6 +15,7 @@ vi.mock("@/lib/sdk-response", () => ({
   respondWithSdk: vi.fn(() => new Response(null, { status: 200 })),
 }));
 
+import { respondWithSdk } from "@/lib/sdk-response";
 import { GET } from "@/app/api/banks/route";
 
 function makeRequest(url: string): Request {
@@ -47,5 +48,19 @@ describe("GET /api/banks", () => {
     await GET(makeRequest("http://localhost/api/banks"));
 
     expect(listBanks.mock.calls[0][0].query).toEqual({});
+  });
+
+  it("forwards connection errors through respondWithSdk instead of throwing 500", async () => {
+    const err = new TypeError("fetch failed");
+    listBanks.mockRejectedValueOnce(err);
+
+    const res = await GET(makeRequest("http://localhost/api/banks?limit=50&offset=0"));
+
+    expect(res.status).toBe(200);
+    expect(respondWithSdk).toHaveBeenCalledWith(
+      { error: err },
+      "Failed to fetch banks",
+      expect.objectContaining({ request: expect.any(Request) })
+    );
   });
 });

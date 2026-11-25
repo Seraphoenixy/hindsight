@@ -36,7 +36,12 @@ from . import get_embed_manager
 # The --profile override is stored in profile_manager, not here: we must keep
 # supporting `python -m hindsight_embed.cli`, and the note there explains why a
 # global in this module breaks that form.
-from .profile_manager import get_cli_profile_override, set_cli_profile_override
+from .profile_manager import (
+    get_cli_profile_override,
+    lock_profile_env,
+    set_cli_profile_override,
+    validate_profile_name,
+)
 
 CONFIG_DIR = Path.home() / ".hindsight"
 CONFIG_FILE = CONFIG_DIR / "embed"
@@ -1092,15 +1097,6 @@ def do_profile_command(args: list[str]) -> int:
         if profile_name == "default":
             profile_name = ""
 
-        # Check if profile exists
-        profile_exists = pm.profile_exists(profile_name)
-        if profile_exists and not merge:
-            display_name = profile_name or "default"
-            print(f"Error: Profile '{display_name}' already exists.", file=sys.stderr)
-            print("  Use --merge to update the profile, or delete it first with:", file=sys.stderr)
-            print(f"  hindsight-embed profile delete {display_name}", file=sys.stderr)
-            return 1
-
         # Parse new env vars
         new_config = {}
         for env_str in env_vars:
@@ -1110,35 +1106,37 @@ def do_profile_command(args: list[str]) -> int:
             key, value = env_str.split("=", 1)
             new_config[key.strip()] = value.strip()
 
-        # If merging, read existing config and merge
-        config = {}
-        if merge and profile_exists:
-            if profile_name:
-                config_path = CONFIG_DIR / "profiles" / f"{profile_name}.env"
-            else:
-                config_path = CONFIG_FILE
+        if profile_name:
+            config_path = CONFIG_DIR / "profiles" / f"{profile_name}.env"
+        else:
+            config_path = CONFIG_FILE
 
-            config = parse_env_file(config_path)
-            config.pop("PORT", None)  # Don't copy PORT, we'll set it explicitly
-
-        # Merge new config into existing
-        config.update(new_config)
-
-        # Create/update profile
+        # Create/update profile. Read, merge and write under one lock: two
+        # concurrent merges (one per starting session) must not each write back
+        # a copy that drops what the other added (#6485).
         try:
-            pm.create_profile(profile_name, port, config)
+            validate_profile_name(profile_name)
             display_name = profile_name or "default"
+            with lock_profile_env(config_path):
+                profile_exists = pm.profile_exists(profile_name)
+                if profile_exists and not merge:
+                    print(f"Error: Profile '{display_name}' already exists.", file=sys.stderr)
+                    print("  Use --merge to update the profile, or delete it first with:", file=sys.stderr)
+                    print(f"  hindsight-embed profile delete {display_name}", file=sys.stderr)
+                    return 1
+                config = parse_env_file(config_path) if profile_exists else {}
+                config.pop("PORT", None)  # The explicit port is written by create_profile.
+                config.update(new_config)
+                pm.create_profile(profile_name, port, config)
             action = "updated" if (merge and profile_exists) else "created"
             print(f"\033[32m✓\033[0m Profile '{display_name}' {action} successfully!")
             print()
-            if profile_name:
-                config_path = CONFIG_DIR / "profiles" / f"{profile_name}.env"
-            else:
-                config_path = CONFIG_FILE
             print(f"  \033[2mConfig:\033[0m {config_path}")
             print(f"  \033[2mPort:\033[0m {port}")
             return 0
-        except ValueError as e:
+        # OSError covers ProfileLockTimeout (a TimeoutError) and a .env swap that
+        # Windows refused because another process had the file open.
+        except (ValueError, OSError) as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
 

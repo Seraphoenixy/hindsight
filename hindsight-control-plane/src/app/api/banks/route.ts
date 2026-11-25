@@ -10,15 +10,20 @@ export async function GET(request: Request) {
   const q = searchParams.get("q");
   const limit = searchParams.get("limit");
   const offset = searchParams.get("offset");
-  const response = await sdk.listBanks({
-    client: lowLevelClient,
-    query: {
-      ...(q ? { q } : {}),
-      ...(limit !== null ? { limit: Number(limit) } : {}),
-      ...(offset !== null ? { offset: Number(offset) } : {}),
-    },
-  });
-  return respondWithSdk(response, "Failed to fetch banks", { request });
+  try {
+    const response = await sdk.listBanks({
+      client: lowLevelClient,
+      query: {
+        ...(q ? { q } : {}),
+        ...(limit !== null ? { limit: Number(limit) } : {}),
+        ...(offset !== null ? { offset: Number(offset) } : {}),
+      },
+    });
+    return respondWithSdk(response, "Failed to fetch banks", { request });
+  } catch (error) {
+    console.error("Failed to fetch banks:", error);
+    return respondWithSdk({ error }, "Failed to fetch banks", { request });
+  }
 }
 
 export async function POST(request: Request) {

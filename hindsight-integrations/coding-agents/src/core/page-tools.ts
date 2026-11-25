@@ -8,11 +8,11 @@
  * is caught and turned into an `isError:true` text result so the calling LLM sees the failure
  * instead of the process crashing.
  *
- * The agent-facing surface is intentionally curated: grounding + capture only. Raw page CRUD
- * (create/update/delete) is deliberately NOT exposed — agents never author page structure; they
- * capture initiatives (`hindsight_capture_initiative`) and pages are synthesized/maintained by the
- * server. `hindsight_ingest_document` (raw-content retain) also backs the codebase survey
- * (core/survey.ts).
+ * The agent-facing surface is intentionally curated: grounding, capture, and explicit memory
+ * curation. Raw page CRUD (create/update/delete) is deliberately NOT exposed — agents never author
+ * page structure; they capture initiatives (`hindsight_capture_initiative`) and pages are
+ * synthesized/maintained by the server. `hindsight_ingest_document` (raw-content retain) also
+ * backs the codebase survey (core/survey.ts).
  */
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -23,11 +23,17 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { ZodRawShape } from "zod";
 import type { HindsightClient } from "./hindsight";
 import { syncStatus } from "./status";
+import { gitBranch } from "./git";
 import { applyBankConfig, DEFAULT_REFLECT_TOOL_TIMEOUT_MS, loadConfig } from "./config";
 import { diagFilePath } from "./diag";
 import { describeError } from "./log";
 import type { RetainStamp } from "./retain-stamp";
 import type { PageTrigger } from "./missions";
+import {
+  previewEngineeringMemory,
+  saveEngineeringMemory,
+  type EngineeringInput,
+} from "./engineering-memory";
 
 export interface ToolResult {
   // Index signature so this structurally satisfies the MCP SDK's CallToolResult (which carries
@@ -54,6 +60,10 @@ const NON_DESTRUCTIVE_WRITE_ANNOTATIONS: ToolSafetyAnnotations = {
   destructiveHint: false,
   idempotentHint: false,
   openWorldHint: false,
+};
+const DESTRUCTIVE_WRITE_ANNOTATIONS: ToolSafetyAnnotations = {
+  ...NON_DESTRUCTIVE_WRITE_ANNOTATIONS,
+  destructiveHint: true,
 };
 
 /**
@@ -82,8 +92,9 @@ export interface ToolSpec {
    * read-only annotation behind an approval prompt, so in its headless (`dcode -n`) runtime an
    * unannotated tool is REJECTED outright — "This MCP action requires approval, but the current
    * headless runtime has no approval UI." Codex Auto-review likewise treats an unannotated call as
-   * unverified external access. Reads get READ_ONLY_ANNOTATIONS; the two writes get
-   * NON_DESTRUCTIVE_WRITE_ANNOTATIONS so clients still gate them, but for the right reason.
+   * unverified external access. Reads get READ_ONLY_ANNOTATIONS; ordinary writes get
+   * NON_DESTRUCTIVE_WRITE_ANNOTATIONS, while direct memory edits also advertise destructiveHint
+   * because they can archive a fact.
    */
   annotations: ToolSafetyAnnotations;
   handler: (args: any) => Promise<ToolResult>;
@@ -106,6 +117,40 @@ function guarded(fn: (args: any) => Promise<unknown>): (args: any) => Promise<To
     } catch (e) {
       return err(e);
     }
+  };
+}
+
+function shapeEngineeringMemory(record: {
+  id: string;
+  text: string;
+  type?: string;
+  context?: string;
+  date?: string;
+  mentioned_at?: string | null;
+  tags?: string[];
+  document_id?: string | null;
+  metadata?: Record<string, string>;
+  state?: string;
+  updated_at?: string | null;
+  edited_at?: string | null;
+  invalidated_at?: string | null;
+  invalidation_reason?: string | null;
+}) {
+  return {
+    id: record.id,
+    text: record.text,
+    ...(record.type ? { type: record.type } : {}),
+    ...(record.context ? { context: record.context } : {}),
+    ...(record.date ? { date: record.date } : {}),
+    ...(record.mentioned_at ? { mentioned_at: record.mentioned_at } : {}),
+    tags: record.tags ?? [],
+    ...(record.document_id ? { document_id: record.document_id } : {}),
+    ...(record.metadata ? { metadata: record.metadata } : {}),
+    state: record.state ?? "valid",
+    ...(record.updated_at ? { updated_at: record.updated_at } : {}),
+    ...(record.edited_at ? { edited_at: record.edited_at } : {}),
+    ...(record.invalidated_at ? { invalidated_at: record.invalidated_at } : {}),
+    ...(record.invalidation_reason ? { invalidation_reason: record.invalidation_reason } : {}),
   };
 }
 
@@ -134,12 +179,13 @@ export function buildPageTools(
   return [
     {
       name: "hindsight_sync_status",
-      description:
-        "Report whether this repo's memory bank is in sync: gitlog seed present, how much recent " +
-        "history has been deepened with full diffs, conversations ingested, pages " +
-        "created, and extractions still running. `synced: true` means the seeded memory is fully " +
-        "queryable. Ingestion is automatic and background — if not synced, it is in progress; " +
-        "nothing to run.",
+      description: client.projectScope
+        ? "Report this project's stored survey findings, imported documents, conversation conclusions, pages, and pending memory operations."
+        : "Report whether this repo's memory bank is in sync: gitlog seed present, how much recent " +
+          "history has been deepened with full diffs, conversations ingested, pages " +
+          "created, and extractions still running. `synced: true` means the seeded memory is fully " +
+          "queryable. Ingestion is automatic and background — if not synced, it is in progress; " +
+          "nothing to run.",
       inputSchema: {},
       annotations: READ_ONLY_ANNOTATIONS,
       handler: async () => {
@@ -200,6 +246,105 @@ export function buildPageTools(
           },
         });
       },
+    },
+    {
+      name: "hindsight_recall",
+      description:
+        "Retrieve raw world and experience memories relevant to a query. This returns memory records, IDs, tags, source metadata, and lifecycle state; it does not generate a synthesized answer. Use it when a page is too shallow, when you need the evidence behind a conclusion, or before editing a memory.",
+      inputSchema: {
+        query: z.string().trim().min(1).max(2000).describe("what memories to retrieve"),
+        limit: z.number().int().min(1).max(20).default(10),
+      },
+      annotations: READ_ONLY_ANNOTATIONS,
+      handler: guarded(async ({ query, limit }: { query: string; limit?: number }) => {
+        const records = await client.engineeringRecords(query, limit ?? 10);
+        return {
+          records: records.map(shapeEngineeringMemory),
+          crediting: CREDIT_REMINDER,
+        };
+      }),
+    },
+    {
+      name: "hindsight_edit_memory",
+      description:
+        "Update the text or lifecycle state of one world/experience memory. Use hindsight_recall to obtain its memory_id and the expected_text/expected_state snapshots to guard the write. The tool is marked destructive so the host can present its normal approval prompt before the write. Observations cannot be edited directly.",
+      inputSchema: {
+        memory_id: z.string().uuid(),
+        expected_text: z
+          .string()
+          .trim()
+          .min(1)
+          .max(2400)
+          .describe(
+            "The exact current text, as returned by hindsight_recall; the write is rejected if it changed since then"
+          ),
+        expected_state: z
+          .enum(["valid", "invalidated"])
+          .optional()
+          .describe(
+            "The exact current state, as returned by hindsight_recall; checked when provided"
+          ),
+        text: z
+          .string()
+          .trim()
+          .min(1)
+          .max(2400)
+          .optional()
+          .describe("The complete replacement conclusion"),
+        state: z
+          .enum(["valid", "invalidated"])
+          .optional()
+          .describe("Use invalidated to archive, or valid to restore"),
+        reason: z
+          .string()
+          .trim()
+          .max(1000)
+          .optional()
+          .describe("Why the user requested this archive or restore"),
+      },
+      annotations: DESTRUCTIVE_WRITE_ANNOTATIONS,
+      handler: guarded(
+        async ({
+          memory_id,
+          expected_text,
+          expected_state,
+          text,
+          state,
+          reason,
+        }: {
+          memory_id: string;
+          expected_text: string;
+          expected_state?: "valid" | "invalidated";
+          text?: string;
+          state?: "valid" | "invalidated";
+          reason?: string;
+        }) => {
+          const current = await client.engineeringMemory(memory_id);
+          if (!current)
+            throw new Error("Memory not found in the current project. Recall it again.");
+          if (current.type === "observation")
+            throw new Error("Observations are synthesized records and cannot be edited directly.");
+          if (current.text !== expected_text)
+            throw new Error(
+              "Memory changed since recall — recall it again and retry with the fresh text. Nothing was written."
+            );
+          if (expected_state !== undefined && (current.state ?? "valid") !== expected_state)
+            throw new Error(
+              "Memory state changed since recall — recall it again and retry with the fresh state. Nothing was written."
+            );
+          if (text === undefined && state === undefined)
+            throw new Error("Provide replacement text, a new state, or both.");
+          return {
+            memory: shapeEngineeringMemory(
+              await client.curateEngineeringMemory(memory_id, {
+                ...(text !== undefined ? { text } : {}),
+                ...(state !== undefined ? { state } : {}),
+                ...(reason !== undefined ? { reason } : {}),
+              })
+            ),
+          };
+        }
+      ),
     },
     {
       name: "hindsight_search_pages",
@@ -361,18 +506,39 @@ export function buildPageTools(
         "reference material you want remembered — not for the conversation you're already in " +
         "(that's captured automatically at session end). This is ALSO the correction mechanism: " +
         "when you verify that a retrieved memory is wrong or outdated, ingest a document titled " +
-        "'Correction: <topic>' stating what memory claimed, what is actually true, and the " +
-        "evidence — the newer fact supersedes the stale one in future retrieval.",
+        "'Correction: <topic>' stating what memory claimed, what is actually true, and why — " +
+        "the newer fact supersedes the stale one in future retrieval.",
       inputSchema: {
         title: z.string(),
         content: z.string(),
+        reference: z
+          .string()
+          .trim()
+          .min(1)
+          .max(2000)
+          .optional()
+          .describe("Source URL or project path, ideally with its section and version"),
         shared: z
           .boolean()
           .optional()
           .describe("Make this reference available to all projects when explicitly requested"),
       },
       annotations: NON_DESTRUCTIVE_WRITE_ANNOTATIONS,
-      handler: guarded(async ({ title, content, shared }) => {
+      handler: guarded(async ({ title, content, shared, reference }) => {
+        if (client.projectScope && process.env.HINDSIGHT_DISABLE_HOOKS !== "1") {
+          const input: EngineeringInput = {
+            source: "document",
+            title,
+            reference: reference || title,
+            material: content,
+            shared,
+            harness: opts.harness,
+            stamp: opts.stampFor?.(),
+          };
+          const candidates = await previewEngineeringMemory(client, input);
+          const documentIds = await saveEngineeringMemory(client, input, candidates);
+          return { ok: true, accepted: candidates.length, document_ids: documentIds };
+        }
         const slug = title
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, "-")
@@ -407,6 +573,117 @@ export function buildPageTools(
           }
         );
         return { ok: true, doc_id: docId };
+      }),
+    },
+    {
+      name: "hindsight_working_rules",
+      description:
+        "Read standing Working Rules for the user (cross-project global rules plus current project rules). " +
+        "Defaults to the effective active projection filtered by project and current Git branch; pass view='all' " +
+        "or filters to inspect stored rules and usage metadata.",
+      inputSchema: {
+        view: z
+          .enum(["effective", "all"])
+          .optional()
+          .describe("'effective' returns active filtered projection; 'all' lists stored entries"),
+        scope: z
+          .enum(["global", "project"])
+          .optional()
+          .describe("Optional scope filter when view='all'"),
+        include_archived: z
+          .boolean()
+          .optional()
+          .describe("Include archived rules when view='all'"),
+        query: z
+          .string()
+          .trim()
+          .max(200)
+          .optional()
+          .describe("Case-insensitive substring search when view='all'"),
+        branch: z
+          .string()
+          .trim()
+          .max(128)
+          .optional()
+          .describe("Git branch name to filter projection (defaults to current repository branch)"),
+      },
+      annotations: READ_ONLY_ANNOTATIONS,
+      handler: guarded(async ({ view, scope, include_archived, query, branch }) => {
+        if (view === "all" || scope || include_archived || query) {
+          const list = await client.listWorkingRules({
+            scope,
+            includeArchived: include_archived,
+            q: query,
+          });
+          if (!list) {
+            return { supported: false, items: [], total: 0 };
+          }
+          return list;
+        }
+        const resolvedBranch = branch ?? (opts.repoDir ? gitBranch(opts.repoDir) : undefined);
+        const projection = await client.getWorkingRulesProjection({ branch: resolvedBranch });
+        if (!projection) {
+          return { supported: false, revision: "", text: "", entries: [] };
+        }
+        return projection;
+      }),
+    },
+    {
+      name: "hindsight_manage_working_rules",
+      description:
+        "Add, replace, or remove standing Working Rules when the user explicitly sets, updates, or " +
+        "withdraws an ongoing preference, workflow constraint, or coding rule. Use scope='global' for " +
+        "cross-project preferences or scope='project' for current-project rules. Do not store secrets, " +
+        "temporary progress, or one-off task context.",
+      inputSchema: {
+        action: z.enum(["add", "replace", "remove"]).describe("Mutation operation"),
+        content: z
+          .string()
+          .trim()
+          .min(1)
+          .max(8192)
+          .optional()
+          .describe("New rule content (required for add and replace)"),
+        old_text: z
+          .string()
+          .trim()
+          .min(1)
+          .max(8192)
+          .optional()
+          .describe("Existing rule text or unique substring (required for replace and remove)"),
+        importance: z
+          .enum(["critical", "normal", "low"])
+          .optional()
+          .describe("Rule importance (default normal; replace keeps existing higher level unless raised)"),
+        scope: z
+          .enum(["global", "project"])
+          .optional()
+          .describe("Rule scope ('global' by default, or 'project' for the current workspace project)"),
+        pinned: z
+          .boolean()
+          .optional()
+          .describe("Reserve this rule in projections and protect it from capacity overflow archiving"),
+        branches: z
+          .array(z.string().trim().min(1).max(128))
+          .max(16)
+          .optional()
+          .describe("Optional Git branch names; omit on replace to keep existing branches, pass [] to clear"),
+      },
+      annotations: NON_DESTRUCTIVE_WRITE_ANNOTATIONS,
+      handler: guarded(async ({ action, content, old_text, importance, scope, pinned, branches }) => {
+        const result = await client.mutateWorkingRules({
+          action,
+          content,
+          old_text,
+          importance,
+          scope,
+          pinned,
+          branches,
+        });
+        if (!result) {
+          throw new Error("This Hindsight server does not support Working Rules yet.");
+        }
+        return result;
       }),
     },
   ];

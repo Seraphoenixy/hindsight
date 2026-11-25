@@ -1,7 +1,9 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useCallback, useContext, useState, useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 import { client } from "./api";
+import { shouldDeferDataplaneFetch } from "./base-path";
 
 interface Features {
   observations: boolean;
@@ -22,6 +24,7 @@ interface FeaturesContextType {
   features: Features | null;
   loading: boolean;
   error: string | null;
+  refreshFeatures: () => Promise<void>;
 }
 
 const defaultFeatures: Features = {
@@ -44,31 +47,44 @@ const defaultFeatures: Features = {
 const FeaturesContext = createContext<FeaturesContextType | undefined>(undefined);
 
 export function FeaturesProvider({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const skipFetch = shouldDeferDataplaneFetch(pathname);
   const [features, setFeatures] = useState<Features | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const loadedRef = useRef(false);
 
-  useEffect(() => {
-    const loadFeatures = async () => {
-      try {
-        const response = await client.getVersion();
-        setFeatures({ ...defaultFeatures, ...response.features });
-        setError(null);
-      } catch (err) {
-        console.error("Error loading features:", err);
-        setError("Failed to load feature flags");
-        // Use defaults on error
-        setFeatures(defaultFeatures);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadFeatures();
+  const loadFeatures = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await client.getVersion();
+      loadedRef.current = true;
+      setFeatures({ ...defaultFeatures, ...response.features });
+      setError(null);
+    } catch (err) {
+      console.error("Error loading features:", err);
+      setError("Failed to load feature flags");
+      // Use defaults on error
+      setFeatures(defaultFeatures);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    if (skipFetch) {
+      if (!loadedRef.current) {
+        setFeatures((prev) => prev ?? defaultFeatures);
+        setLoading(false);
+      }
+      return;
+    }
+    if (loadedRef.current) return;
+    void loadFeatures();
+  }, [skipFetch, loadFeatures]);
+
   return (
-    <FeaturesContext.Provider value={{ features, loading, error }}>
+    <FeaturesContext.Provider value={{ features, loading, error, refreshFeatures: loadFeatures }}>
       {children}
     </FeaturesContext.Provider>
   );

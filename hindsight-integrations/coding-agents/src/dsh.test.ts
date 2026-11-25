@@ -346,4 +346,25 @@ describe("toDshParameters", () => {
       required: ["limit", "page"],
     });
   });
+
+  it("carries enum and string-array parameters and rejects unsupported element types", () => {
+    expect(
+      toDshParameters(
+        spec({
+          action: z.enum(["add", "replace", "remove"]).describe("op"),
+          branches: z.array(z.string()).max(16).optional(),
+        })
+      )
+    ).toEqual({
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["add", "replace", "remove"], description: "op" },
+        branches: { type: "array", items: { type: "string" } },
+      },
+      required: ["action"],
+    });
+    expect(() => toDshParameters(spec({ dates: z.array(z.date()) as never }))).toThrow(
+      /cannot express a "date" parameter/
+    );
+  });
 });

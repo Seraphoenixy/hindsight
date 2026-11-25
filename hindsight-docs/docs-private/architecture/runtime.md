@@ -40,8 +40,47 @@
 | HTTP MCP | 默认关闭；coding-agents 的 stdio MCP 独立保留 |
 | 记忆嵌入 | `local`，由原生 llama.cpp 服务提供；不是原先的 Python 模型栈 |
 | 记忆重排 | `rrf` |
+| 决策模型 | 默认关闭。启用后，召回、整合初筛、Reflect 和页面刷新共享决策客户端实现 |
 | 知识库 | 默认关闭；嵌入默认 `text` |
 | 知识库文本分段 | `512` tokens，随 2026-11-23 上游移植调整 |
 | 云端依赖 | `boto3`、`litellm`、`obstore` 为可选 cloud extra |
 
 配置的事实来源为 `hindsight-api-slim/hindsight_api/config.py`；Provider 行为以 `engine/embeddings.py`、`engine/cross_encoder.py` 和 `engine/providers/` 为准。Profile 环境变量可覆盖默认值。
+
+本地设置可选 Antigravity 作为 API 的 LLM 后端。服务进程通过同一系统用户已登录的 `agy` 执行模型调用。Antigravity 编码代理的记忆 hook 仍走 Coding Agents 集成。
+
+## 工程知识与经验
+
+Coding Agents 默认使用按项目隔离的共享库。对话写入只保存有来源的工程结论，
+允许普通任务产出零条。`hindsight_ingest_document` 从显式提交的文档提取有依据的知识。默认关闭后台代码巡检、
+Git 历史导入和历史会话导入。事实经服务端提取，再以 `engineering-record` 策略保存筛选后的结论。
+
+共享模式下，宿主 Stop Hook 通过现有异步 retain API 提交已完成的对话片段并立即返回。服务端把
+提取和写入登记为后台 retain 操作，供 worker 执行。模型较慢时不再占用 Hook 的 30 秒时限；
+操作可在活动列表查看状态，失败后可从操作记录重试。相同会话片段使用幂等操作 ID，
+重送不会登记第二个任务。
+
+工程共享库默认启用按结论合并 Observation。后台合并在当前项目范围内比较已有结论，
+把支持同一决策、约束或排障经验的事实合成一条，后续同主题补充更新原条目。
+常规实现过程可以跳过，适用版本或条件不同的规则分别保留。配置项
+`consolidation_group_by_conclusion` 支持库级设置和 scope 策略覆盖。现存 Observation
+如需重新生成，可以从保留的原始事实执行 Observation 重建。
+
+Control Plane 的“AI 整理记忆”页面按当前库、可选项目标签、主题和用户指令召回事实并生成整理预览。
+预览包含原文与新结论，用户勾选后才执行重写、归档或合并。应用和撤销都会重新检查记录版本，
+归档记录保留原内容并退出默认召回。宿主 Agent 只额外获得 `hindsight_recall` 和
+`hindsight_edit_memory`：前者直接召回世界/经历事实，后者在用户明确要求后用召回时的原文与状态
+校验版本，并执行重写、归档或恢复。AI 批量生成整理计划仍只在 Control Plane 中运行。
+
+## 工作准则（Working Rules）
+
+Working Rules 独立于按库隔离的 `directives`（后者仅用于服务端 `reflect`），存储全局（`global`）及项目级（`project`）持久行为准则，对应数据表 `working_rules`（Alembic 迁移 `e7a1b2c3d4f5`）与服务接口 `/v1/default/working-rules`。
+
+- 容量与固定预算由 `HINDSIGHT_API_WORKING_RULES_LIMIT_BYTES`（默认 `14336`）、`HINDSIGHT_API_WORKING_RULES_PINNED_LIMIT_CHARS`（默认 `3072`）与 `HINDSIGHT_API_WORKING_RULES_ENTRY_MAX_BYTES`（默认 `8192`）控制。超出总量时仅归档非固定条目（`is_archived = TRUE`，`archive_reason = 'capacity_overflow'`），不会自动转存为记忆库事实。
+- 同一租户的规则写入在事务中串行执行，容量和正文去重基于锁内的规则状态。PostgreSQL 迁移 `f42c9a8e613b` 会移除限制规则正文长度的旧索引。
+- PostgreSQL 整库备份包含工作准则。恢复旧备份时保留目标库已有规则。
+- 服务端数据库与 Control Plane 全局页 `/[locale]/working-rules` 为唯一管理入口；不维护本地 Markdown 双写文件，仅通过 `/v1/default/working-rules/export` 按需导出 Markdown。已归档条目可在 Control Plane 中恢复（Restore）或显式转存到指定记忆库（Promote）。
+- Control Plane 提供“AI 整理”页签，调用 `/organize/preview` 与 `/organize/apply`。应用时在同一事务中校验 `expected_revision` 并执行选中的提案。
+- Coding Agents 在 `SessionStart` 注入按 `project_id` 和 Git 分支过滤后的规则。后续提示钩子在投影 `revision` 变更时注入替代规则块，也会明确清除已变为空的规则集。MCP/DSH 暴露 `hindsight_working_rules` 与 `hindsight_manage_working_rules`。
+
+详见 [ADR-008：工作准则独立子系统](decisions/008-working-rules.md)。

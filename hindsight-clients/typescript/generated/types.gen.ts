@@ -617,6 +617,12 @@ export type BankTemplateConfig = {
    */
   observations_mission?: string | null;
   /**
+   * Consolidation Group By Conclusion
+   *
+   * Consolidate related facts into actionable conclusions
+   */
+  consolidation_group_by_conclusion?: boolean | null;
+  /**
    * Enable Text Search
    *
    * Toggle the keyword (BM25) arm during recall, leaving pure vector search
@@ -901,7 +907,7 @@ export type BankTemplateConfig = {
   /**
    * Default Timezone
    *
-   * IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, is read in when it carries no UTC offset.
+   * IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, is read in when it carries no UTC offset, and the zone the LLM reads memory times in.
    */
   default_timezone?: string | null;
   /**
@@ -1238,6 +1244,20 @@ export type BodyImportDocuments = {
 };
 
 /**
+ * Body_ingest_knowledge_files
+ */
+export type BodyIngestKnowledgeFiles = {
+  /**
+   * Files
+   */
+  files: Array<Blob | File>;
+  /**
+   * Request
+   */
+  request?: string | null;
+};
+
+/**
  * Budget
  *
  * Budget levels for recall/reflect operations.
@@ -1566,6 +1586,10 @@ export type ConsolidationStrategySpec = {
    */
   observations_mission?: string | null;
   /**
+   * Consolidation Group By Conclusion
+   */
+  consolidation_group_by_conclusion?: boolean | null;
+  /**
    * Max Observations Per Scope
    */
   max_observations_per_scope?: number | null;
@@ -1799,6 +1823,18 @@ export type CreateFolderRequest = {
 };
 
 /**
+ * CreateKnowledgeBankRequest
+ */
+export type CreateKnowledgeBankRequest = {
+  /**
+   * Bank Id
+   *
+   * Id of the new knowledge bank. It shares the id space of memory banks.
+   */
+  bank_id: string;
+};
+
+/**
  * CreateMentalModelRequest
  *
  * Request model for creating a mental model.
@@ -1948,6 +1984,50 @@ export type CreateWebhookRequest = {
 };
 
 /**
+ * CreateWorkingRuleRequest
+ *
+ * Request body for creating a Working Rule.
+ */
+export type CreateWorkingRuleRequest = {
+  /**
+   * Content
+   *
+   * Rule content (whitespace-folded; UTF-8 byte ceiling applies)
+   */
+  content: string;
+  /**
+   * Scope
+   *
+   * 'global' or 'project'
+   */
+  scope?: "global" | "project";
+  /**
+   * Project Id
+   *
+   * Project identifier when scope='project'
+   */
+  project_id?: string | null;
+  /**
+   * Importance
+   *
+   * 'critical', 'normal', or 'low'
+   */
+  importance?: "critical" | "normal" | "low";
+  /**
+   * Pinned
+   *
+   * Pin rule so it is reserved in projections and protected from eviction
+   */
+  pinned?: boolean;
+  /**
+   * Branches
+   *
+   * Optional Git branch allowlist; empty means all branches
+   */
+  branches?: Array<string>;
+};
+
+/**
  * DefaultScopesPreview
  *
  * The scopes no strategy claims — they consolidate under the bank-wide settings.
@@ -2029,6 +2109,18 @@ export type DeleteResponse = {
    * Deleted Count
    */
   deleted_count?: number | null;
+};
+
+/**
+ * DeleteWorkingRuleResponse
+ *
+ * Response returned when a Working Rule is permanently deleted.
+ */
+export type DeleteWorkingRuleResponse = {
+  /**
+   * Status
+   */
+  status?: string;
 };
 
 /**
@@ -2823,6 +2915,18 @@ export type EntityStateResponse = {
 };
 
 /**
+ * ExportWorkingRulesResponse
+ *
+ * Markdown export of Working Rules.
+ */
+export type ExportWorkingRulesResponse = {
+  /**
+   * Markdown
+   */
+  markdown: string;
+};
+
+/**
  * ExtractedFact
  *
  * A single candidate fact produced by dry-run extraction (no resolution/links/persistence).
@@ -3116,6 +3220,971 @@ export type IncludeOptions = {
    * Include source facts for observation-type results. Set to {} to enable, null to disable (default: disabled).
    */
   source_facts?: SourceFactsIncludeOptions | null;
+};
+
+/**
+ * KnowledgeBankConfigResponse
+ */
+export type KnowledgeBankConfigResponse = {
+  /**
+   * Bank Id
+   */
+  bank_id: string;
+  /**
+   * Every per-bank ingest setting as the bank splits files with it: its override, else the server's default.
+   */
+  config: KnowledgeBankSettings;
+  /**
+   * Only the settings this bank overrides.
+   */
+  overrides: KnowledgeBankOverrides;
+};
+
+/**
+ * KnowledgeBankConfigUpdate
+ */
+export type KnowledgeBankConfigUpdate = {
+  /**
+   * Updates
+   *
+   * Settings to override (named as in `config`); a null value clears that override. Each change applies to files ingested after it: re-uploading an unchanged file re-splits it.
+   */
+  updates: {
+    [key: string]: unknown;
+  };
+};
+
+/**
+ * KnowledgeBankListResponse
+ */
+export type KnowledgeBankListResponse = {
+  /**
+   * Banks
+   */
+  banks: Array<KnowledgeBankResponse>;
+  /**
+   * Total
+   *
+   * Knowledge banks matching `q`, before paging
+   */
+  total: number;
+  /**
+   * Limit
+   */
+  limit: number;
+  /**
+   * Offset
+   */
+  offset: number;
+};
+
+/**
+ * KnowledgeBankOverrides
+ *
+ * What a bank overrides; a field left None follows the server. Strict, so ``"5"`` or ``true``
+ * is not taken for a number.
+ */
+export type KnowledgeBankOverrides = {
+  /**
+   * Text Passage Tokens
+   */
+  text_passage_tokens?: number | null;
+  /**
+   * Pdf Page Pixels
+   */
+  pdf_page_pixels?: number | null;
+  /**
+   * Pdf Bands
+   */
+  pdf_bands?: boolean | null;
+  /**
+   * Image Tokens
+   */
+  image_tokens?: number | null;
+  /**
+   * Audio Window Seconds
+   */
+  audio_window_seconds?: number | null;
+  /**
+   * Video Window Seconds
+   */
+  video_window_seconds?: number | null;
+  /**
+   * Media Overlap Seconds
+   */
+  media_overlap_seconds?: number | null;
+  /**
+   * Max Media Seconds
+   */
+  max_media_seconds?: number | null;
+  /**
+   * Max Pdf Pages
+   */
+  max_pdf_pages?: number | null;
+  /**
+   * Disabled Media Types
+   */
+  disabled_media_types?: Array<"document" | "image" | "audio" | "video" | "text"> | null;
+};
+
+/**
+ * KnowledgeBankResponse
+ */
+export type KnowledgeBankResponse = {
+  /**
+   * Bank Id
+   */
+  bank_id: string;
+  /**
+   * Created At
+   */
+  created_at: string | null;
+  /**
+   * Document Count
+   */
+  document_count: number;
+  /**
+   * Passage Count
+   */
+  passage_count: number;
+  /**
+   * Ready Count
+   */
+  ready_count: number;
+  /**
+   * Pending Count
+   */
+  pending_count: number;
+  /**
+   * Failed Count
+   */
+  failed_count: number;
+  /**
+   * Documents By Media Type
+   */
+  documents_by_media_type: {
+    [key: string]: number;
+  };
+  /**
+   * Last Document At
+   *
+   * When a document was last added or changed; null for an empty bank
+   */
+  last_document_at?: string | null;
+};
+
+/**
+ * KnowledgeBankSettings
+ *
+ * The ingest settings a knowledge bank splits its files with: its overrides, else the server's.
+ */
+export type KnowledgeBankSettings = {
+  /**
+   * Text Passage Tokens
+   */
+  text_passage_tokens: number;
+  /**
+   * Pdf Page Pixels
+   */
+  pdf_page_pixels: number;
+  /**
+   * Pdf Bands
+   */
+  pdf_bands: boolean;
+  /**
+   * Image Tokens
+   */
+  image_tokens: number;
+  /**
+   * Audio Window Seconds
+   */
+  audio_window_seconds: number;
+  /**
+   * Video Window Seconds
+   */
+  video_window_seconds: number;
+  /**
+   * Media Overlap Seconds
+   */
+  media_overlap_seconds: number;
+  /**
+   * Max Media Seconds
+   */
+  max_media_seconds: number;
+  /**
+   * Max Pdf Pages
+   */
+  max_pdf_pages: number;
+  /**
+   * Disabled Media Types
+   */
+  disabled_media_types: Array<"document" | "image" | "audio" | "video" | "text">;
+};
+
+/**
+ * KnowledgeDeletedResponse
+ */
+export type KnowledgeDeletedResponse = {
+  /**
+   * Deleted
+   */
+  deleted?: boolean;
+};
+
+/**
+ * KnowledgeDocumentDetailResponse
+ */
+export type KnowledgeDocumentDetailResponse = {
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Filename
+   */
+  filename: string | null;
+  /**
+   * Content Type
+   */
+  content_type: string;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Size Bytes
+   */
+  size_bytes: number;
+  /**
+   * Knowledge Document Status
+   */
+  status: "pending" | "processing" | "ready" | "failed";
+  /**
+   * Error
+   */
+  error: string | null;
+  /**
+   * Passage Count
+   */
+  passage_count: number;
+  /**
+   * Tags
+   */
+  tags: Array<string>;
+  /**
+   * Created At
+   */
+  created_at: string | null;
+  /**
+   * Updated At
+   */
+  updated_at: string | null;
+  /**
+   * Document Url
+   *
+   * API path that streams the original file.
+   */
+  document_url: string;
+  /**
+   * Source Document Id
+   *
+   * The document a pre-processing strategy split this one out of.
+   */
+  source_document_id?: string | null;
+  /**
+   * Passages
+   */
+  passages: Array<KnowledgePassageResponse>;
+};
+
+/**
+ * KnowledgeDocumentListResponse
+ */
+export type KnowledgeDocumentListResponse = {
+  /**
+   * Documents
+   */
+  documents: Array<KnowledgeDocumentResponse>;
+  /**
+   * Total
+   */
+  total: number;
+};
+
+/**
+ * KnowledgeDocumentResponse
+ */
+export type KnowledgeDocumentResponse = {
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Filename
+   */
+  filename: string | null;
+  /**
+   * Content Type
+   */
+  content_type: string;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Size Bytes
+   */
+  size_bytes: number;
+  /**
+   * Knowledge Document Status
+   */
+  status: "pending" | "processing" | "ready" | "failed";
+  /**
+   * Error
+   */
+  error: string | null;
+  /**
+   * Passage Count
+   */
+  passage_count: number;
+  /**
+   * Tags
+   */
+  tags: Array<string>;
+  /**
+   * Created At
+   */
+  created_at: string | null;
+  /**
+   * Updated At
+   */
+  updated_at: string | null;
+  /**
+   * Document Url
+   *
+   * API path that streams the original file.
+   */
+  document_url: string;
+  /**
+   * Source Document Id
+   *
+   * The document a pre-processing strategy split this one out of.
+   */
+  source_document_id?: string | null;
+};
+
+/**
+ * KnowledgeIngestRequest
+ */
+export type KnowledgeIngestRequest = {
+  /**
+   * Items
+   */
+  items: Array<KnowledgeIngestTextItem>;
+  /**
+   * Async
+   *
+   * If true, queue each document and return at once (202), as the file ingest always does. If false, return once every document is searchable (default: false).
+   */
+  async?: boolean;
+};
+
+/**
+ * KnowledgeIngestResponse
+ */
+export type KnowledgeIngestResponse = {
+  /**
+   * Document Ids
+   *
+   * Every document ingested, in request order.
+   */
+  document_ids: Array<string>;
+  /**
+   * Operation Ids
+   *
+   * For each document that was queued, the one background operation that processes the whole ingest (the same id for all of them). Empty for a sync ingest.
+   */
+  operation_ids: Array<string>;
+  /**
+   * Unchanged Document Ids
+   *
+   * Documents identical to what is stored: nothing was queued for them.
+   */
+  unchanged_document_ids?: Array<string>;
+};
+
+/**
+ * KnowledgeIngestTextItem
+ */
+export type KnowledgeIngestTextItem = {
+  /**
+   * Document Id
+   *
+   * Stable id; ingesting it again replaces the document.
+   */
+  document_id?: string | null;
+  /**
+   * Text
+   */
+  text: string;
+  /**
+   * Filename
+   *
+   * Defaults to <document_id>.md.
+   */
+  filename?: string | null;
+  /**
+   * Tags
+   */
+  tags?: Array<string>;
+  /**
+   * Strategy
+   *
+   * Ingestion strategy for this item (one of the server's `HINDSIGHT_API_KB_INGEST_STRATEGIES`). Omit it and the server's default applies. A file whose type the strategy does not map is chunked as it is.
+   */
+  strategy?: string | null;
+};
+
+/**
+ * KnowledgePassageResponse
+ */
+export type KnowledgePassageResponse = {
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Text
+   */
+  text?: string | null;
+  /**
+   * Page
+   *
+   * 1-based page number (PDF pages and images).
+   */
+  page?: number | null;
+  /**
+   * Start Ms
+   *
+   * Window start, for audio and video.
+   */
+  start_ms?: number | null;
+  /**
+   * End Ms
+   */
+  end_ms?: number | null;
+  /**
+   * Passage Url
+   *
+   * API path that streams this passage's page image or audio/video clip.
+   */
+  passage_url?: string | null;
+};
+
+/**
+ * KnowledgeSearchRequest
+ */
+export type KnowledgeSearchRequest = {
+  /**
+   * Query
+   *
+   * Text query.
+   */
+  query?: string | null;
+  /**
+   * Query Image
+   *
+   * Base64 image to search with (alone or with text).
+   */
+  query_image?: string | null;
+  /**
+   * Query Video
+   *
+   * Base64 MP4 clip to search with. Text, image and video can be combined: they are embedded together as one query.
+   */
+  query_video?: string | null;
+  /**
+   * Budget
+   *
+   * How deep the search ranks before `max_tokens` picks from it: low is fastest, high reaches the most candidates (as memory-bank recall's budget).
+   */
+  budget?: "low" | "mid" | "high";
+  /**
+   * Max Tokens
+   *
+   * What the results may weigh in all, as the tokens of their text. Hits come best first, each text hit with the passages around it joined into its `text`, as many as fit; the rest of the budget widens the best hits' context. An image, page or clip costs a small fixed amount plus its text.
+   */
+  max_tokens?: number;
+  /**
+   * Tags
+   *
+   * Filter by document tags, matched as memory-bank recall matches memory tags.
+   */
+  tags?: Array<string> | null;
+  /**
+   * Tags Match
+   *
+   * How to match tags: 'any' (OR, includes untagged), 'all' (AND, includes untagged), 'any_strict' (OR, excludes untagged), 'all_strict' (AND, excludes untagged), 'exact' (set-equality, excludes untagged). With 'exact' and no tags (or []), only untagged documents match.
+   */
+  tags_match?: "any" | "all" | "any_strict" | "all_strict" | "exact";
+  /**
+   * Tag Groups
+   *
+   * Compound tag filter using boolean groups, as memory-bank recall takes it. Groups in the list are AND-ed. Each group is a leaf {tags, match} or compound {and: [...]}, {or: [...]}, {not: ...}. A leaf may set resolve='fuzzy' to match its tags against this bank's document tags by trigram similarity.
+   */
+  tag_groups?: Array<TagGroupLeaf | TagGroupAndInput | TagGroupOrInput | TagGroupNotInput> | null;
+  /**
+   * Document Ids
+   */
+  document_ids?: Array<string> | null;
+  /**
+   * Knowledge Media Types
+   */
+  media_types?: Array<"document" | "image" | "audio" | "video" | "text"> | null;
+  /**
+   * Enable Reranking
+   *
+   * false keeps the search's own order; true reranks the best hits when the server has a knowledge reranker (HINDSIGHT_API_KB_RERANKER_URL); without one, true does nothing. Unset follows the server's HINDSIGHT_API_KB_ENABLE_RERANKING (default true).
+   */
+  enable_reranking?: boolean | null;
+  /**
+   * Trace
+   *
+   * Also return how the search ranked and what the token budget kept: every ranked candidate with its score step by step, the keyword words and their weights, and each phase's time.
+   */
+  trace?: boolean;
+};
+
+/**
+ * KnowledgeSearchResponse
+ *
+ * Results best first. Ranks are what a caller compares: scores are fused per query and mean nothing
+ * across responses, so a result does not carry one; ``trace: true`` returns them, step by step.
+ */
+export type KnowledgeSearchResponse = {
+  /**
+   * Results
+   */
+  results: Array<KnowledgeSearchResult>;
+  trace?: KnowledgeSearchTrace | null;
+};
+
+/**
+ * KnowledgeSearchResult
+ */
+export type KnowledgeSearchResult = {
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Text
+   */
+  text?: string | null;
+  /**
+   * Page
+   *
+   * 1-based page number (PDF pages and images).
+   */
+  page?: number | null;
+  /**
+   * Start Ms
+   *
+   * Window start, for audio and video.
+   */
+  start_ms?: number | null;
+  /**
+   * End Ms
+   */
+  end_ms?: number | null;
+  /**
+   * Passage Url
+   *
+   * API path that streams this passage's page image or audio/video clip.
+   */
+  passage_url?: string | null;
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Filename
+   */
+  filename: string | null;
+  /**
+   * Tags
+   */
+  tags: Array<string>;
+  /**
+   * Document Url
+   */
+  document_url: string;
+};
+
+/**
+ * KnowledgeSearchTrace
+ */
+export type KnowledgeSearchTrace = {
+  /**
+   * Budget
+   */
+  budget: "low" | "mid" | "high";
+  /**
+   * Depth
+   *
+   * How many of the scored candidates the budget level keeps for max_tokens
+   */
+  depth: number;
+  /**
+   * Max Tokens
+   */
+  max_tokens: number;
+  /**
+   * Tokens Used
+   *
+   * What the results weigh, in tokens of their text
+   */
+  tokens_used: number;
+  /**
+   * Candidates
+   *
+   * Passages the candidate searches found, before scoring
+   */
+  candidates: number;
+  /**
+   * Keyword Weight
+   *
+   * The keyword score's share of the final score
+   */
+  keyword_weight: number;
+  /**
+   * Keyword Terms
+   *
+   * Each query word the keyword search used, with its IDF; a word less than half as rare (IDF) as the query's rarest word is left out, unless its IDF reaches 2 (in under ~13% of the bank's passages)
+   */
+  keyword_terms: {
+    [key: string]: number;
+  };
+  /**
+   * Timings Ms
+   *
+   * Each phase's time: open_bank, embed, store.search (and its store.* parts), rerank, context
+   */
+  timings_ms: {
+    [key: string]: number;
+  };
+  /**
+   * Candidate Searches
+   *
+   * Step 1: each candidate search's own list
+   */
+  candidate_searches: Array<KnowledgeTraceArm>;
+  /**
+   * Hits
+   *
+   * Steps 2-3: every candidate scored, best first
+   */
+  hits: Array<KnowledgeSearchTraceHit>;
+  /**
+   * Budget Steps
+   *
+   * Step 4: how max_tokens was filled, in order
+   */
+  budget_steps: Array<KnowledgeTraceBudgetStep>;
+};
+
+/**
+ * KnowledgeSearchTraceHit
+ *
+ * One ranked candidate: its score step by step, and what the token budget did with it.
+ */
+export type KnowledgeSearchTraceHit = {
+  /**
+   * Rank
+   *
+   * Its place among all scored candidates, from 1
+   */
+  rank: number;
+  /**
+   * Outcome
+   *
+   * returned: a result of its own; merged: inside a better hit's text (merged_into_rank); over_budget: nothing of it fit in max_tokens; below_depth: ranked past what the budget level keeps
+   */
+  outcome: "returned" | "merged" | "over_budget" | "below_depth";
+  /**
+   * Result Rank
+   *
+   * Its place in `results`, from 1, when returned
+   */
+  result_rank?: number | null;
+  /**
+   * Merged Into Rank
+   *
+   * The rank of the hit whose text holds it
+   */
+  merged_into_rank?: number | null;
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Filename
+   */
+  filename: string | null;
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Page
+   */
+  page?: number | null;
+  /**
+   * Start Ms
+   */
+  start_ms?: number | null;
+  /**
+   * End Ms
+   */
+  end_ms?: number | null;
+  /**
+   * Snippet
+   *
+   * The start of the passage's own text
+   */
+  snippet?: string | null;
+  /**
+   * Score
+   *
+   * The final score it was ranked by; comparable within this search only
+   */
+  score: number;
+  /**
+   * Found By
+   *
+   * The candidate searches that found it: vector, extra_vectors, keyword, document (a text passage of one of the best documents)
+   */
+  found_by: Array<string>;
+  /**
+   * Similarity
+   *
+   * Cosine similarity of the query and the passage's main vector
+   */
+  similarity: number;
+  /**
+   * Roles
+   *
+   * Best similarity of each extra vector (band, page_text, unit, sentence)
+   */
+  roles: {
+    [key: string]: number;
+  };
+  /**
+   * Passage Score
+   *
+   * The similarity with the extra vectors mixed in
+   */
+  passage_score: number;
+  /**
+   * With Document
+   *
+   * Averaged with its document's best passage score
+   */
+  with_document: number;
+  /**
+   * Keyword
+   *
+   * Keyword score: the summed IDF of the query words it contains
+   */
+  keyword: number;
+};
+
+/**
+ * KnowledgeTagItem
+ */
+export type KnowledgeTagItem = {
+  /**
+   * Tag
+   */
+  tag: string;
+  /**
+   * Count
+   *
+   * How many of the bank's documents carry this tag
+   */
+  count: number;
+};
+
+/**
+ * KnowledgeTagsResponse
+ *
+ * One page of a knowledge bank's document tags, most used first (as memory-bank `list_tags`).
+ */
+export type KnowledgeTagsResponse = {
+  /**
+   * Items
+   */
+  items: Array<KnowledgeTagItem>;
+  /**
+   * Total
+   *
+   * Distinct tags matching `q`, past this page too
+   */
+  total: number;
+  /**
+   * Limit
+   */
+  limit: number;
+  /**
+   * Offset
+   */
+  offset: number;
+};
+
+/**
+ * KnowledgeTimeseriesBucket
+ */
+export type KnowledgeTimeseriesBucket = {
+  /**
+   * Time
+   */
+  time: string;
+  /**
+   * Documents
+   *
+   * Documents first written in this bucket.
+   */
+  documents: number;
+  /**
+   * Passages
+   *
+   * Passages those documents hold now.
+   */
+  passages: number;
+};
+
+/**
+ * KnowledgeTimeseriesResponse
+ */
+export type KnowledgeTimeseriesResponse = {
+  /**
+   * Bank Id
+   */
+  bank_id: string;
+  /**
+   * Period
+   */
+  period: "1d" | "7d" | "30d" | "90d";
+  /**
+   * Trunc
+   */
+  trunc: "hour" | "day";
+  /**
+   * Buckets
+   */
+  buckets: Array<KnowledgeTimeseriesBucket>;
+};
+
+/**
+ * KnowledgeTraceArm
+ *
+ * One candidate search, with its own list, best first.
+ */
+export type KnowledgeTraceArm = {
+  /**
+   * Name
+   */
+  name: "vector" | "extra_vectors" | "keyword" | "document";
+  /**
+   * Results
+   */
+  results: Array<KnowledgeTraceArmHit>;
+};
+
+/**
+ * KnowledgeTraceArmHit
+ */
+export type KnowledgeTraceArmHit = {
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Score
+   *
+   * Its score in this search: cosine similarity, or ts_rank_cd for keywords
+   */
+  score: number;
+};
+
+/**
+ * KnowledgeTraceBudgetStep
+ *
+ * One step of filling max_tokens, in order.
+ */
+export type KnowledgeTraceBudgetStep = {
+  /**
+   * Action
+   *
+   * window: a text hit with its free neighbours; alone: no room for its neighbours; media: an image, page or clip; merged: already inside a better hit's result; widened: leftover budget added a passage to a result (5 at most); skipped: nothing of it fit
+   */
+  action: "window" | "alone" | "media" | "merged" | "widened" | "skipped";
+  /**
+   * Rank
+   *
+   * The candidate's rank
+   */
+  rank: number;
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * First
+   *
+   * The window's first passage after this step
+   */
+  first: number;
+  /**
+   * Last
+   *
+   * The window's last passage after this step
+   */
+  last: number;
+  /**
+   * Tokens
+   *
+   * Tokens this step added
+   */
+  tokens: number;
+  /**
+   * Total
+   *
+   * Tokens used after this step
+   */
+  total: number;
+  /**
+   * Into Rank
+   *
+   * For merged: the rank of the hit whose result holds it
+   */
+  into_rank?: number | null;
 };
 
 /**
@@ -4275,6 +5344,7 @@ export type MentalModelDryRunRefreshResult = {
     | "structured_doc_unreadable"
     | "delta_ops_failed"
     | "delta_ops_all_skipped"
+    | "grounding_gone"
     | null;
   /**
    * Outcome
@@ -4512,6 +5582,7 @@ export type MentalModelRefreshTrace = {
     | "structured_doc_unreadable"
     | "delta_ops_failed"
     | "delta_ops_all_skipped"
+    | "grounding_gone"
     | null;
   /**
    * Outcome
@@ -5095,6 +6166,68 @@ export type MinScores = {
    * Post-query: minimum final ranking score. Applied to every returned result.
    */
   final?: number | null;
+};
+
+/**
+ * MutateWorkingRuleRequest
+ *
+ * Request body for semantic add/replace/remove mutation (used by coding-agent tools).
+ */
+export type MutateWorkingRuleRequest = {
+  /**
+   * Action
+   *
+   * 'add', 'replace', or 'remove'
+   */
+  action: "add" | "replace" | "remove";
+  /**
+   * Content
+   *
+   * Rule content (required for add/replace)
+   */
+  content?: string | null;
+  /**
+   * Old Text
+   *
+   * Full existing content or unique substring (required for replace/remove)
+   */
+  old_text?: string | null;
+  /**
+   * Scope
+   *
+   * 'global' or 'project'
+   */
+  scope?: "global" | "project";
+  /**
+   * Project Id
+   *
+   * Project identifier when scope='project'
+   */
+  project_id?: string | null;
+  /**
+   * Importance
+   *
+   * Importance level; replace keeps existing higher importance by default
+   */
+  importance?: "critical" | "normal" | "low" | null;
+  /**
+   * Pinned
+   *
+   * Optional pin override
+   */
+  pinned?: boolean | null;
+  /**
+   * Branches
+   *
+   * Optional Git branch list; omit on replace to preserve existing branches, pass [] to clear
+   */
+  branches?: Array<string> | null;
+  /**
+   * Preserve Importance
+   *
+   * When true, replace preserves existing higher importance unless raised
+   */
+  preserve_importance?: boolean;
 };
 
 /**
@@ -5786,6 +6919,26 @@ export type PageTreeResponse = {
    * Roots
    */
   roots: Array<PageNode>;
+};
+
+/**
+ * PromoteWorkingRuleRequest
+ *
+ * Request body for retaining an archived Working Rule into a memory bank.
+ */
+export type PromoteWorkingRuleRequest = {
+  /**
+   * Bank Id
+   *
+   * Target memory bank ID
+   */
+  bank_id: string;
+  /**
+   * Tags
+   *
+   * Optional tags to attach to the retained document
+   */
+  tags?: Array<string>;
 };
 
 /**
@@ -7443,6 +8596,42 @@ export type UpdateWebhookRequest = {
 };
 
 /**
+ * UpdateWorkingRuleRequest
+ *
+ * Request body for updating a Working Rule by ID.
+ */
+export type UpdateWorkingRuleRequest = {
+  /**
+   * Content
+   */
+  content?: string | null;
+  /**
+   * Importance
+   */
+  importance?: "critical" | "normal" | "low" | null;
+  /**
+   * Pinned
+   */
+  pinned?: boolean | null;
+  /**
+   * Branches
+   */
+  branches?: Array<string> | null;
+  /**
+   * Scope
+   */
+  scope?: "global" | "project" | null;
+  /**
+   * Project Id
+   */
+  project_id?: string | null;
+  /**
+   * Is Archived
+   */
+  is_archived?: boolean | null;
+};
+
+/**
  * ValidationError
  */
 export type ValidationError = {
@@ -7677,6 +8866,1809 @@ export type WebhookResponse = {
   updated_at?: string | null;
 };
 
+/**
+ * WorkingRuleMutationResult
+ *
+ * Result of an add / replace / remove Working Rule mutation.
+ */
+export type WorkingRuleMutationResult = {
+  /**
+   * Success
+   */
+  success?: boolean;
+  /**
+   * Action
+   */
+  action: "add" | "replace" | "remove";
+  /**
+   * Message
+   */
+  message: string;
+  rule?: WorkingRuleRecord | null;
+  /**
+   * Archived
+   */
+  archived?: Array<WorkingRuleRecord>;
+  /**
+   * Revision
+   */
+  revision: string;
+  usage: WorkingRulesUsage;
+};
+
+/**
+ * WorkingRuleOrganizeApplyOutcome
+ *
+ * Result for one applied proposal item.
+ */
+export type WorkingRuleOrganizeApplyOutcome = {
+  /**
+   * Number
+   */
+  number: number;
+  /**
+   * Ok
+   */
+  ok: boolean;
+  /**
+   * Error
+   */
+  error?: string | null;
+  rule?: WorkingRuleRecord | null;
+};
+
+/**
+ * WorkingRuleOrganizeApplyRequest
+ *
+ * Request body for applying selected Working Rules organization proposals.
+ */
+export type WorkingRuleOrganizeApplyRequest = {
+  /**
+   * Expected Revision
+   *
+   * Revision returned by the preview endpoint
+   */
+  expected_revision: string;
+  /**
+   * Proposals
+   */
+  proposals?: Array<WorkingRuleOrganizeProposalItem>;
+};
+
+/**
+ * WorkingRuleOrganizeApplyResult
+ *
+ * Batch apply result for Working Rules AI organization.
+ */
+export type WorkingRuleOrganizeApplyResult = {
+  /**
+   * Revision
+   */
+  revision: string;
+  /**
+   * Results
+   */
+  results: Array<WorkingRuleOrganizeApplyOutcome>;
+};
+
+/**
+ * WorkingRuleOrganizePreview
+ *
+ * Preview of proposed Working Rule cleanups, guarded by expected_revision.
+ */
+export type WorkingRuleOrganizePreview = {
+  /**
+   * Expected Revision
+   */
+  expected_revision: string;
+  /**
+   * Summary
+   */
+  summary: string;
+  /**
+   * Proposals
+   */
+  proposals: Array<WorkingRuleOrganizeProposalItem>;
+};
+
+/**
+ * WorkingRuleOrganizePreviewRequest
+ *
+ * Request body for generating an AI organization preview for Working Rules.
+ */
+export type WorkingRuleOrganizePreviewRequest = {
+  /**
+   * Instructions
+   *
+   * Optional reviewer instructions
+   */
+  instructions?: string;
+  /**
+   * Scope
+   *
+   * Optional scope filter
+   */
+  scope?: "global" | "project" | null;
+  /**
+   * Project Id
+   *
+   * Optional project identifier
+   */
+  project_id?: string | null;
+};
+
+/**
+ * WorkingRuleOrganizeProposalItem
+ *
+ * Single proposed Working Rule change produced by AI organization preview.
+ */
+export type WorkingRuleOrganizeProposalItem = {
+  /**
+   * Number
+   */
+  number: number;
+  /**
+   * Action
+   */
+  action: "add" | "replace" | "archive" | "remove";
+  /**
+   * Reason
+   */
+  reason: string;
+  /**
+   * Rule Id
+   */
+  rule_id?: string | null;
+  /**
+   * Old Text
+   */
+  old_text?: string | null;
+  /**
+   * Content
+   */
+  content?: string | null;
+  /**
+   * Importance
+   */
+  importance?: "critical" | "normal" | "low" | null;
+  /**
+   * Scope
+   */
+  scope?: "global" | "project";
+  /**
+   * Project Id
+   */
+  project_id?: string | null;
+  /**
+   * Branches
+   */
+  branches?: Array<string> | null;
+};
+
+/**
+ * WorkingRuleProjectionEntry
+ *
+ * Minimal entry view exposed in prompt/tool projections (omits storage metadata).
+ */
+export type WorkingRuleProjectionEntry = {
+  /**
+   * Content
+   */
+  content: string;
+  /**
+   * Importance
+   */
+  importance: "critical" | "normal" | "low";
+  /**
+   * Pinned
+   */
+  pinned?: boolean;
+  /**
+   * Scope
+   */
+  scope: "global" | "project";
+};
+
+/**
+ * WorkingRulePromotedResult
+ *
+ * Result of promoting an archived Working Rule into a memory bank.
+ */
+export type WorkingRulePromotedResult = {
+  /**
+   * Rule Id
+   */
+  rule_id: string;
+  /**
+   * Bank Id
+   */
+  bank_id: string;
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Unit Ids
+   */
+  unit_ids?: Array<string>;
+};
+
+/**
+ * WorkingRuleRecord
+ *
+ * Single persisted Working Rule record.
+ */
+export type WorkingRuleRecord = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Scope
+   */
+  scope: "global" | "project";
+  /**
+   * Project Id
+   */
+  project_id?: string | null;
+  /**
+   * Content
+   */
+  content: string;
+  /**
+   * Importance
+   */
+  importance?: "critical" | "normal" | "low";
+  /**
+   * Pinned
+   */
+  pinned?: boolean;
+  /**
+   * Branches
+   */
+  branches?: Array<string>;
+  /**
+   * Is Archived
+   */
+  is_archived?: boolean;
+  /**
+   * Archived At
+   */
+  archived_at?: string | null;
+  /**
+   * Archive Reason
+   */
+  archive_reason?: string | null;
+  /**
+   * Created At
+   */
+  created_at: string;
+  /**
+   * Updated At
+   */
+  updated_at: string;
+};
+
+/**
+ * WorkingRulesListResult
+ *
+ * Paginated list of Working Rules plus usage and revision metadata.
+ */
+export type WorkingRulesListResult = {
+  /**
+   * Items
+   */
+  items: Array<WorkingRuleRecord>;
+  /**
+   * Total
+   */
+  total: number;
+  /**
+   * Limit
+   */
+  limit: number;
+  /**
+   * Offset
+   */
+  offset: number;
+  /**
+   * Revision
+   */
+  revision: string;
+  usage: WorkingRulesUsage;
+};
+
+/**
+ * WorkingRulesProjection
+ *
+ * Branch- and project-filtered Working Rules projection for agent context.
+ */
+export type WorkingRulesProjection = {
+  /**
+   * Revision
+   */
+  revision: string;
+  /**
+   * Text
+   */
+  text: string;
+  /**
+   * Entries
+   */
+  entries: Array<WorkingRuleProjectionEntry>;
+  /**
+   * Total Active Entries
+   */
+  total_active_entries: number;
+  /**
+   * Minimum Characters
+   */
+  minimum_characters: number;
+  /**
+   * Truncated
+   */
+  truncated?: boolean;
+};
+
+/**
+ * WorkingRulesUsage
+ *
+ * UTF-8 byte and pinned character usage for an active Working Rules pool.
+ */
+export type WorkingRulesUsage = {
+  /**
+   * Used Bytes
+   */
+  used_bytes: number;
+  /**
+   * Limit Bytes
+   */
+  limit_bytes: number;
+  /**
+   * Pinned Chars
+   */
+  pinned_chars: number;
+  /**
+   * Pinned Limit Chars
+   */
+  pinned_limit_chars: number;
+  /**
+   * Active Count
+   */
+  active_count: number;
+  /**
+   * Archived Count
+   */
+  archived_count: number;
+};
+
+export type ListKnowledgeBanksData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: {
+    /**
+     * Limit
+     *
+     * Maximum number of knowledge banks to return. Values above 1000 are trimmed to 1000.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Q
+     *
+     * Part of the bank id, case-insensitive
+     */
+    q?: string | null;
+  };
+  url: "/v1/default/knowledge-banks";
+};
+
+export type ListKnowledgeBanksErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeBanksError = ListKnowledgeBanksErrors[keyof ListKnowledgeBanksErrors];
+
+export type ListKnowledgeBanksResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankListResponse;
+};
+
+export type ListKnowledgeBanksResponse =
+  ListKnowledgeBanksResponses[keyof ListKnowledgeBanksResponses];
+
+export type CreateKnowledgeBankData = {
+  body: CreateKnowledgeBankRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/knowledge-banks";
+};
+
+export type CreateKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CreateKnowledgeBankError = CreateKnowledgeBankErrors[keyof CreateKnowledgeBankErrors];
+
+export type CreateKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankResponse;
+};
+
+export type CreateKnowledgeBankResponse =
+  CreateKnowledgeBankResponses[keyof CreateKnowledgeBankResponses];
+
+export type DeleteKnowledgeBankData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}";
+};
+
+export type DeleteKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteKnowledgeBankError = DeleteKnowledgeBankErrors[keyof DeleteKnowledgeBankErrors];
+
+export type DeleteKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDeletedResponse;
+};
+
+export type DeleteKnowledgeBankResponse =
+  DeleteKnowledgeBankResponses[keyof DeleteKnowledgeBankResponses];
+
+export type GetKnowledgeBankData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}";
+};
+
+export type GetKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankError = GetKnowledgeBankErrors[keyof GetKnowledgeBankErrors];
+
+export type GetKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankResponse;
+};
+
+export type GetKnowledgeBankResponse = GetKnowledgeBankResponses[keyof GetKnowledgeBankResponses];
+
+export type ResetKnowledgeBankConfigData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/config";
+};
+
+export type ResetKnowledgeBankConfigErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ResetKnowledgeBankConfigError =
+  ResetKnowledgeBankConfigErrors[keyof ResetKnowledgeBankConfigErrors];
+
+export type ResetKnowledgeBankConfigResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankConfigResponse;
+};
+
+export type ResetKnowledgeBankConfigResponse =
+  ResetKnowledgeBankConfigResponses[keyof ResetKnowledgeBankConfigResponses];
+
+export type GetKnowledgeBankConfigData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/config";
+};
+
+export type GetKnowledgeBankConfigErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankConfigError =
+  GetKnowledgeBankConfigErrors[keyof GetKnowledgeBankConfigErrors];
+
+export type GetKnowledgeBankConfigResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankConfigResponse;
+};
+
+export type GetKnowledgeBankConfigResponse =
+  GetKnowledgeBankConfigResponses[keyof GetKnowledgeBankConfigResponses];
+
+export type UpdateKnowledgeBankConfigData = {
+  body: KnowledgeBankConfigUpdate;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/config";
+};
+
+export type UpdateKnowledgeBankConfigErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdateKnowledgeBankConfigError =
+  UpdateKnowledgeBankConfigErrors[keyof UpdateKnowledgeBankConfigErrors];
+
+export type UpdateKnowledgeBankConfigResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankConfigResponse;
+};
+
+export type UpdateKnowledgeBankConfigResponse =
+  UpdateKnowledgeBankConfigResponses[keyof UpdateKnowledgeBankConfigResponses];
+
+export type GetKnowledgeBankTimeseriesData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Period
+     */
+    period?: "1d" | "7d" | "30d" | "90d";
+    /**
+     * Media Type
+     *
+     * Only documents of this media type.
+     */
+    media_type?: "document" | "image" | "audio" | "video" | "text" | null;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/stats/timeseries";
+};
+
+export type GetKnowledgeBankTimeseriesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankTimeseriesError =
+  GetKnowledgeBankTimeseriesErrors[keyof GetKnowledgeBankTimeseriesErrors];
+
+export type GetKnowledgeBankTimeseriesResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeTimeseriesResponse;
+};
+
+export type GetKnowledgeBankTimeseriesResponse =
+  GetKnowledgeBankTimeseriesResponses[keyof GetKnowledgeBankTimeseriesResponses];
+
+export type IngestKnowledgeFilesData = {
+  body: BodyIngestKnowledgeFiles;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/files/ingest";
+};
+
+export type IngestKnowledgeFilesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type IngestKnowledgeFilesError =
+  IngestKnowledgeFilesErrors[keyof IngestKnowledgeFilesErrors];
+
+export type IngestKnowledgeFilesResponses = {
+  /**
+   * Successful Response
+   */
+  202: KnowledgeIngestResponse;
+};
+
+export type IngestKnowledgeFilesResponse =
+  IngestKnowledgeFilesResponses[keyof IngestKnowledgeFilesResponses];
+
+export type IngestKnowledgeTextsData = {
+  body: KnowledgeIngestRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/ingest";
+};
+
+export type IngestKnowledgeTextsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type IngestKnowledgeTextsError =
+  IngestKnowledgeTextsErrors[keyof IngestKnowledgeTextsErrors];
+
+export type IngestKnowledgeTextsResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeIngestResponse;
+  /**
+   * Queued (`async: true`)
+   */
+  202: KnowledgeIngestResponse;
+};
+
+export type IngestKnowledgeTextsResponse =
+  IngestKnowledgeTextsResponses[keyof IngestKnowledgeTextsResponses];
+
+export type ListKnowledgeDocumentsData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Limit
+     *
+     * Maximum number of documents to return. Values above 500 are trimmed to 500.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Q
+     *
+     * Substring of the id or filename.
+     */
+    q?: string | null;
+    /**
+     * Status
+     */
+    status?: string | null;
+    /**
+     * Media Type
+     */
+    media_type?: string | null;
+    /**
+     * Tags
+     */
+    tags?: Array<string> | null;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/documents";
+};
+
+export type ListKnowledgeDocumentsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeDocumentsError =
+  ListKnowledgeDocumentsErrors[keyof ListKnowledgeDocumentsErrors];
+
+export type ListKnowledgeDocumentsResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDocumentListResponse;
+};
+
+export type ListKnowledgeDocumentsResponse =
+  ListKnowledgeDocumentsResponses[keyof ListKnowledgeDocumentsResponses];
+
+export type DeleteKnowledgeDocumentData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}";
+};
+
+export type DeleteKnowledgeDocumentErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteKnowledgeDocumentError =
+  DeleteKnowledgeDocumentErrors[keyof DeleteKnowledgeDocumentErrors];
+
+export type DeleteKnowledgeDocumentResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDeletedResponse;
+};
+
+export type DeleteKnowledgeDocumentResponse =
+  DeleteKnowledgeDocumentResponses[keyof DeleteKnowledgeDocumentResponses];
+
+export type GetKnowledgeDocumentData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}";
+};
+
+export type GetKnowledgeDocumentErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeDocumentError =
+  GetKnowledgeDocumentErrors[keyof GetKnowledgeDocumentErrors];
+
+export type GetKnowledgeDocumentResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDocumentDetailResponse;
+};
+
+export type GetKnowledgeDocumentResponse =
+  GetKnowledgeDocumentResponses[keyof GetKnowledgeDocumentResponses];
+
+export type ListKnowledgeBankOperationsData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Status
+     *
+     * Filter by status: pending, processing, completed, failed, or cancelled
+     */
+    status?: string | null;
+    /**
+     * Type
+     *
+     * Filter by operation type
+     */
+    type?: string | null;
+    /**
+     * Limit
+     *
+     * Maximum number of operations to return. Values above 100 are trimmed to 100.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Exclude Parents
+     *
+     * Exclude parent batch operations from results
+     */
+    exclude_parents?: boolean;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/operations";
+};
+
+export type ListKnowledgeBankOperationsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeBankOperationsError =
+  ListKnowledgeBankOperationsErrors[keyof ListKnowledgeBankOperationsErrors];
+
+export type ListKnowledgeBankOperationsResponses = {
+  /**
+   * Successful Response
+   */
+  200: OperationsListResponse;
+};
+
+export type ListKnowledgeBankOperationsResponse =
+  ListKnowledgeBankOperationsResponses[keyof ListKnowledgeBankOperationsResponses];
+
+export type CancelKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}";
+};
+
+export type CancelKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CancelKnowledgeBankOperationError =
+  CancelKnowledgeBankOperationErrors[keyof CancelKnowledgeBankOperationErrors];
+
+export type CancelKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: CancelOperationResponse;
+};
+
+export type CancelKnowledgeBankOperationResponse =
+  CancelKnowledgeBankOperationResponses[keyof CancelKnowledgeBankOperationResponses];
+
+export type GetKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: {
+    /**
+     * Include Payload
+     *
+     * Include the raw task payload in the response.
+     */
+    include_payload?: boolean;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}";
+};
+
+export type GetKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankOperationError =
+  GetKnowledgeBankOperationErrors[keyof GetKnowledgeBankOperationErrors];
+
+export type GetKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: OperationStatusResponse;
+};
+
+export type GetKnowledgeBankOperationResponse =
+  GetKnowledgeBankOperationResponses[keyof GetKnowledgeBankOperationResponses];
+
+export type RetryKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}/retry";
+};
+
+export type RetryKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RetryKnowledgeBankOperationError =
+  RetryKnowledgeBankOperationErrors[keyof RetryKnowledgeBankOperationErrors];
+
+export type RetryKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: RetryOperationResponse;
+};
+
+export type RetryKnowledgeBankOperationResponse =
+  RetryKnowledgeBankOperationResponses[keyof RetryKnowledgeBankOperationResponses];
+
+export type DeleteKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}/delete";
+};
+
+export type DeleteKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteKnowledgeBankOperationError =
+  DeleteKnowledgeBankOperationErrors[keyof DeleteKnowledgeBankOperationErrors];
+
+export type DeleteKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteOperationResponse;
+};
+
+export type DeleteKnowledgeBankOperationResponse =
+  DeleteKnowledgeBankOperationResponses[keyof DeleteKnowledgeBankOperationResponses];
+
+export type ListKnowledgeBankTagsData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Q
+     *
+     * Wildcard pattern to filter tags (e.g. 'team:*'). Use '*' as wildcard. Case-insensitive.
+     */
+    q?: string | null;
+    /**
+     * Limit
+     *
+     * Maximum number of tags to return. Values above 1000 are trimmed to 1000.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/tags";
+};
+
+export type ListKnowledgeBankTagsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeBankTagsError =
+  ListKnowledgeBankTagsErrors[keyof ListKnowledgeBankTagsErrors];
+
+export type ListKnowledgeBankTagsResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeTagsResponse;
+};
+
+export type ListKnowledgeBankTagsResponse =
+  ListKnowledgeBankTagsResponses[keyof ListKnowledgeBankTagsResponses];
+
+export type GetKnowledgeDocumentFileData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}/file";
+};
+
+export type GetKnowledgeDocumentFileErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeDocumentFileError =
+  GetKnowledgeDocumentFileErrors[keyof GetKnowledgeDocumentFileErrors];
+
+export type GetKnowledgeDocumentFileResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type GetKnowledgePassageMediaData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+    /**
+     * Index
+     */
+    index: number;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}/passages/{index}/media";
+};
+
+export type GetKnowledgePassageMediaErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgePassageMediaError =
+  GetKnowledgePassageMediaErrors[keyof GetKnowledgePassageMediaErrors];
+
+export type GetKnowledgePassageMediaResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type SearchKnowledgeBankData = {
+  body: KnowledgeSearchRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/search";
+};
+
+export type SearchKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type SearchKnowledgeBankError = SearchKnowledgeBankErrors[keyof SearchKnowledgeBankErrors];
+
+export type SearchKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeSearchResponse;
+};
+
+export type SearchKnowledgeBankResponse =
+  SearchKnowledgeBankResponses[keyof SearchKnowledgeBankResponses];
+
+export type ListWorkingRulesData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: {
+    /**
+     * Scope
+     */
+    scope?: "global" | "project" | null;
+    /**
+     * Project Id
+     */
+    project_id?: string | null;
+    /**
+     * Include Archived
+     */
+    include_archived?: boolean;
+    /**
+     * Q
+     *
+     * Case-insensitive substring search
+     */
+    q?: string | null;
+    /**
+     * Limit
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+  };
+  url: "/v1/default/working-rules";
+};
+
+export type ListWorkingRulesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListWorkingRulesError = ListWorkingRulesErrors[keyof ListWorkingRulesErrors];
+
+export type ListWorkingRulesResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRulesListResult;
+};
+
+export type ListWorkingRulesResponse = ListWorkingRulesResponses[keyof ListWorkingRulesResponses];
+
+export type CreateWorkingRuleData = {
+  body: CreateWorkingRuleRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/working-rules";
+};
+
+export type CreateWorkingRuleErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CreateWorkingRuleError = CreateWorkingRuleErrors[keyof CreateWorkingRuleErrors];
+
+export type CreateWorkingRuleResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRuleMutationResult;
+};
+
+export type CreateWorkingRuleResponse =
+  CreateWorkingRuleResponses[keyof CreateWorkingRuleResponses];
+
+export type GetWorkingRulesProjectionData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: {
+    /**
+     * Project Id
+     */
+    project_id?: string | null;
+    /**
+     * Branch
+     */
+    branch?: string | null;
+    /**
+     * Max Chars
+     */
+    max_chars?: number | null;
+  };
+  url: "/v1/default/working-rules/projection";
+};
+
+export type GetWorkingRulesProjectionErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetWorkingRulesProjectionError =
+  GetWorkingRulesProjectionErrors[keyof GetWorkingRulesProjectionErrors];
+
+export type GetWorkingRulesProjectionResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRulesProjection;
+};
+
+export type GetWorkingRulesProjectionResponse =
+  GetWorkingRulesProjectionResponses[keyof GetWorkingRulesProjectionResponses];
+
+export type ExportWorkingRulesData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: {
+    /**
+     * Scope
+     */
+    scope?: "global" | "project" | null;
+    /**
+     * Project Id
+     */
+    project_id?: string | null;
+    /**
+     * Include Archived
+     */
+    include_archived?: boolean;
+  };
+  url: "/v1/default/working-rules/export";
+};
+
+export type ExportWorkingRulesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ExportWorkingRulesError = ExportWorkingRulesErrors[keyof ExportWorkingRulesErrors];
+
+export type ExportWorkingRulesResponses = {
+  /**
+   * Successful Response
+   */
+  200: ExportWorkingRulesResponse;
+};
+
+export type ExportWorkingRulesResponse2 =
+  ExportWorkingRulesResponses[keyof ExportWorkingRulesResponses];
+
+export type MutateWorkingRulesData = {
+  body: MutateWorkingRuleRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/working-rules/mutate";
+};
+
+export type MutateWorkingRulesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type MutateWorkingRulesError = MutateWorkingRulesErrors[keyof MutateWorkingRulesErrors];
+
+export type MutateWorkingRulesResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRuleMutationResult;
+};
+
+export type MutateWorkingRulesResponse =
+  MutateWorkingRulesResponses[keyof MutateWorkingRulesResponses];
+
+export type PreviewWorkingRulesOrganizationData = {
+  body: WorkingRuleOrganizePreviewRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/working-rules/organize/preview";
+};
+
+export type PreviewWorkingRulesOrganizationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type PreviewWorkingRulesOrganizationError =
+  PreviewWorkingRulesOrganizationErrors[keyof PreviewWorkingRulesOrganizationErrors];
+
+export type PreviewWorkingRulesOrganizationResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRuleOrganizePreview;
+};
+
+export type PreviewWorkingRulesOrganizationResponse =
+  PreviewWorkingRulesOrganizationResponses[keyof PreviewWorkingRulesOrganizationResponses];
+
+export type ApplyWorkingRulesOrganizationData = {
+  body: WorkingRuleOrganizeApplyRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/working-rules/organize/apply";
+};
+
+export type ApplyWorkingRulesOrganizationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ApplyWorkingRulesOrganizationError =
+  ApplyWorkingRulesOrganizationErrors[keyof ApplyWorkingRulesOrganizationErrors];
+
+export type ApplyWorkingRulesOrganizationResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRuleOrganizeApplyResult;
+};
+
+export type ApplyWorkingRulesOrganizationResponse =
+  ApplyWorkingRulesOrganizationResponses[keyof ApplyWorkingRulesOrganizationResponses];
+
+export type DeleteWorkingRuleData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Rule Id
+     */
+    rule_id: string;
+  };
+  query?: never;
+  url: "/v1/default/working-rules/{rule_id}";
+};
+
+export type DeleteWorkingRuleErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteWorkingRuleError = DeleteWorkingRuleErrors[keyof DeleteWorkingRuleErrors];
+
+export type DeleteWorkingRuleResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteWorkingRuleResponse;
+};
+
+export type DeleteWorkingRuleResponse2 =
+  DeleteWorkingRuleResponses[keyof DeleteWorkingRuleResponses];
+
+export type GetWorkingRuleData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Rule Id
+     */
+    rule_id: string;
+  };
+  query?: never;
+  url: "/v1/default/working-rules/{rule_id}";
+};
+
+export type GetWorkingRuleErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetWorkingRuleError = GetWorkingRuleErrors[keyof GetWorkingRuleErrors];
+
+export type GetWorkingRuleResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRuleRecord;
+};
+
+export type GetWorkingRuleResponse = GetWorkingRuleResponses[keyof GetWorkingRuleResponses];
+
+export type UpdateWorkingRuleData = {
+  body: UpdateWorkingRuleRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Rule Id
+     */
+    rule_id: string;
+  };
+  query?: never;
+  url: "/v1/default/working-rules/{rule_id}";
+};
+
+export type UpdateWorkingRuleErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdateWorkingRuleError = UpdateWorkingRuleErrors[keyof UpdateWorkingRuleErrors];
+
+export type UpdateWorkingRuleResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRuleRecord;
+};
+
+export type UpdateWorkingRuleResponse =
+  UpdateWorkingRuleResponses[keyof UpdateWorkingRuleResponses];
+
+export type RestoreWorkingRuleData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Rule Id
+     */
+    rule_id: string;
+  };
+  query?: never;
+  url: "/v1/default/working-rules/{rule_id}/restore";
+};
+
+export type RestoreWorkingRuleErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RestoreWorkingRuleError = RestoreWorkingRuleErrors[keyof RestoreWorkingRuleErrors];
+
+export type RestoreWorkingRuleResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRuleRecord;
+};
+
+export type RestoreWorkingRuleResponse =
+  RestoreWorkingRuleResponses[keyof RestoreWorkingRuleResponses];
+
+export type PromoteWorkingRuleData = {
+  body: PromoteWorkingRuleRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Rule Id
+     */
+    rule_id: string;
+  };
+  query?: never;
+  url: "/v1/default/working-rules/{rule_id}/promote";
+};
+
+export type PromoteWorkingRuleErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type PromoteWorkingRuleError = PromoteWorkingRuleErrors[keyof PromoteWorkingRuleErrors];
+
+export type PromoteWorkingRuleResponses = {
+  /**
+   * Successful Response
+   */
+  200: WorkingRulePromotedResult;
+};
+
+export type PromoteWorkingRuleResponse =
+  PromoteWorkingRuleResponses[keyof PromoteWorkingRuleResponses];
+
 export type HealthEndpointHealthGetData = {
   body?: never;
   path?: never;
@@ -7772,6 +10764,8 @@ export type GetGraphData = {
     type?: string | null;
     /**
      * Limit
+     *
+     * Maximum number of memories to return. Values above 5000 are trimmed to 5000.
      */
     limit?: number;
     /**
@@ -7897,6 +10891,8 @@ export type ListMemoriesData = {
     end_date?: string | null;
     /**
      * Limit
+     *
+     * Maximum number of memories to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -8209,7 +11205,7 @@ export type ListBanksData = {
     /**
      * Limit
      *
-     * Maximum number of banks to return
+     * Maximum number of banks to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -8394,7 +11390,7 @@ export type ListEntitiesData = {
     /**
      * Limit
      *
-     * Maximum number of entities to return
+     * Maximum number of entities to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -8525,7 +11521,7 @@ export type GetEntityGraphData = {
     /**
      * Limit
      *
-     * Maximum number of co-occurrence edges to return
+     * Maximum number of co-occurrence edges to return. Values above 5000 are trimmed to 5000.
      */
     limit?: number;
     /**
@@ -8714,6 +11710,8 @@ export type ListMentalModelsData = {
     detail?: "metadata" | "content" | "full";
     /**
      * Limit
+     *
+     * Maximum number of mental models to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -9460,7 +12458,7 @@ export type SearchKnowledgeBaseData = {
     /**
      * Limit
      *
-     * Maximum results to return
+     * Maximum results to return. Values above 50 are trimmed to 50.
      */
     limit?: number;
     /**
@@ -9532,7 +12530,7 @@ export type SearchPagesData = {
     /**
      * Limit
      *
-     * Maximum results to return
+     * Maximum results to return. Values above 50 are trimmed to 50.
      */
     limit?: number;
     /**
@@ -9851,6 +12849,8 @@ export type ListDirectivesData = {
     active_only?: boolean;
     /**
      * Limit
+     *
+     * Maximum number of directives to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10090,6 +13090,8 @@ export type ListDocumentsData = {
     end_date?: string | null;
     /**
      * Limit
+     *
+     * Maximum number of documents to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10144,7 +13146,7 @@ export type ListDocumentChunksData = {
     /**
      * Limit
      *
-     * Maximum number of chunks to return
+     * Maximum number of chunks to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10198,7 +13200,7 @@ export type GetDocumentHistoryData = {
     /**
      * Limit
      *
-     * Maximum number of operations to read
+     * Maximum number of operations to read. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10421,7 +13423,7 @@ export type ListTagsData = {
     /**
      * Limit
      *
-     * Maximum number of tags to return
+     * Maximum number of tags to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10522,7 +13524,7 @@ export type ListOperationsData = {
     /**
      * Limit
      *
-     * Maximum number of operations to return
+     * Maximum number of operations to return. Values above 100 are trimmed to 100.
      */
     limit?: number;
     /**
@@ -11678,7 +14680,7 @@ export type ListObservationScopesData = {
     /**
      * Limit
      *
-     * Maximum number of scopes to return
+     * Maximum number of scopes to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -12008,7 +15010,7 @@ export type ListWebhooksData = {
     /**
      * Limit
      *
-     * Maximum number of webhooks to return
+     * Maximum number of webhooks to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -12181,7 +15183,7 @@ export type ListWebhookDeliveriesData = {
     /**
      * Limit
      *
-     * Maximum number of deliveries to return
+     * Maximum number of deliveries to return. Values above 200 are trimmed to 200.
      */
     limit?: number;
     /**
@@ -12372,7 +15374,7 @@ export type ListAuditLogsData = {
     /**
      * Limit
      *
-     * Max items to return
+     * Max items to return. Values above 500 are trimmed to 500.
      */
     limit?: number;
     /**
@@ -12588,7 +15590,7 @@ export type ListLlmRequestsData = {
     /**
      * Limit
      *
-     * Max items to return
+     * Max items to return. Values above 500 are trimmed to 500.
      */
     limit?: number;
     /**

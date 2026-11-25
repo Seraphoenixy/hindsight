@@ -68,7 +68,7 @@ describe("resolveHostMemory", () => {
     expect(resolveHostMemory("dsh", repo).client.project).toBeUndefined();
   });
 
-  it("shares one bank across hosts while keeping same-name repos and worktrees distinct", async () => {
+  it("shares one bank by default while keeping same-name repos and worktrees distinct", async () => {
     const left = join(root, "left", "repo");
     const right = join(root, "right", "repo");
     const worktree = join(root, "linked");
@@ -90,16 +90,14 @@ describe("resolveHostMemory", () => {
     ]);
     execFileSync("git", ["-C", left, "worktree", "add", "--detach", "-q", worktree]);
     const { resolveHostMemory } = await loadFactory();
-    expect(resolveHostMemory("codex", left).cfg.disabled).toBe(true);
-
     writeConfig({
-      optInPaths: [left, right],
       harnesses: { codex: { bankId: "ignored" } },
       paths: { [left]: { gitIngest: "message" } },
     });
     const a = resolveHostMemory("codex", left);
     const b = resolveHostMemory("antigravity-cli", right);
     const linked = resolveHostMemory("codex", worktree);
+    expect([a, b, linked].map(({ cfg }) => cfg.disabled)).toEqual([false, false, false]);
     expect(a.bankId).toBe("工程知识与经验");
     expect(b.bankId).toBe(a.bankId);
     expect(b.client.projectTag).not.toBe(a.client.projectTag);
@@ -107,7 +105,7 @@ describe("resolveHostMemory", () => {
     expect(a.cfg.gitIngest).toBe("message");
     expect(linked.cfg.gitIngest).toBe("message");
     expect(b.cfg.gitIngest).toBe("none");
-    expect(b.cfg.retainSessions).toBe(false);
+    expect(b.cfg.retainSessions).toBe(true);
     expect(b.cfg.codebaseSurvey).toBe(false);
     expect(b.cfg.importChatHistory).toBe(false);
   });
@@ -115,10 +113,13 @@ describe("resolveHostMemory", () => {
   it("enforces optInOnly for every host, not just the ones that remembered to pass a directory", async () => {
     // dsh called applyBankConfig WITHOUT the directory, so `optInOnly` was never enforced there:
     // an unapproved repo still got a bank and still had memories written for it.
-    writeConfig({ optInOnly: true, optInPaths: ["/somewhere/else"] });
+    const approved = join(root, "approved");
+    mkdirSync(approved);
+    writeConfig({ optInOnly: true, optInPaths: [approved] });
     const { resolveHostMemory } = await loadFactory();
 
     expect(resolveHostMemory("dsh", root).cfg.disabled).toBe(true);
+    expect(resolveHostMemory("dsh", approved).cfg.disabled).toBe(false);
   });
 
   it("does not derive a bank when memory is disabled — that path is a zero-overhead baseline", async () => {

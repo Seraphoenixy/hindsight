@@ -6,8 +6,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Home } from "lucide-react";
+import zhCN from "@/messages/zh-CN.json";
 
-vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key }));
+vi.mock("next-intl", () => ({
+  useTranslations: (namespace: string) => (key: string) =>
+    namespace === "memoryOrganization"
+      ? zhCN.memoryOrganization[key as keyof typeof zhCN.memoryOrganization]
+      : key,
+}));
 vi.mock("@/lib/bank-context", () => ({ useBank: () => ({ currentBank: "alpha" }) }));
 vi.mock("@/lib/api", () => ({
   client: { getVersion: () => Promise.resolve({ api_version: "1.0.0" }) },
@@ -35,7 +41,10 @@ describe("Sidebar accessibility", () => {
     // Collapsed links are icon-only but still named, and the active one is marked.
     const memories = screen.getByRole("link", { name: "memories" });
     expect(memories.getAttribute("aria-current")).toBe("page");
-    expect(screen.getAllByRole("link")).toHaveLength(8);
+    expect(screen.getAllByRole("link")).toHaveLength(9);
+    expect(screen.getByRole("link", { name: "整理" }).getAttribute("href")).toBe(
+      "/banks/alpha?view=organize"
+    );
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
@@ -51,11 +60,11 @@ describe("Sidebar accessibility", () => {
       </>
     );
     // Closed: only the rail's links exist.
-    expect(screen.getAllByRole("link")).toHaveLength(8);
+    expect(screen.getAllByRole("link")).toHaveLength(9);
 
     fireEvent.click(screen.getByRole("button", { name: "openNavigation" }));
     const drawer = screen.getByRole("dialog");
-    expect(drawer.querySelectorAll("a")).toHaveLength(8);
+    expect(drawer.querySelectorAll("a")).toHaveLength(9);
 
     const recall = Array.from(drawer.querySelectorAll("a")).find(
       (a) => a.getAttribute("aria-label") === "recall"

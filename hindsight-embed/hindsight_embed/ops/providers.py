@@ -91,6 +91,9 @@ PROVIDER_CATALOG: tuple[ProviderInfo, ...] = (
     ProviderInfo("openai-codex", "OpenAI Codex (OAuth)", needs_api_key=False, label_zh="OpenAI Codex（OAuth）"),
     ProviderInfo("chatgpt", "ChatGPT (OAuth)", needs_api_key=False, label_zh="ChatGPT（OAuth）"),
     ProviderInfo("cursor", "Cursor", needs_api_key=False, label_zh="Cursor"),
+    ProviderInfo(
+        "antigravity", "Google Antigravity (agy CLI)", needs_api_key=False, label_zh="Google Antigravity（agy CLI）"
+    ),
     ProviderInfo("github-copilot", "GitHub Copilot", needs_api_key=False, label_zh="GitHub Copilot"),
     ProviderInfo("none", "None (no LLM / recall-only)", needs_api_key=False, label_zh="无（不用 LLM，仅召回）"),
 )

@@ -848,6 +848,9 @@ ENV_ENABLE_DRY_RUN_EXTRACT = "HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT"
 ENV_DEFAULT_BANK_TEMPLATE = "HINDSIGHT_API_DEFAULT_BANK_TEMPLATE"
 ENV_GRAPH_RETRIEVER = "HINDSIGHT_API_GRAPH_RETRIEVER"
 ENV_RECALL_MAX_CONCURRENT = "HINDSIGHT_API_RECALL_MAX_CONCURRENT"
+ENV_WORKING_RULES_LIMIT_BYTES = "HINDSIGHT_API_WORKING_RULES_LIMIT_BYTES"
+ENV_WORKING_RULES_PINNED_LIMIT_CHARS = "HINDSIGHT_API_WORKING_RULES_PINNED_LIMIT_CHARS"
+ENV_WORKING_RULES_ENTRY_MAX_BYTES = "HINDSIGHT_API_WORKING_RULES_ENTRY_MAX_BYTES"
 
 # Admission control. The engine's *_MAX_CONCURRENT caps limit how much runs at once
 # and let an unbounded queue form behind them; these bound how long a request may
@@ -859,6 +862,8 @@ ENV_ADMISSION_REFLECT_MAX_IN_FLIGHT = "HINDSIGHT_API_ADMISSION_REFLECT_MAX_IN_FL
 ENV_ADMISSION_REFLECT_MAX_WAIT_MS = "HINDSIGHT_API_ADMISSION_REFLECT_MAX_WAIT_MS"
 ENV_ADMISSION_RETAIN_MAX_IN_FLIGHT = "HINDSIGHT_API_ADMISSION_RETAIN_MAX_IN_FLIGHT"
 ENV_ADMISSION_RETAIN_MAX_WAIT_MS = "HINDSIGHT_API_ADMISSION_RETAIN_MAX_WAIT_MS"
+ENV_ADMISSION_KB_SEARCH_MAX_IN_FLIGHT = "HINDSIGHT_API_ADMISSION_KB_SEARCH_MAX_IN_FLIGHT"
+ENV_ADMISSION_KB_SEARCH_MAX_WAIT_MS = "HINDSIGHT_API_ADMISSION_KB_SEARCH_MAX_WAIT_MS"
 ENV_RECALL_CONNECTION_BUDGET = "HINDSIGHT_API_RECALL_CONNECTION_BUDGET"
 ENV_RECALL_MAX_QUERY_TOKENS = "HINDSIGHT_API_RECALL_MAX_QUERY_TOKENS"
 ENV_RECALL_DIAGNOSTIC_PHASES = "HINDSIGHT_API_RECALL_DIAGNOSTIC_PHASES"
@@ -1017,6 +1022,8 @@ ENV_KB_RERANKER_MAX_TOKENS = "HINDSIGHT_API_KB_RERANKER_MAX_TOKENS"
 ENV_KB_RERANKER_TOKENIZER = "HINDSIGHT_API_KB_RERANKER_TOKENIZER"
 ENV_KB_RERANKER_IMAGES = "HINDSIGHT_API_KB_RERANKER_IMAGES"
 ENV_KB_RERANKER_QUERY_IMAGES = "HINDSIGHT_API_KB_RERANKER_QUERY_IMAGES"
+# Whether a search that leaves enable_reranking unset is reranked; false: only an explicit true reranks.
+ENV_KB_ENABLE_RERANKING = "HINDSIGHT_API_KB_ENABLE_RERANKING"
 # Media types (document, image, audio, video, text) this server refuses to ingest, comma-separated,
 # whatever its embedder could embed: e.g. "video,audio" to skip the cost of decoding clips.
 ENV_KB_DISABLED_MEDIA_TYPES = "HINDSIGHT_API_KB_DISABLED_MEDIA_TYPES"
@@ -1281,6 +1288,7 @@ ENV_RECALL_STRATEGY_BOOSTS = "HINDSIGHT_API_RECALL_STRATEGY_BOOSTS"
 ENV_RECENCY_DECAY_FUNCTION = "HINDSIGHT_API_RECENCY_DECAY_FUNCTION"
 ENV_RECENCY_DECAY_LINEAR_WINDOW_DAYS = "HINDSIGHT_API_RECENCY_DECAY_LINEAR_WINDOW_DAYS"
 ENV_RECENCY_DECAY_HALFLIFE_DAYS = "HINDSIGHT_API_RECENCY_DECAY_HALFLIFE_DAYS"
+ENV_RECENCY_ALPHA = "HINDSIGHT_API_RECENCY_ALPHA"
 
 # Audit log settings
 # AUDIT_LOG_ENABLED is the deployment-wide default and is overridable per bank
@@ -1343,6 +1351,7 @@ PROVIDER_DEFAULT_MODELS = {
     "openai-codex": "gpt-5.6-luna",
     "chatgpt": "gpt-6-luna",
     "cursor": "auto",
+    "antigravity": "gemini-3.8-flash-low",
     "github-copilot": "gpt-5.6-terra",
     "mock": "mock-model",
     "none": "none",
@@ -1583,6 +1592,8 @@ DEFAULT_RECENCY_DECAY_FUNCTION = "linear"
 DEFAULT_RECENCY_DECAY_LINEAR_WINDOW_DAYS = 365.0
 # Exponential: age (days) at which the recency signal is neutral (0.5).
 DEFAULT_RECENCY_DECAY_HALFLIFE_DAYS = 90.0
+# How much recency can move a recall score: at most ±(alpha/2). 0.2 → ±10%.
+DEFAULT_RECENCY_ALPHA = 0.2
 # Retrieval arms that can be boosted; mirrors fusion.py source_names.
 RECALL_STRATEGY_NAMES = ("semantic", "bm25", "graph", "temporal")
 # User-facing priority levels. Kept in sync with recall_boost.BOOST_LEVELS by a
@@ -1792,8 +1803,8 @@ DECISION_MODEL_PROVIDER_DEFAULTS = {
     "openai": _DecisionProviderDefaults(model="gpt-6-luna", base_url="https://api.openai.com"),
 }
 DECISION_MODEL_PROVIDERS = ("none", *DECISION_MODEL_PROVIDER_DEFAULTS)
-# Providers whose endpoint is System One itself (<base_url>/v1/systemone), which reflect's
-# client (TypeSafeCrossEncoder) speaks.
+# Providers whose endpoint is System One itself (<base_url>/v1/systemone): the ones reflect's
+# decision-orchestrated mode runs on (MemoryEngine._reflect_decision_model).
 SYSTEM_ONE_DECISION_MODEL_PROVIDERS = frozenset({"hindsight", "typesafe"})
 DEFAULT_DECISION_MODEL_PROVIDER = "none"
 DEFAULT_DECISION_MODEL_TIMEOUT = 60.0
@@ -1921,6 +1932,9 @@ DEFAULT_ENABLE_BANK_LLM_HEALTH = False
 DEFAULT_DEFAULT_BANK_TEMPLATE: dict | None = None  # BankTemplateManifest dict applied to newly-created banks
 DEFAULT_GRAPH_RETRIEVER = "link_expansion"
 DEFAULT_RECALL_MAX_CONCURRENT = 32  # Max concurrent recall operations per worker
+DEFAULT_WORKING_RULES_LIMIT_BYTES = 14336  # 14 KiB per working-rules scope pool
+DEFAULT_WORKING_RULES_PINNED_LIMIT_CHARS = 3072  # Reserved projection budget for pinned working rules
+DEFAULT_WORKING_RULES_ENTRY_MAX_BYTES = 8192  # 8 KiB max per single working rule
 
 # Admission-control defaults. These are PER WORKER PROCESS: with `--workers N` the
 # process budget is N x the value here.
@@ -1974,6 +1988,11 @@ DEFAULT_ADMISSION_REFLECT_MAX_WAIT_MS = 5000
 DEFAULT_ADMISSION_RETAIN_IN_FLIGHT_PER_CORE = 32
 DEFAULT_ADMISSION_RETAIN_MAX_IN_FLIGHT = 0
 DEFAULT_ADMISSION_RETAIN_MAX_WAIT_MS = 2000
+# Knowledge-bank search is a read like recall (embed the query, search, maybe rerank),
+# so it gets recall's depth and patience.
+DEFAULT_ADMISSION_KB_SEARCH_IN_FLIGHT_PER_CORE = 16
+DEFAULT_ADMISSION_KB_SEARCH_MAX_IN_FLIGHT = 0
+DEFAULT_ADMISSION_KB_SEARCH_MAX_WAIT_MS = 30000
 DEFAULT_RECALL_CONNECTION_BUDGET = 4  # Max concurrent DB connections per recall operation
 DEFAULT_RECALL_MAX_QUERY_TOKENS = 500  # Maximum tokens allowed in recall query
 DEFAULT_RECALL_DIAGNOSTIC_PHASES = True  # Record the subset (diagnostic=true) recall phase metrics
@@ -3683,6 +3702,11 @@ class HindsightConfig:
     llm_strict_schema_retain: bool
     llm_strict_schema_reflect: bool
     llm_strict_schema_consolidation: bool
+    # Reflect's tool turns (every loop turn and the closing ``done``). Held to the schema
+    # unless HINDSIGHT_API_LLM_STRICT_SCHEMA_REFLECT says false: they always were, and small
+    # models need it to follow a forced turn, so the global default (false) does not reach
+    # them. A model that runs away under the grammar is taken off it with that flag (#6673).
+    llm_strict_schema_reflect_tool_turns: bool = field(default=True, kw_only=True)
     llm_supports_string_pattern: bool = field(
         default=DEFAULT_LLM_SUPPORTS_STRING_PATTERN,
         kw_only=True,
@@ -3931,6 +3955,7 @@ class HindsightConfig:
     recency_decay_function: str
     recency_decay_linear_window_days: float
     recency_decay_halflife_days: float
+    recency_alpha: float
     reranker_cohere_api_key: str | None
     reranker_cohere_model: str
     reranker_cohere_base_url: str | None
@@ -4025,6 +4050,8 @@ class HindsightConfig:
     admission_reflect_max_wait_seconds: float
     admission_retain_max_in_flight: int
     admission_retain_max_wait_seconds: float
+    admission_kb_search_max_in_flight: int
+    admission_kb_search_max_wait_seconds: float
     recall_connection_budget: int
     recall_max_query_tokens: int
     recall_diagnostic_phases: bool
@@ -4089,7 +4116,7 @@ class HindsightConfig:
     enable_file_upload_api: bool
     file_delete_after_retain: bool
     store_document_text: bool  # When False, store NULL original_text / empty chunk_text
-    default_timezone: str  # IANA zone for retain times that carry no UTC offset
+    default_timezone: str  # IANA zone for retain times with no UTC offset, and for times shown to the LLM
     enable_document_export_api: bool
     enable_document_import_api: bool
     enable_kb: bool
@@ -4116,6 +4143,7 @@ class HindsightConfig:
     consolidation_source_facts_max_tokens_per_observation: int
     consolidation_max_attempts: int
     observations_mission: str | None
+    consolidation_group_by_conclusion: bool
     max_observations_per_scope: int
     # Per-scope observation caps overriding max_observations_per_scope.
     # Raw JSON shape: [{"scope": ["run_*", "shared"], "limit": 1}, ...]
@@ -4363,6 +4391,11 @@ class HindsightConfig:
     # sees). Stored lower-cased; empty means no header is ever forwarded.
     extension_passthrough_headers: list[str] = field(default_factory=list)
 
+    # Working Rules budgets (static, server-level only).
+    working_rules_limit_bytes: int = DEFAULT_WORKING_RULES_LIMIT_BYTES
+    working_rules_pinned_limit_chars: int = DEFAULT_WORKING_RULES_PINNED_LIMIT_CHARS
+    working_rules_entry_max_bytes: int = DEFAULT_WORKING_RULES_ENTRY_MAX_BYTES
+
     # Background maintenance cadences (static, server-level only). Each sweep's
     # discovery is one cross-tenant round-trip that probes every schema holding
     # the relevant table, so its cost scales with tenant count and the cadence is
@@ -4438,6 +4471,8 @@ class HindsightConfig:
     # Also send the picture of a search by an image as the rerank query (an image object, not a string);
     # needs kb_reranker_images. Off: the query goes as its text, and a search with no text is not reranked.
     kb_reranker_query_images: bool = False
+    # What a search that leaves enable_reranking unset gets; false: only an explicit true reranks.
+    kb_enable_reranking: bool = True
     kb_disabled_media_types: frozenset[str] = frozenset()
     #: The "text" knowledge provider's own embeddings config (HINDSIGHT_API_KB_TEXT_EMBEDDINGS_*),
     #: or None to use the memory banks' embedder.
@@ -4607,6 +4642,7 @@ class HindsightConfig:
         "consolidation_source_facts_max_tokens",
         "consolidation_source_facts_max_tokens_per_observation",
         "observations_mission",
+        "consolidation_group_by_conclusion",
         "max_observations_per_scope",
         "observation_scope_limits",
         "default_observation_scopes",
@@ -4844,6 +4880,8 @@ class HindsightConfig:
                 f"Invalid entity_trgm_similarity_threshold: {self.entity_trgm_similarity_threshold}. "
                 "Must be greater than 0 and at most 1."
             )
+        if not (0.0 <= self.recency_alpha <= 1.0):
+            raise ValueError(f"Invalid recency_alpha: {self.recency_alpha}. Must be between 0 and 1.")
         if not (0.0 < self.entity_intrabatch_merge_similarity <= 1.0):
             raise ValueError(
                 f"Invalid entity_intrabatch_merge_similarity: {self.entity_intrabatch_merge_similarity}. "
@@ -5126,6 +5164,8 @@ class HindsightConfig:
             llm_strict_schema_retain=_resolve_operation_strict_schema(ENV_LLM_STRICT_SCHEMA_RETAIN),
             llm_strict_schema_reflect=_resolve_operation_strict_schema(ENV_LLM_STRICT_SCHEMA_REFLECT),
             llm_strict_schema_consolidation=_resolve_operation_strict_schema(ENV_LLM_STRICT_SCHEMA_CONSOLIDATION),
+            llm_strict_schema_reflect_tool_turns=os.getenv(ENV_LLM_STRICT_SCHEMA_REFLECT, "true").strip().lower()
+            in ("true", "1"),
             llm_supports_string_pattern=_parse_boolean_env(
                 ENV_LLM_SUPPORTS_STRING_PATTERN,
                 DEFAULT_LLM_SUPPORTS_STRING_PATTERN,
@@ -5598,6 +5638,7 @@ class HindsightConfig:
             recency_decay_halflife_days=float(
                 os.getenv(ENV_RECENCY_DECAY_HALFLIFE_DAYS, str(DEFAULT_RECENCY_DECAY_HALFLIFE_DAYS))
             ),
+            recency_alpha=float(os.getenv(ENV_RECENCY_ALPHA, str(DEFAULT_RECENCY_ALPHA))),
             # Cohere reranker (with backward-compatible fallback to shared API key)
             reranker_cohere_api_key=os.getenv(ENV_RERANKER_COHERE_API_KEY) or os.getenv(ENV_COHERE_API_KEY),
             reranker_cohere_model=os.getenv(ENV_RERANKER_COHERE_MODEL, DEFAULT_RERANKER_COHERE_MODEL),
@@ -5804,6 +5845,20 @@ class HindsightConfig:
                 os.getenv(ENV_ADMISSION_RETAIN_MAX_WAIT_MS, str(DEFAULT_ADMISSION_RETAIN_MAX_WAIT_MS))
             )
             / 1000.0,
+            admission_kb_search_max_in_flight=admission_in_flight_for(
+                int(
+                    os.getenv(
+                        ENV_ADMISSION_KB_SEARCH_MAX_IN_FLIGHT,
+                        str(DEFAULT_ADMISSION_KB_SEARCH_MAX_IN_FLIGHT),
+                    )
+                ),
+                DEFAULT_ADMISSION_KB_SEARCH_IN_FLIGHT_PER_CORE,
+                int(os.getenv(ENV_WORKERS, "1")),
+            ),
+            admission_kb_search_max_wait_seconds=float(
+                os.getenv(ENV_ADMISSION_KB_SEARCH_MAX_WAIT_MS, str(DEFAULT_ADMISSION_KB_SEARCH_MAX_WAIT_MS))
+            )
+            / 1000.0,
             recall_connection_budget=int(
                 os.getenv(ENV_RECALL_CONNECTION_BUDGET, str(DEFAULT_RECALL_CONNECTION_BUDGET))
             ),
@@ -5962,6 +6017,7 @@ class HindsightConfig:
             kb_reranker_tokenizer=os.getenv(ENV_KB_RERANKER_TOKENIZER) or None,
             kb_reranker_images=_parse_boolean_env(ENV_KB_RERANKER_IMAGES, True),
             kb_reranker_query_images=_parse_boolean_env(ENV_KB_RERANKER_QUERY_IMAGES, False),
+            kb_enable_reranking=_parse_boolean_env(ENV_KB_ENABLE_RERANKING, True),
             kb_image_tokens=int(os.getenv(ENV_KB_IMAGE_TOKENS, str(DEFAULT_KB_IMAGE_TOKENS))),
             kb_disabled_media_types=_parse_kb_media_types(os.getenv(ENV_KB_DISABLED_MEDIA_TYPES)),
             kb_max_file_mb=int(os.getenv(ENV_KB_MAX_FILE_MB, str(DEFAULT_KB_MAX_FILE_MB))),
@@ -6113,6 +6169,7 @@ class HindsightConfig:
                 os.getenv(ENV_CONSOLIDATION_MAX_ATTEMPTS, str(DEFAULT_CONSOLIDATION_MAX_ATTEMPTS))
             ),
             observations_mission=os.getenv(ENV_OBSERVATIONS_MISSION) or DEFAULT_OBSERVATIONS_MISSION,
+            consolidation_group_by_conclusion=False,
             max_observations_per_scope=int(
                 os.getenv(ENV_MAX_OBSERVATIONS_PER_SCOPE, str(DEFAULT_MAX_OBSERVATIONS_PER_SCOPE))
             ),
@@ -6390,6 +6447,15 @@ class HindsightConfig:
             extension_passthrough_headers=[
                 h.lower() for h in _parse_str_list(os.getenv(ENV_EXTENSION_PASSTHROUGH_HEADERS, ""))
             ],
+            working_rules_limit_bytes=int(
+                os.getenv(ENV_WORKING_RULES_LIMIT_BYTES, str(DEFAULT_WORKING_RULES_LIMIT_BYTES))
+            ),
+            working_rules_pinned_limit_chars=int(
+                os.getenv(ENV_WORKING_RULES_PINNED_LIMIT_CHARS, str(DEFAULT_WORKING_RULES_PINNED_LIMIT_CHARS))
+            ),
+            working_rules_entry_max_bytes=int(
+                os.getenv(ENV_WORKING_RULES_ENTRY_MAX_BYTES, str(DEFAULT_WORKING_RULES_ENTRY_MAX_BYTES))
+            ),
         )
         return config
 

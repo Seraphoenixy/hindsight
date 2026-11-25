@@ -633,14 +633,14 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     bankIdTemplate: raw.bankIdTemplate,
     mapPathToBank: raw.mapPathToBank,
     resolveWorktrees: raw.resolveWorktrees,
-    optInOnly: raw.optInOnly ?? shared,
+    optInOnly: raw.optInOnly ?? false,
     // Same shape as retainTags: a config typo must not become a path that silently approves nothing.
     optInPaths: Array.isArray(raw.optInPaths)
       ? raw.optInPaths.filter((p): p is string => typeof p === "string" && p.trim() !== "")
       : [],
     harness: raw.harness ?? "opencode",
     disabled: raw.disabled ?? false,
-    retainSessions: raw.retainSessions ?? !shared,
+    retainSessions: raw.retainSessions ?? true,
     manageBankConfig: raw.manageBankConfig ?? true,
     retainExtractionMode: RETAIN_EXTRACTION_MODES.includes(raw.retainExtractionMode!)
       ? raw.retainExtractionMode!

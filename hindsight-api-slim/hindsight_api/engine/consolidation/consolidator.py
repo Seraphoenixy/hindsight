@@ -27,7 +27,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from itertools import combinations
@@ -68,8 +68,9 @@ from ..memories import StoredMemory, get_memories
 from ..response_models import Budget
 from ..retain import embedding_utils
 from ..schema import fq_table
-from ..stored_dates import finite_utc
+from ..stored_dates import bank_timezone, finite_utc
 from .prompts import (
+    build_conclusion_consolidation_system_prompt,
     build_consolidation_input,
     build_consolidation_system_prompt,
 )
@@ -889,6 +890,75 @@ class _ConsolidationBatchResponse(BaseModel):
     skips: list[_SkipAction] = []
 
 
+class _ConclusionCreate(BaseModel):
+    text: str = Field(min_length=1)
+    source_fact_ids: list[str] = Field(min_length=1)
+
+
+class _ConclusionUpdate(BaseModel):
+    observation_id: str
+    text: str | None
+    source_fact_ids: list[str] = Field(min_length=1)
+
+
+class _InvalidConclusionResponse(ValueError):
+    pass
+
+
+class _ConclusionBatchResponse(BaseModel):
+    creates: list[_ConclusionCreate]
+    updates: list[_ConclusionUpdate]
+    skipped_fact_ids: list[str]
+
+    def to_actions(
+        self,
+        real_id: dict[str, str],
+        fact_time: dict[str, datetime | None],
+        obs_time: dict[str, datetime | None],
+        pool_text: dict[str, str],
+    ) -> _ConsolidationBatchResponse:
+        def facts(ids: list[str]) -> list[str]:
+            mapped = [real_id.get(alias, "") for alias in ids]
+            if any(memory_id not in fact_time for memory_id in mapped):
+                raise _InvalidConclusionResponse("Conclusion response cited an unknown fact")
+            return list(dict.fromkeys(mapped))
+
+        response = _ConsolidationBatchResponse()
+        for entry in self.creates:
+            action = _CreateAction(text=entry.text, source_fact_ids=facts(entry.source_fact_ids))
+            if not action.text.strip():
+                raise _InvalidConclusionResponse("New conclusion has empty text")
+            response.creates.append(action)
+
+        targets: set[str] = set()
+        for entry in self.updates:
+            target = real_id.get(entry.observation_id, "")
+            if target not in pool_text or target in targets:
+                raise _InvalidConclusionResponse("Conclusion response updated an unknown or repeated observation")
+            targets.add(target)
+            source_ids = facts(entry.source_fact_ids)
+            latest_source = _latest_time(*(fact_time[memory_id] for memory_id in source_ids))
+            current_time = obs_time[target]
+            text = entry.text
+            if current_time is not None and (latest_source is None or latest_source < current_time):
+                text = None
+            action = _UpdateAction(
+                observation_id=target,
+                text=pool_text[target] if text is None else text,
+                source_fact_ids=source_ids,
+            )
+            if not action.text.strip():
+                raise _InvalidConclusionResponse("Updated conclusion has empty text")
+            response.updates.append(action)
+
+        cited = {memory_id for action in [*response.creates, *response.updates] for memory_id in action.source_fact_ids}
+        skipped = set(facts(self.skipped_fact_ids))
+        if cited & skipped or (cited | skipped) != fact_time.keys():
+            raise _InvalidConclusionResponse("Conclusion response must account for every fact as used or skipped")
+        response.skips = [_SkipAction(fact_id=memory_id) for memory_id in fact_time if memory_id in skipped]
+        return response
+
+
 def _validate_items(v: Any, handler: Any) -> Any:
     if not isinstance(v, list):
         return handler(v)
@@ -1353,6 +1423,7 @@ class _ConsolidationStrategy:
     max_observations_per_scope: int | None = None
     consolidation_source_facts_max_tokens: int | None = None
     consolidation_source_facts_max_tokens_per_observation: int | None = None
+    consolidation_group_by_conclusion: bool | None = None
 
     def claims(self, fact_tags: list[str]) -> bool:
         return any(pattern.matches(fact_tags) for pattern in self.scopes)
@@ -1383,15 +1454,25 @@ def _parse_consolidation_strategies(raw: Any) -> list[_ConsolidationStrategy]:
         mission = entry.get("observations_mission")
         if not isinstance(mission, str) or not mission.strip():
             mission = None
+        group_by_conclusion = entry.get("consolidation_group_by_conclusion")
+        if not isinstance(group_by_conclusion, bool):
+            group_by_conclusion = None
         ints: dict[str, int] = {}
         for name in _STRATEGY_INT_SETTINGS:
             value = entry.get(name)
             # bool is an int subclass — reject True/False masquerading as a number.
             if isinstance(value, int) and not isinstance(value, bool):
                 ints[name] = value
-        if mission is None and not ints:
+        if mission is None and group_by_conclusion is None and not ints:
             continue
-        strategies.append(_ConsolidationStrategy(scopes=scopes, observations_mission=mission, **ints))
+        strategies.append(
+            _ConsolidationStrategy(
+                scopes=scopes,
+                observations_mission=mission,
+                consolidation_group_by_conclusion=group_by_conclusion,
+                **ints,
+            )
+        )
     return strategies
 
 
@@ -1465,6 +1546,7 @@ def _config_for_scope(config: Any, fact_tags: list[str]) -> Any:
     if strategy is not None:
         for name in (
             "observations_mission",
+            "consolidation_group_by_conclusion",
             "consolidation_source_facts_max_tokens",
             "consolidation_source_facts_max_tokens_per_observation",
         ):
@@ -1617,7 +1699,7 @@ def _as_dt(v: "datetime | str | None") -> "datetime | None":
     return finite_utc(datetime.fromisoformat(v) if isinstance(v, str) else v)
 
 
-def _prompt_time(v: "datetime | str | None") -> str | None:
+def _prompt_time(v: "datetime | str | None", tz: tzinfo = timezone.utc) -> str | None:
     """Every time the consolidation prompt shows, in ONE format (``2026-10-21T09:48Z``).
 
     The model decides recency by comparing a fact's ``mentioned_at`` with an observation's, and the
@@ -1626,9 +1708,15 @@ def _prompt_time(v: "datetime | str | None") -> str | None:
     than 10:48 on half the calls and let the older rule overwrite its amendment (#5938); one format
     took that call from 5/10 to 10/10. Minute precision: seconds and the sub-second offsets retain
     adds to order one document's facts carry nothing the model needs.
+
+    Shown in the bank's zone with its offset (``2026-11-08T14:35+08:00``): the model copies the
+    wall clock into the observation text, and a UTC wall clock read as local time (#6441). Every
+    time in one prompt uses the same zone, so the single-format rule above still holds.
     """
     dt = _as_dt(v)
-    return dt.strftime("%Y-%m-%dT%H:%MZ") if dt else None
+    if dt is None:
+        return None
+    return dt.astimezone(tz).isoformat(timespec="minutes").replace("+00:00", "Z")
 
 
 def _latest_time(*values: "datetime | str | None") -> "datetime | None":
@@ -2821,8 +2909,12 @@ async def _process_memory_batch(
             )
 
     # 2c. Triage: restatements and chatter are settled by a typed judgment, not the LLM.
+    # The engine is the one this MemoryEngine was given, the same way config is this batch's.
     triage = TriageResult()
-    if (decision_model := triage_model(config)) is not None:
+    if (
+        not getattr(config, "consolidation_group_by_conclusion", False)
+        and (decision_model := triage_model(config, memory_engine.decision_engine_for)) is not None
+    ):
         triage = await triage_facts(
             memories,
             [list(r.results) for r in per_fact_recalls],
@@ -3810,6 +3902,7 @@ def _build_observations_for_llm(
     observations: "list[MemoryFact]",
     source_facts: "dict[str, MemoryFact]",
     newest_input_fact: "datetime | None" = None,
+    tz: tzinfo = timezone.utc,
 ) -> list[dict[str, Any]]:
     """Serialize MemoryFact observations into dicts for the consolidation LLM prompt.
 
@@ -3828,7 +3921,7 @@ def _build_observations_for_llm(
             "proof_count": len(unique_ids) or 1,
         }
         for key in ("occurred_start", "occurred_end", "mentioned_at"):
-            if shown := _prompt_time(getattr(obs, key)):
+            if shown := _prompt_time(getattr(obs, key), tz):
                 obs_data[key] = shown
         obs_time = _latest_time(obs.occurred_start, obs.occurred_end, obs.mentioned_at)
         if newest_input_fact and obs_time and obs_time > newest_input_fact:
@@ -3843,7 +3936,7 @@ def _build_observations_for_llm(
             # text already says what the fact means (#5996). The new facts carry none either.
             sf_data: dict[str, Any] = {"text": sf.text}
             for key in ("occurred_start", "occurred_end", "mentioned_at"):
-                if shown := _prompt_time(getattr(sf, key)):
+                if shown := _prompt_time(getattr(sf, key), tz):
                     sf_data[key] = shown
             source_memories.append(sf_data)
         if source_memories:
@@ -3909,7 +4002,7 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
     # front (openai, anthropic) exposes the HTTP status this way.
     if getattr(exc, "status_code", None) in (401, 403):
         return _BatchFailureClass.PROPAGATE
-    if isinstance(exc, json.JSONDecodeError | ValidationError | OutputTooLongError):
+    if isinstance(exc, json.JSONDecodeError | ValidationError | OutputTooLongError | _InvalidConclusionResponse):
         return _BatchFailureClass.FAIL_FAST
     # Providers that surface an empty/unusable body flag their own retryability.
     if getattr(exc, "retryable", None) is False:
@@ -3918,32 +4011,40 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
 
 
 async def _call_with_one_reask(
-    llm_config: Any, call_kwargs: dict[str, Any], response_model: type[_FactBatchResponse]
-) -> _FactBatchResponse:
-    """The batch's answer, asking once more with the errors when the reply misses the schema.
+    llm_config: Any,
+    call_kwargs: dict[str, Any],
+    response_model: type[_FactBatchResponse] | type[_ConclusionBatchResponse],
+    conclusion_actions: Callable[[_ConclusionBatchResponse], _ConsolidationBatchResponse] | None = None,
+) -> _FactBatchResponse | _ConsolidationBatchResponse:
+    """Ask once more with feedback for invalid structured output or conclusion actions."""
 
-    A bad entry is already dropped on its own (``_validate_items``); what lands here is a reply
-    whose overall shape is wrong — a list instead of an object (json_repair's answer to two JSON
-    values back to back, #5572), or a bad delete. Re-sending the same prompt at temperature 0
-    returns the same reply, so the second call carries the errors. It appends to the first
-    request, so the prompt cache still covers it. A second failure raises the ValidationError,
-    and the caller's fail-fast + bisection takes over as before.
-    """
+    def parse(content: Any) -> _FactBatchResponse | _ConsolidationBatchResponse:
+        if issubclass(response_model, _FactBatchResponse) and isinstance(content, _FactBatchResponse):
+            return content
+        response = response_model.model_validate(content)
+        if isinstance(response, _ConclusionBatchResponse):
+            assert conclusion_actions is not None
+            return conclusion_actions(response)
+        return response
+
     first = (await llm_config.call(**call_kwargs, skip_validation=True)).content
-    if isinstance(first, _FactBatchResponse):  # a provider (or test double) that built it already
-        return first
     try:
-        return response_model.model_validate(first)
-    except ValidationError as exc:
-        errors = "\n".join(f"- {'.'.join(map(str, e['loc'])) or '(top level)'}: {e['msg']}" for e in exc.errors()[:10])
-        logger.warning(f"[CONSOLIDATION] reply did not match the schema, asking again with the errors:\n{errors}")
+        return parse(first)
+    except (ValidationError, _InvalidConclusionResponse) as exc:
+        errors = (
+            "\n".join(
+                f"- {'.'.join(map(str, error['loc'])) or '(top level)'}: {error['msg']}" for error in exc.errors()[:10]
+            )
+            if isinstance(exc, ValidationError)
+            else str(exc)
+        )
+        logger.warning(f"[CONSOLIDATION] invalid reply, asking again with the errors:\n{errors}")
         correction = (
-            f"Your previous answer was discarded because it did not match the schema:\n{errors}\n"
-            'Answer again with the same decisions as ONE JSON object, {"facts": [...], "deletes": [...]}, '
-            "following the schema. Not a list, and nothing after the object."
+            f"Your previous answer was discarded for the following errors:\n{errors}\n"
+            "Correct the errors and return one JSON object following the response schema."
         )
         messages = reask_messages(call_kwargs["messages"], first, correction)
-        return (await llm_config.call(**call_kwargs | {"messages": messages})).content
+        return parse((await llm_config.call(**call_kwargs | {"messages": messages})).content)
 
 
 async def _consolidate_batch_with_llm(
@@ -3962,6 +4063,7 @@ async def _consolidate_batch_with_llm(
     """
     if config is None:
         raise ValueError("config is required for _consolidate_batch_with_llm")
+    tz = bank_timezone(config)
     obs_time = {str(o.id): _latest_time(o.occurred_start, o.occurred_end, o.mentioned_at) for o in union_observations}
     fact_time = {
         str(m["id"]): _latest_time(m.get("occurred_start"), m.get("occurred_end"), m.get("mentioned_at"))
@@ -3983,7 +4085,7 @@ async def _consolidate_batch_with_llm(
         newest_input_fact = _latest_time(
             *(m.get(key) for m in memories for key in ("occurred_start", "occurred_end", "mentioned_at"))
         )
-        obs_list = _build_observations_for_llm(union_observations, union_source_facts, newest_input_fact)
+        obs_list = _build_observations_for_llm(union_observations, union_source_facts, newest_input_fact, tz)
         for o in obs_list:
             o["id"] = _short(str(o["id"]))
         # One observation per line, no indentation: the pool is nearly all of a batch's
@@ -3997,7 +4099,7 @@ async def _consolidate_batch_with_llm(
         temporal_parts = [
             f"{key}={shown}"
             for key in ("occurred_start", "occurred_end", "mentioned_at")
-            if (shown := _prompt_time(m.get(key)))
+            if (shown := _prompt_time(m.get(key), tz))
         ]
         if temporal_parts:
             text += f" ({', '.join(temporal_parts)})"
@@ -4015,11 +4117,16 @@ async def _consolidate_batch_with_llm(
         return text
 
     facts_lines = "\n".join(_fact_line(m) for m in ordered)
+    by_conclusion = getattr(config, "consolidation_group_by_conclusion", False)
 
     # Build capacity note for the prompt when observation limit is configured
     observation_capacity_note: str | None = None
     if remaining_observation_slots is not None and max_observations_per_scope >= 0:
-        if remaining_observation_slots == 0:
+        if by_conclusion:
+            observation_capacity_note = (
+                f"Return at most {remaining_observation_slots} entries in creates. Updates are still allowed."
+            )
+        elif remaining_observation_slots == 0:
             observation_capacity_note = (
                 f"OBSERVATION LIMIT REACHED ({max_observations_per_scope}/{max_observations_per_scope}). "
                 'Write no `new` sentences (set `adds` to "no"): a fact that repeats, changes or ends no '
@@ -4039,7 +4146,10 @@ async def _consolidate_batch_with_llm(
     # single Gemini context cache shared by every bank — the bank mission, capacity
     # note, and response_schema (all bank/batch-variable) are kept OUT of the
     # cached prefix so one cache serves all and it never busts within a run.
-    system_prompt = build_consolidation_system_prompt(
+    build_system_prompt = (
+        build_conclusion_consolidation_system_prompt if by_conclusion else build_consolidation_system_prompt
+    )
+    system_prompt = build_system_prompt(
         llm_output_language=config.llm_output_language if config is not None else None,
     )
     user_content = build_consolidation_input(
@@ -4047,6 +4157,7 @@ async def _consolidate_batch_with_llm(
         observations_text=observations_text,
         observations_mission=config.observations_mission,
         observation_capacity_note=observation_capacity_note,
+        timezone_name=getattr(config, "default_timezone", None),
     )
 
     # Opt into context caching of the stable system prefix. response_schema is
@@ -4055,7 +4166,11 @@ async def _consolidate_batch_with_llm(
     prompt_cache = PromptCachePrefix(system_instruction=system_prompt)
 
     # Constrain the schema: fact_id to this batch's ids, and the verdicts to their enums.
-    response_model = _build_fact_response_model([_short(str(m["id"])) for m in ordered])
+    response_model = (
+        _ConclusionBatchResponse
+        if by_conclusion
+        else _build_fact_response_model([_short(str(m["id"])) for m in ordered])
+    )
 
     max_attempts = config.consolidation_max_attempts
     inner_max_retries = config.consolidation_llm_max_retries
@@ -4098,20 +4213,28 @@ async def _consolidate_batch_with_llm(
                 call_kwargs["max_completion_tokens"] = config.consolidation_max_completion_tokens
             if inner_max_retries is not None:
                 call_kwargs["max_retries"] = inner_max_retries
-            answer = await _call_with_one_reask(llm_config, call_kwargs, response_model)
-            response = answer.with_real_ids(real_id).to_actions(
-                {str(o.id): o.text for o in union_observations},
-                {
-                    str(m["id"]): f"{t:%Y-%m-%d %H:%M}: {fact_sentence(m)}"
-                    if (t := fact_time[str(m["id"])])
-                    else fact_sentence(m)
-                    for m in ordered
-                },
-                lambda fid, oid: bool((ft := fact_time.get(fid)) and (ot := obs_time.get(oid)) and ot > ft),
-                # What the prompt marked: a fact's closest observations, and those newer than every fact.
-                lambda fid, oid: oid in (closest or {}).get(fid, ())
-                or bool(newest_fact and (ot := obs_time.get(oid)) and ot > newest_fact),
+            pool_text = {str(o.id): o.text for o in union_observations}
+            answer = await _call_with_one_reask(
+                llm_config,
+                call_kwargs,
+                response_model,
+                lambda conclusion: conclusion.to_actions(real_id, fact_time, obs_time, pool_text),
             )
+            if isinstance(answer, _ConsolidationBatchResponse):
+                response = answer
+            else:
+                response = answer.with_real_ids(real_id).to_actions(
+                    pool_text,
+                    {
+                        str(m["id"]): f"{t:%Y-%m-%d %H:%M}: {fact_sentence(m)}"
+                        if (t := fact_time[str(m["id"])])
+                        else fact_sentence(m)
+                        for m in ordered
+                    },
+                    lambda fid, oid: bool((ft := fact_time.get(fid)) and (ot := obs_time.get(oid)) and ot > ft),
+                    lambda fid, oid: oid in (closest or {}).get(fid, ())
+                    or bool(newest_fact and (ot := obs_time.get(oid)) and ot > newest_fact),
+                )
             creates = response.creates
             # The answer's schema carries no cap on new observations: enforce the scope's here.
             if remaining_observation_slots is not None and remaining_observation_slots >= 0:

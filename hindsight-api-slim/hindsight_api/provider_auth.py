@@ -21,6 +21,7 @@ _PROVIDERS_WITHOUT_API_KEY = frozenset(
         "openai-codex",
         "chatgpt",
         "cursor",
+        "antigravity",
         "github-copilot",
         "mock",
         "none",

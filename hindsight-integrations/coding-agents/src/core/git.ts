@@ -474,3 +474,12 @@ export async function syncGitLog(
     (head ? await appendGitLog(client, repo, opts, head) : null) ?? ingestGitLog(client, repo, opts)
   );
 }
+
+/** Return the current branch name in `dir`, or undefined if detached HEAD / not a git repo. */
+export function gitBranch(dir: string): string | undefined {
+  try {
+    return git(dir, "symbolic-ref", "--short", "-q", "HEAD").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}

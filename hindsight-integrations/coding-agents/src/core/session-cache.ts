@@ -19,6 +19,8 @@ export interface SessionCache {
   /** SessionStart saw a new/empty bank; consume this on prompt one, then allow reflect. */
   deferInitialReflect?: boolean;
   pages?: { atTurn: number; list: PageRef[] };
+  /** Last injected Working Rules projection revision; prompts re-inject only on revision changes. */
+  workingRulesRevision?: string;
 }
 
 export function sessionCacheFile(harness: string, sessionId: string, projectId?: string): string {

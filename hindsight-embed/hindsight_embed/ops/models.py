@@ -59,6 +59,7 @@ _UNSUPPORTED: dict[str, str] = {
     "openai-codex": "OpenAI Codex uses OAuth credentials outside Hindsight. Enter the model id directly.",
     "chatgpt": "ChatGPT uses OAuth credentials outside Hindsight. Enter the model id directly.",
     "cursor": "Cursor manages its own model routing. Enter the model id directly.",
+    "antigravity": "Antigravity uses the signed-in agy CLI. Run agy models and enter a model id.",
     "github-copilot": "GitHub Copilot uses OAuth credentials outside Hindsight. Enter the model id directly.",
     "xai-oauth": "xAI OAuth credentials are managed outside Hindsight. Enter the model id directly.",
 }

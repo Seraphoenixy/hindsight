@@ -223,6 +223,15 @@ describe("strategy shape", () => {
     ).toEqual({ scopes: [{ tags: ["company:*"] }], consolidation_source_facts_max_tokens: 0 });
   });
 
+  it("preserves an explicit opt-out from conclusion grouping", () => {
+    const strategy = {
+      scopes: [{ tags: ["project:legacy"] }],
+      consolidation_group_by_conclusion: false,
+    };
+    expect(compactStrategy(strategy)).toEqual(strategy);
+    expect(strategyOverridesSomething(strategy)).toBe(true);
+  });
+
   it("knows when a strategy changes nothing", () => {
     expect(
       strategyOverridesSomething({ scopes: [{ tags: ["company:*"] }], observations_mission: "" })

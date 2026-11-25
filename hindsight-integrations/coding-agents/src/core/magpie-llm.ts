@@ -181,10 +181,7 @@ export function parseEnvFile(text: string): Record<string, string> {
   return values;
 }
 
-export function readProfileLlm(
-  profile: string,
-  env: NodeJS.ProcessEnv = process.env
-): ProfileLlm {
+export function readProfileLlm(profile: string, env: NodeJS.ProcessEnv = process.env): ProfileLlm {
   const path = profileEnvPath(profile, env);
   if (!existsSync(path)) {
     return { exists: false, path, provider: "", baseUrl: "", model: "", hasApiKey: false };
@@ -212,11 +209,7 @@ export function readManagedState(
   }
 }
 
-function writeManagedState(
-  profile: string,
-  state: ManagedLlmState,
-  env: NodeJS.ProcessEnv
-): void {
+function writeManagedState(profile: string, state: ManagedLlmState, env: NodeJS.ProcessEnv): void {
   const path = managedStatePath(env);
   let file: ManagedFile = { version: 1, profiles: {} };
   try {
@@ -247,7 +240,8 @@ function normalizeBaseUrl(raw: string): string {
   if (!LOOPBACK_HOSTS.has(url.hostname))
     throw new Error("gateway is not on loopback; refusing to send the local token off-machine");
   let path = url.pathname.replace(/\/+$/, "");
-  if (path.endsWith("/backend-api/codex")) path = path.slice(0, -"/backend-api/codex".length) + "/v1";
+  if (path.endsWith("/backend-api/codex"))
+    path = path.slice(0, -"/backend-api/codex".length) + "/v1";
   if (!path) path = "/v1";
   return `${url.origin}${path}`;
 }
@@ -290,20 +284,33 @@ export async function discoverMagpieLlm(options: DiscoveryOptions = {}): Promise
     mtimeMs = statSync(path).mtimeMs;
     doc = parseToml(readFileSync(path, "utf8")) as Record<string, unknown>;
   } catch (error) {
-    return fail("error", `读取 Magpie 配置失败：${error instanceof Error ? error.message : String(error)}`, null);
+    return fail(
+      "error",
+      `读取 Magpie 配置失败：${error instanceof Error ? error.message : String(error)}`,
+      null
+    );
   }
 
   const hostModel = typeof doc.model === "string" && doc.model.trim() ? doc.model.trim() : null;
   const providers = doc.model_providers as Record<string, unknown> | undefined;
   const magpie = providers?.magpie as Record<string, unknown> | undefined;
   let rawBase = typeof magpie?.base_url === "string" ? magpie.base_url.trim() : "";
-  if (!rawBase && typeof doc.openai_base_url === "string" && doc.openai_base_url.includes("/backend-api/codex")) {
+  if (
+    !rawBase &&
+    typeof doc.openai_base_url === "string" &&
+    doc.openai_base_url.includes("/backend-api/codex")
+  ) {
     // Older Magpie builds only wrote Codex's own base URL. The gateway root is
     // the same origin, and its OpenAI-compatible surface is /v1.
     rawBase = doc.openai_base_url.trim().replace(/\/backend-api\/codex\/?$/, "/v1");
   }
   if (!rawBase) {
-    return fail("unavailable", "Codex 配置中没有 Magpie 的 LLM 网关；请先在 Magpie 中连接模型。", hostModel, mtimeMs);
+    return fail(
+      "unavailable",
+      "Codex 配置中没有 Magpie 的 LLM 网关；请先在 Magpie 中连接模型。",
+      hostModel,
+      mtimeMs
+    );
   }
 
   let baseUrl: string;
@@ -319,7 +326,12 @@ export async function discoverMagpieLlm(options: DiscoveryOptions = {}): Promise
   }
 
   if (!hostModel) {
-    return fail("unavailable", "Codex 配置中没有当前模型；请先在 Magpie 中选择模型。", null, mtimeMs);
+    return fail(
+      "unavailable",
+      "Codex 配置中没有当前模型；请先在 Magpie 中选择模型。",
+      null,
+      mtimeMs
+    );
   }
 
   const apiKey =
@@ -431,7 +443,11 @@ function emptyState(
   message: string,
   discovery?: Discovery
 ): LlmState {
-  const hostModel = discovery ? (discovery.ok ? discovery.llm.hostModel : discovery.hostModel) : null;
+  const hostModel = discovery
+    ? discovery.ok
+      ? discovery.llm.hostModel
+      : discovery.hostModel
+    : null;
   const models = discovery?.ok ? discovery.llm.models : [];
   return {
     status,
@@ -464,13 +480,10 @@ export async function inspectMagpieLlm(
   if (!discovery.ok) return emptyState(discovery.status, mode, discovery.message, discovery);
 
   const host = discovery.llm;
-  const desiredModel =
-    mode === "fixed" ? managed?.model || host.hostModel : host.hostModel;
+  const desiredModel = mode === "fixed" ? managed?.model || host.hostModel : host.hostModel;
   const current = readProfileLlm(cfg.daemonProfile, env);
   const synced = sameLlm(current, host.provider, host.baseUrl, desiredModel);
-  const managedNow =
-    managed &&
-    sameLlm(current, managed.provider, managed.baseUrl, managed.model);
+  const managedNow = managed && sameLlm(current, managed.provider, managed.baseUrl, managed.model);
   const status: LlmStatus = synced
     ? "synced"
     : isLegacyDefault(current) || managedNow
@@ -508,17 +521,19 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
 
   const host = discovery.llm;
   const desiredModel =
-    mode === "fixed" ? (options.model?.trim() || managed?.model || host.hostModel) : host.hostModel;
+    mode === "fixed" ? options.model?.trim() || managed?.model || host.hostModel : host.hostModel;
   const current = readProfileLlm(cfg.daemonProfile, env);
   const synced = sameLlm(current, host.provider, host.baseUrl, desiredModel);
-  const managedNow =
-    managed &&
-    sameLlm(current, managed.provider, managed.baseUrl, managed.model);
+  const managedNow = managed && sameLlm(current, managed.provider, managed.baseUrl, managed.model);
   const adoptable = isLegacyDefault(current);
 
   if (!synced && !adoptable && !managedNow && !options.force) {
     return {
-      ...emptyState("manual", mode, "Hindsight 的 LLM 已手动配置，未自动覆盖。可在本页点击同步改用 Magpie 的模型。"),
+      ...emptyState(
+        "manual",
+        mode,
+        "Hindsight 的 LLM 已手动配置，未自动覆盖。可在本页点击同步改用 Magpie 的模型。"
+      ),
       hostModel: host.hostModel,
       configuredModel: current.model || null,
       provider: current.provider || null,

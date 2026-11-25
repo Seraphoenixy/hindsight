@@ -17,6 +17,7 @@
     "build:standalone": "node scripts/build-standalone.mjs",
     "start": "next start",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit --incremental false",
     "pretest": "npm run build -w @vectorize-io/hindsight-client",
     "test": "vitest run",
     "test:watch": "vitest",

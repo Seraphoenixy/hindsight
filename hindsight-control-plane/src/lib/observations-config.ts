@@ -57,6 +57,7 @@ export type ConsolidationSettings = Pick<
 export type ConsolidationStrategy = {
   /** Alternatives: the strategy claims a scope when any pattern matches it. */
   scopes: ScopePattern[];
+  consolidation_group_by_conclusion?: boolean | null;
 } & Partial<ConsolidationSettings>;
 
 /** One alternative: tags that must all be on the scope, and whether others may
@@ -188,6 +189,8 @@ export function compactStrategy(strategy: ConsolidationStrategy): ConsolidationS
   };
   if (strategy.observations_mission?.trim())
     out.observations_mission = strategy.observations_mission;
+  if (typeof strategy.consolidation_group_by_conclusion === "boolean")
+    out.consolidation_group_by_conclusion = strategy.consolidation_group_by_conclusion;
   for (const key of [
     "max_observations_per_scope",
     "consolidation_source_facts_max_tokens",

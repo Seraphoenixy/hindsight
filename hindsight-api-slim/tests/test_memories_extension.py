@@ -25,14 +25,13 @@ import asyncio
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 
 from hindsight_api.engine.chunk_ids import build_chunk_id
 from hindsight_api.engine.db import DatabaseBackend
-from hindsight_api.extensions import OperationValidationError
 from hindsight_api.engine.memories import create_memories, get_memories, set_memories
 from hindsight_api.engine.memories.base import (
     DOC_META_FILE_STORAGE_KEY,
@@ -51,6 +50,7 @@ from hindsight_api.engine.memories.base import (
 )
 from hindsight_api.engine.memories.postgres import PostgresMemories
 from hindsight_api.engine.schema import fq_store_table
+from hindsight_api.extensions import OperationValidationError
 
 
 class InMemoryMemories(MemoriesExtension):
@@ -1234,7 +1234,6 @@ async def test_retain_refuses_a_bank_the_store_has_closed_to_writes(restore_defa
 
 import inspect  # noqa: E402
 
-
 # Old page-hook names, kept only so a store written before the rename is still called; the
 # new hooks forward to them. A complete store implements the new names. Remove in 2.x.
 _DEPRECATED_ALIASES = {
@@ -2410,7 +2409,8 @@ class _NoRowsConn:
         return None
 
     async def fetchval(self, sql, *args):
-        return None
+        # Except the bank's own row: the export refuses a bank that does not exist.
+        return 1 if sql.startswith("SELECT 1 FROM") and "banks" in sql else None
 
 
 async def test_export_carries_a_store_owned_banks_archived_memories():
@@ -2715,10 +2715,7 @@ async def test_a_resumed_retain_finds_a_store_owned_documents_unit_ids(restore_d
     store = InMemoryMemories({})
     [first] = await _seed(store, "bank-x", text="written first", document_id="doc-1")
     [second] = await _seed(store, "bank-x", text="written second", document_id="doc-1")
-    store.rows[first].created_at, store.rows[second].created_at = (
-        store.rows[second].created_at,
-        store.rows[first].created_at,
-    )
+    store.rows[second].created_at = store.rows[first].created_at - timedelta(seconds=1)
 
     got = await store.document_unit_ids(conn=None, fq_table=None, bank_id="bank-x", document_id="doc-1")
 

@@ -29,8 +29,9 @@ import { diag, diagFilePath, readHookEvent } from "./diag";
 import { describeError, log, setLogLevel } from "./log";
 import { startBackgroundSeed } from "./seed";
 import { stripInjectedMemory } from "./transcript-util";
-import type { ClientOpts } from "./hindsight";
+import type { ClientOpts, WorkingRulesProjection } from "./hindsight";
 import { HindsightClient, ReflectError } from "./hindsight";
+import { fetchWorkingRulesInjection } from "./working-rules-injection";
 import { brandWord } from "./brand";
 import {
   buildReflectQuery,
@@ -97,6 +98,11 @@ interface HookClient {
   ): Promise<{ id: string; name: string; snippet: string }[]>;
   recallObservations(query: string, opts: { timeoutMs: number }): Promise<string[]>;
   pagesSupported?: boolean;
+  getWorkingRulesProjection?(opts?: {
+    branch?: string;
+    timeoutMs?: number;
+  }): Promise<WorkingRulesProjection | undefined>;
+  workingRulesSupported?: boolean;
   /** Recorded on reflect failures so the diag trail says which bank to look at server-side. */
   readonly bank?: string;
 }
@@ -237,6 +243,8 @@ export async function buildHookOutput(args: {
   cfg: Config;
   client: HookClient;
   cacheFile: string;
+  /** Workspace directory for branch-scoped Working Rules filtering. */
+  cwd?: string;
   /** The caller injects the full page preamble on turn 1 (plugin hosts), which already carries
    *  the roster and tool guide, so the turn-1 roster refresh would repeat it (#5977). Hook
    *  harnesses leave it off: some (Grok) never hand the SessionStart text to the model, so the
@@ -369,14 +377,29 @@ export async function buildHookOutput(args: {
     }
   }
 
+  const workingRules = await fetchWorkingRulesInjection(client, {
+    cwd: args.cwd,
+    previousRevision: cached.workingRulesRevision,
+  });
+  const workingRulesChanged = Boolean(
+    workingRules.projection && workingRules.projection.revision !== cached.workingRulesRevision
+  );
+  const workingRulesRevision = workingRules.projection
+    ? workingRules.projection.revision
+    : cached.workingRulesRevision;
+
   writeSessionCache(cacheFile, {
     turns,
     reflectAnswer,
     reflectAttempts,
     pages: { atTurn: stale ? turns : (cached.pages?.atTurn ?? turns), list: pages },
+    workingRulesRevision,
   } satisfies SessionCache);
 
   const blocks: string[] = [];
+  if (workingRulesChanged && workingRules.block) {
+    blocks.push(workingRules.block);
+  }
   // Hook-injected context lands in the USER MESSAGE and persists in the transcript — unlike a
   // system prompt, it accumulates. The reflect block is injected exactly ONCE, the turn reflect
   // ran. No cadence re-injection: replaying the turn-1 synthesis at arbitrary later turns reads
@@ -390,6 +413,7 @@ export async function buildHookOutput(args: {
   if (cadence > 0 && turns % cadence === 0 && !(turns === 1 && args.preambleOnFirstTurn)) {
     blocks.push(
       buildRosterRefresh(pages, {
+        engineering: Boolean(cfg.projectScope),
         reflectOnNewGoals: cfg.autoInject !== "reflect",
         extra: cfg.toolGuideExtra,
       })
@@ -516,7 +540,14 @@ export async function runHook(
     startBackgroundSeed(cwd, { limit: cfg.seedLimit, harness: spec.harness });
   }
 
-  const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });
+  const output = await buildHookOutput({
+    harness: spec.harness,
+    prompt,
+    cfg,
+    client,
+    cacheFile,
+    cwd,
+  });
   // Mid-session heal: a bank with ZERO pages means the engine never built it (e.g. the session
   // predates the install, so no SessionStart and the first-prompt net already passed). Fire the
   // idempotent engine — the per-bank lock makes repeats free while it builds.

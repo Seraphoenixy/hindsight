@@ -12,8 +12,7 @@
   const escapeHtml = (value) =>
     String(value).replace(
       /[&<>"']/g,
-      (char) =>
-        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]
+      (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]
     );
   const disable = () =>
     [...actions, "syncLlm"].forEach((action) => {
@@ -49,7 +48,9 @@
     const models = Array.isArray(llm.models) ? llm.models : [];
     const optionsHtml = [
       '<option value="">跟随 Magpie 当前模型</option>',
-      ...models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`),
+      ...models.map(
+        (model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`
+      ),
     ];
     if (llm.configuredModel && !models.includes(llm.configuredModel))
       optionsHtml.push(
@@ -67,9 +68,7 @@
     button.disabled = !fresh || busy || llm.status === "unavailable" || !llm.hostModel;
     element("llmNote").textContent = [
       llm.message,
-      llm.restartRequired
-        ? "记忆服务正在运行，点击“同步并应用”会重启它以使用新配置。"
-        : "",
+      llm.restartRequired ? "记忆服务正在运行，点击“同步并应用”会重启它以使用新配置。" : "",
     ]
       .filter(Boolean)
       .join(" ");

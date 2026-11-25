@@ -354,6 +354,18 @@ describe("HindsightClient.retain — observation scoping", () => {
     );
     expect(explicit.observation_scopes).toEqual([["project:demo"]]);
   });
+
+  it("stamps a conversation's readable project name and stable project id", async () => {
+    const item = await retainItem(
+      new HindsightClient({
+        apiUrl: "http://x",
+        bank: "b",
+        projectScope: { name: "repo", id: "stable-id" },
+      })
+    );
+    expect(item.metadata).toEqual({ project: "repo", project_id: "stable-id" });
+    expect(item.tags).toEqual(["source:chat", "harness:claude-code", "project:stable-id"]);
+  });
 });
 
 /**

@@ -4,6 +4,7 @@
  * the REF-ID tracer; every turn gets an ABSOLUTE timestamp.
  */
 import { diag } from "./diag";
+import { engineeringCursorId, retainEngineeringConversation } from "./engineering-memory";
 import { RateLimitedError, type HindsightClient } from "./hindsight";
 import { log } from "./log";
 import {
@@ -265,10 +266,8 @@ export const DEFAULT_RETAIN_CONTEXT =
  * whole document, which is what this always used to do. See core/retain-cursor.ts for why every
  * uncertain case resolves that way.
  *
- * Uses the same `conversation` strategy as backfilled chats — one strategy for all developer
- * conversations; the mission scales extraction to the substance. The content is a JSON transcript
- * (renderSessionJsonl) whose tool activity is compacted into `role:"action"` turns
- * (see core/transcript*.ts).
+ * Shared-mode sessions submit a bounded completed-exchange excerpt through the existing
+ * asynchronous `conversation` retain strategy. Backfills still ingest complete JSON transcripts.
  */
 export async function retainLiveSession(
   client: HindsightClient,
@@ -285,6 +284,18 @@ export async function retainLiveSession(
   } = {}
 ): Promise<void> {
   const cursors = opts.cursors;
+  if (cursors && client.projectScope) {
+    const key = engineeringCursorId(sessionId);
+    return serialize(cursors, key, () =>
+      retainEngineeringConversation(client, sessionId, turns, {
+        cursors,
+        harness,
+        stamp: opts.stamp,
+        transcriptPath: opts.transcriptPath,
+        deadline: opts.retryUntil,
+      })
+    );
+  }
   if (!cursors)
     return writeSession(
       client,

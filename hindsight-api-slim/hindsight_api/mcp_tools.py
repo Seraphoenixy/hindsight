@@ -36,15 +36,17 @@ from hindsight_api.engine.search.tags import TagGroup, TagsMatch
 from hindsight_api.engine.stored_dates import is_placeholder_date
 from hindsight_api.extensions import OperationValidationError
 from hindsight_api.models import RequestContext
+from hindsight_api.pagination import TRIM_TO_PAGE, trim_to
 
 _TAG_GROUP_LIST_ADAPTER = TypeAdapter(list[TagGroup])
 
 # Paging bounds for the list tools. They match the HTTP endpoints' Query bounds
-# so a limit rejected over HTTP is rejected over MCP too (#4859).
+# so a limit rejected over HTTP is rejected over MCP too (#4859), and a limit over
+# the cap is trimmed to it on both.
 _Offset = Annotated[int, Field(ge=0)]
-_Limit = Annotated[int, Field(ge=0)]
-_Limit1000 = Annotated[int, Field(ge=1, le=1000)]
-_OperationsLimit = Annotated[int, Field(ge=1, le=100)]
+_Limit = Annotated[int, Field(ge=0), TRIM_TO_PAGE]
+_PositiveLimit = Annotated[int, Field(ge=1), TRIM_TO_PAGE]
+_OperationsLimit = Annotated[int, Field(ge=1), trim_to(100)]
 
 # All tools available in the system (explicit list — no wildcards).
 # Defined here (shared module) to avoid circular imports with api/mcp.py.
@@ -340,6 +342,10 @@ class MCPToolsConfig:
     # register_mcp_tools, which has the engine; None leaves every id untouched.
     bank_alias_resolver: Callable[[str], Awaitable[str]] | None = None
 
+    # Raises for a knowledge bank: every tool here is for memory banks, the same rule the HTTP
+    # route class applies to /v1/default/banks/{bank_id}. Set by register_mcp_tools.
+    knowledge_bank_refuser: Callable[[str], Awaitable[None]] | None = None
+
     # How to resolve API key for tenant auth (optional)
     api_key_resolver: Callable[[], str | None] | None = None
 
@@ -403,12 +409,19 @@ async def _resolve_bank(config: MCPToolsConfig, bank_id: str | None) -> str | No
     already holds a real bank id. Only an id passed as a tool *argument* has
     bypassed that edge, so only that one is resolved — which also keeps every
     session-bank tool call free of a database round trip it does not need.
+
+    Either way a knowledge bank is refused (``knowledge_bank_refuser``): its kind is
+    cached, so the session-bank path still takes no round trip on a warm bank.
     """
     if bank_id is None:
-        return config.bank_id_resolver()
-    if config.bank_alias_resolver is None:
-        return bank_id
-    return await config.bank_alias_resolver(bank_id)
+        resolved = config.bank_id_resolver()
+    elif config.bank_alias_resolver is None:
+        resolved = bank_id
+    else:
+        resolved = await config.bank_alias_resolver(bank_id)
+    if resolved and config.knowledge_bank_refuser is not None:
+        await config.knowledge_bank_refuser(resolved)
+    return resolved
 
 
 async def _run_tool(
@@ -668,10 +681,17 @@ def register_mcp_tools(
             return await memory.resolve_bank_alias(bank_id, request_context=_get_request_context(config))
 
         config.bank_alias_resolver = _resolve_alias
+    if config.knowledge_bank_refuser is None:
 
+        async def _refuse_knowledge_bank(bank_id: str) -> None:
+            await memory.refuse_knowledge_bank(bank_id, request_context=_get_request_context(config))
+
+        config.knowledge_bank_refuser = _refuse_knowledge_bank
+
+    # An explicit allowlist can resolve to zero built-in tools.
     tools_to_register = (
         canonical_tool_names(config.tools)
-        if config.tools
+        if config.tools is not None
         else {
             "retain",
             "sync_retain",
@@ -1869,7 +1889,7 @@ def _register_list_mental_models(mcp: FastMCP, memory: MemoryEngine, config: MCP
         @mcp.tool(annotations=_tool_annotations("list_mental_models"), output_schema=None)
         async def list_mental_models(
             tags: list[str] | None = None,
-            limit: _Limit1000 = 100,
+            limit: _PositiveLimit = 100,
             offset: _Offset = 0,
             bank_id: str | None = None,
         ) -> str:
@@ -1903,7 +1923,7 @@ def _register_list_mental_models(mcp: FastMCP, memory: MemoryEngine, config: MCP
         @mcp.tool(annotations=_tool_annotations("list_mental_models"))
         async def list_mental_models(
             tags: list[str] | None = None,
-            limit: _Limit1000 = 100,
+            limit: _PositiveLimit = 100,
             offset: _Offset = 0,
         ) -> dict:
             """
@@ -3350,7 +3370,7 @@ def _register_list_directives(mcp: FastMCP, memory: MemoryEngine, config: MCPToo
         async def list_directives(
             tags: list[str] | None = None,
             active_only: bool = True,
-            limit: _Limit1000 = 100,
+            limit: _PositiveLimit = 100,
             offset: _Offset = 0,
             bank_id: str | None = None,
         ) -> str:
@@ -3382,7 +3402,7 @@ def _register_list_directives(mcp: FastMCP, memory: MemoryEngine, config: MCPToo
         async def list_directives(
             tags: list[str] | None = None,
             active_only: bool = True,
-            limit: _Limit1000 = 100,
+            limit: _PositiveLimit = 100,
             offset: _Offset = 0,
         ) -> dict:
             """

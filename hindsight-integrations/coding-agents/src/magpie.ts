@@ -26,9 +26,7 @@ export default {
     const refresh = async () => {
       // Onboarding is best-effort: an unavailable gateway, a missing embed or a
       // manually configured profile must not stop the process page from loading.
-      await autoSyncMagpieLlm(cfg).catch((error) =>
-        console.error("Hindsight LLM sync:", error)
-      );
+      await autoSyncMagpieLlm(cfg).catch((error) => console.error("Hindsight LLM sync:", error));
       await publish();
     };
     // Loading/reloading the plugin only observes. Otherwise a successful stop

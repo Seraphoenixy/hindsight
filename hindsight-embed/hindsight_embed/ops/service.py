@@ -13,11 +13,20 @@ killing the caller mid-request. Its lifecycle belongs to whoever launched it:
 ``hindsight-embed ui start`` or the coding-agents host half.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 
 from .. import daemon_client
 from .._http_probe import ProbeResponse, probe_get
-from ..profile_manager import ENV_API_PORT, ENV_CP_PORT, ProfileManager, parse_env_file
+from ..profile_manager import (
+    ENV_API_PORT,
+    ENV_CP_PORT,
+    ProfileManager,
+    lock_profile_env,
+    parse_env_file,
+    write_profile_env,
+)
 from . import models, settings
 from .settings import SettingField
 
@@ -259,9 +268,18 @@ def _write_raw_env(name: str, env: dict[str, str]) -> None:
     else:
         path = pm.resolve_profile_paths("").config
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("".join(f"{k}={v}\n" for k, v in env.items()), encoding="utf-8")
+        write_profile_env(path, "".join(f"{k}={v}\n" for k, v in env.items()))
     # The .env holds the API key — keep it owner-only.
     path.chmod(0o600)
+
+
+@contextmanager
+def _edit_raw_env(name: str) -> Iterator[dict[str, str]]:
+    path = ProfileManager().resolve_profile_paths(name).config
+    with lock_profile_env(path):
+        env = parse_env_file(path)
+        yield env
+        _write_raw_env(name, env)
 
 
 def list_profiles() -> list[ProfileSummary]:
@@ -352,49 +370,46 @@ def save_llm_config(
     preserved untouched.
     """
     name = normalize_profile(name)
-    env = _read_raw_env(name)
+    with _edit_raw_env(name) as env:
+        if provider:
+            env[_ENV_PROVIDER] = provider
 
-    if provider:
-        env[_ENV_PROVIDER] = provider
+        if api_key == API_KEY_UNCHANGED or api_key is None:
+            pass  # keep whatever is stored
+        elif api_key == "":
+            env.pop(_ENV_API_KEY, None)
+        else:
+            env[_ENV_API_KEY] = api_key
 
-    if api_key == API_KEY_UNCHANGED or api_key is None:
-        pass  # keep whatever is stored
-    elif api_key == "":
-        env.pop(_ENV_API_KEY, None)
-    else:
-        env[_ENV_API_KEY] = api_key
+        if model:
+            env[_ENV_MODEL] = model
+        elif model == "":
+            env.pop(_ENV_MODEL, None)
 
-    if model:
-        env[_ENV_MODEL] = model
-    elif model == "":
-        env.pop(_ENV_MODEL, None)
+        # None preserves an existing override; "" clears it.
+        if base_url:
+            env[_ENV_BASE_URL] = base_url
+        elif base_url == "":
+            env.pop(_ENV_BASE_URL, None)
 
-    # None preserves an existing override; "" clears it.
-    if base_url:
-        env[_ENV_BASE_URL] = base_url
-    elif base_url == "":
-        env.pop(_ENV_BASE_URL, None)
+        # Ports live in the .env. API port is pinned; an empty UI port means "derive
+        # from API + offset" (remove the override). No validation by design.
+        if api_port:
+            env[ENV_API_PORT] = api_port
+        if ui_port:
+            env[ENV_CP_PORT] = ui_port
+        else:
+            env.pop(ENV_CP_PORT, None)
 
-    # Ports live in the .env. API port is pinned; an empty UI port means "derive
-    # from API + offset" (remove the override). No validation by design.
-    if api_port:
-        env[ENV_API_PORT] = api_port
-    if ui_port:
-        env[ENV_CP_PORT] = ui_port
-    else:
-        env.pop(ENV_CP_PORT, None)
-
-    # Component versions: pin if set, else remove the override (use embed default).
-    if api_version:
-        env[_ENV_API_VERSION] = api_version
-    else:
-        env.pop(_ENV_API_VERSION, None)
-    if cp_version:
-        env[_ENV_CP_VERSION] = cp_version
-    else:
-        env.pop(_ENV_CP_VERSION, None)
-
-    _write_raw_env(name, env)
+        # Component versions: pin if set, else remove the override (use embed default).
+        if api_version:
+            env[_ENV_API_VERSION] = api_version
+        else:
+            env.pop(_ENV_API_VERSION, None)
+        if cp_version:
+            env[_ENV_CP_VERSION] = cp_version
+        else:
+            env.pop(_ENV_CP_VERSION, None)
     return get_profile_config(name)
 
 
@@ -639,32 +654,30 @@ def save_settings(name: str, values: dict[str, str]) -> SettingsView:
     if unknown:
         raise ValueError(f"unknown setting(s): {', '.join(unknown)}")
 
-    env = _read_raw_env(name)
-    for key, raw in values.items():
-        value = (raw or "").strip()
-        if not value:
-            env.pop(key, None)
-            continue
-        field = known[key]
-        if field.kind == "boolean":
-            lowered = value.lower()
-            if lowered not in ("true", "false"):
-                raise ValueError(f"{key} must be true or false, got '{value}'")
-            env[key] = lowered
-            continue
-        if field.kind == "number":
-            try:
-                float(value)
-            except ValueError:
-                raise ValueError(f"{key} must be a number, got '{value}'") from None
-        # A closed set rejects anything outside it; a combo offers known values but
-        # the daemon accepts more (any HuggingFace id, a local .gguf path, a
-        # provider-specific reasoning level), so its stored value is not restricted.
-        if field.kind == "select" and field.options and value not in field.options:
-            raise ValueError(f"{key} must be one of {', '.join(field.options)}, got '{value}'")
-        env[key] = value
-
-    _write_raw_env(name, env)
+    with _edit_raw_env(name) as env:
+        for key, raw in values.items():
+            value = (raw or "").strip()
+            if not value:
+                env.pop(key, None)
+                continue
+            field = known[key]
+            if field.kind == "boolean":
+                lowered = value.lower()
+                if lowered not in ("true", "false"):
+                    raise ValueError(f"{key} must be true or false, got '{value}'")
+                env[key] = lowered
+                continue
+            if field.kind == "number":
+                try:
+                    float(value)
+                except ValueError:
+                    raise ValueError(f"{key} must be a number, got '{value}'") from None
+            # A closed set rejects anything outside it; a combo offers known values but
+            # the daemon accepts more (any HuggingFace id, a local .gguf path, a
+            # provider-specific reasoning level), so its stored value is not restricted.
+            if field.kind == "select" and field.options and value not in field.options:
+                raise ValueError(f"{key} must be one of {', '.join(field.options)}, got '{value}'")
+            env[key] = value
     return get_settings(name)
 
 
@@ -697,8 +710,9 @@ def write_env_file(name: str, content: str) -> EnvFileView:
     # Normalize to a trailing newline so the file stays POSIX-clean.
     if content and not content.endswith("\n"):
         content += "\n"
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o600)
+    with lock_profile_env(path):
+        write_profile_env(path, content)
+        path.chmod(0o600)
     return read_env_file(name)
 
 

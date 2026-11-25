@@ -12,6 +12,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import socket
 import stat
 import time
@@ -27,7 +28,7 @@ from aiohttp import web
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from hindsight_api.config import PROVIDER_DEFAULT_MODELS, clear_config_cache
-from hindsight_api.engine.llm_interface import ProviderRateLimitResetError
+from hindsight_api.engine.llm_interface import ProviderContentPolicyError, ProviderRateLimitResetError
 from hindsight_api.engine.llm_wrapper import create_llm_provider, requires_api_key
 from hindsight_api.engine.providers import chatgpt_auth as auth
 from hindsight_api.engine.providers import chatgpt_llm as plan
@@ -200,7 +201,8 @@ async def test_host_id_is_created_once_and_import_keeps_it(tmp_path):
     host_id = auth.load_or_create_host_id(home)
     assert host_id.startswith("urn:uuid:")
     assert auth.load_or_create_host_id(home) == host_id
-    assert stat.S_IMODE((home / auth.HOST_ID_FILE).stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE((home / auth.HOST_ID_FILE).stat().st_mode) == 0o600
 
     source = tmp_path / "laptop.json"
     source.write_text(json.dumps(_credential()))
@@ -209,7 +211,8 @@ async def test_host_id_is_created_once_and_import_keeps_it(tmp_path):
     assert imported.ext_agent_host_id == host_id
     assert imported.refresh_token == "rt-1"
     assert (home / auth.HOST_ID_FILE).read_text().strip() == host_id
-    assert stat.S_IMODE((home / auth.CREDENTIAL_FILE).stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE((home / auth.CREDENTIAL_FILE).stat().st_mode) == 0o600
 
 
 def test_status_never_prints_tokens(tmp_path):
@@ -367,7 +370,8 @@ async def test_login_registers_exchanges_and_saves(tmp_path, point_auth_at, rsa_
 
     path = tmp_path / auth.CREDENTIAL_FILE
     stored = json.loads(path.read_text())
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stored == json.loads(credential.model_dump_json(exclude_none=True))
     assert stored["client_id"] == ISSUED_CLIENT_ID
     assert stored["subject"] == "user-sub"
@@ -475,7 +479,8 @@ async def test_proactive_refresh_rotates_and_persists(tmp_path, point_auth_at):
     assert stored["access_token"] == token
     assert stored["refresh_token"] == "rt-2"
     assert stored["client_id"] == ISSUED_CLIENT_ID and stored["subject"] == "user-sub"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert not list(tmp_path.glob(".credentials.json.*"))  # no stray temp file
 
 
@@ -1145,3 +1150,19 @@ def test_lost_session_names_the_refresh_error_that_cleared_it(tmp_path):
     _write(tmp_path, _credential(access_token=None, refresh_token=None, last_auth_error="invalid_grant"))
     with pytest.raises(auth.ChatGPTLoginRequiredError, match="last token refresh failed with invalid_grant"):
         auth.ChatGPTAuth.from_home(tmp_path)
+
+
+async def test_a_content_filter_block_is_a_refusal_sent_once(make_llm):
+    """#6503: a stream that ends incomplete on the content filter is permanent, not retried."""
+    blocked = _sse(
+        {
+            "type": "response.incomplete",
+            "sequence_number": 1,
+            "response": _response([], status="incomplete", incomplete_details={"reason": "content_filter"}),
+        }
+    )
+    upstream = _Upstream([(200, blocked)])
+    llm = await make_llm(upstream)
+    with pytest.raises(ProviderContentPolicyError):
+        await llm.call(messages=[{"role": "user", "content": "hi"}], max_retries=2)
+    assert len(upstream.requests) == 1

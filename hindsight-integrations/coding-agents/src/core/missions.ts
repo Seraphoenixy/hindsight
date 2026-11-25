@@ -29,25 +29,28 @@ export const GITLOG_MISSION =
   "this work.";
 
 export const CONVERSATION_MISSION =
-  "You are ingesting a developer conversation as a JSONL transcript (one {role, content} turn per line): the " +
-  "user's requests, the assistant's narration, and compact 'action' turns naming each tool use and " +
-  'its target (e.g. "Edit boltons/strutils.py") with no arguments or outputs. It may be a SHORT ' +
-  "decision chat or a LONG working session — scale the facts to the substance, never to the message " +
-  "count. Extract the FEWEST facts that capture the OUTCOME: the settled DECISIONS and their exact " +
-  "rules/values (quote literals VERBATIM); concrete CHANGES to specific code entities; problems and " +
-  "how they were resolved; conventions or invariants established; at most one fact for a notable " +
-  "REJECTED alternative ('initially proposed X, changed to Y because Z'). A short decision chat " +
-  "usually yields 1-2 facts; a substantial working session several. CRITICAL: a conversation REVISES " +
-  "itself — record ONLY the FINAL state as what is in effect; a superseded proposal appears ONLY " +
-  "inside the rejected fact, NEVER as its own 'decided' fact; if the same setting changes several " +
-  "times keep only the LAST, and make unmistakably clear which choice WON. Do NOT emit one fact per " +
-  "message, per intermediate proposal, or per action turn. Keep issue/PR references (#123, GH-123) " +
-  "VERBATIM and emit each as an ENTITY. Preserve the 'REF-ID: <token>' marker " +
-  "verbatim in every fact. When the session checked its work (a test passed or failed, a result was " +
-  "judged right or wrong), record the exact METHOD behind that outcome — which file, table, column, " +
-  "command or formula — and any caveat the session found in the data or code (a column mostly empty, a " +
-  "value in other units), so the same work repeats what worked and avoids what failed. Do not invent; " +
-  "capture only what was actually settled.";
+  "You are ingesting a developer conversation excerpt. Text may contain EARLIER CONTEXT for " +
+  "interpretation and a NEW EXCHANGE that ended the turn. Only the NEW EXCHANGE can establish a " +
+  "memory. Extract durable engineering knowledge that would change a future decision or action: " +
+  "a rule the user explicitly confirmed, corrected, or asked to remember; a settled architectural " +
+  "or compatibility constraint with its reason; or a reusable troubleshooting lesson with a " +
+  "verified cause or effective method. Return the FEWEST facts, at most three. An ordinary " +
+  "implementation task should return [] even when it changed several files. Do not record routine " +
+  "refactors, file-by-file changes, status reports, tool activity, passing tests, one-off task state, " +
+  "proposed work, or unverified assistant guesses. If a decision was revised, keep only the final " +
+  "state and explain that it superseded the earlier choice. Each fact's what field must state the " +
+  "conclusion, its applicability, and its reason. Preserve applicable versions, literal values, and " +
+  "issue references verbatim. Never invent a decision or claim.";
+
+export const CONVERSATION_INSTRUCTIONS =
+  "Return [] unless the completed exchange established durable engineering knowledge. " +
+  "Use no more than three facts. Put the complete conclusion, applicability, and rationale into each " +
+  "fact's what field. When the content has a PROJECT header or project/project_id metadata, begin " +
+  "every fact with that exact project label followed by a colon, so the conclusion remains " +
+  "attributable after synthesis. " +
+  "Leave optional dimension fields empty. Do not emit a fact for a normal code " +
+  "change or a successful test run. Do not treat a " +
+  "proposal as a decision unless the user confirmed it or the exchange verified it.";
 
 export const REFLECT_MISSION =
   "You are a debugging assistant with the project's past decisions in memory (git rationale and " +
@@ -66,6 +69,22 @@ export const DOCUMENT_MISSION =
   "You are ingesting a standalone document (notes, docs, or structural findings). Extract the " +
   "concrete facts, concepts, and structure it describes.";
 
+const ENGINEERING_REFLECT_MISSION =
+  "Answer using only applicable project knowledge. State the decision, verified observation, or " +
+  "reusable method that affects the current task. Keep environment and version conditions. " +
+  "Distinguish a required rule from observed behavior. Surface unresolved " +
+  "conflicts; do not choose by recency alone. If nothing applies, return an empty answer.";
+
+const ENGINEERING_OBSERVATIONS_MISSION =
+  "Maintain a compact model of durable engineering conclusions, not a fact log. Combine the facts " +
+  "that support one future decision, constraint, or verified troubleshooting lesson into one " +
+  "observation when their subject and applicability agree. Include the rationale and scope. Do not " +
+  "create separate observations for file edits, commands, tool activity, test runs, status updates, " +
+  "or implementation steps; omit those supporting details when they do not form a reusable " +
+  "conclusion. Split only when conclusions have different subjects or applicability. Distinguish " +
+  "required behavior from observed behavior, and mark a conclusion superseded only when later " +
+  "information confirms the change.";
+
 export const OBSERVATIONS_MISSION =
   "Consolidate durable knowledge about THIS codebase — recurring patterns, conventions, module " +
   "responsibilities, and how components relate — from the ingested commits and conversations. " +
@@ -83,6 +102,8 @@ export type RetainExtractionMode = (typeof RETAIN_EXTRACTION_MODES)[number];
 export const DEFAULT_RETAIN_EXTRACTION_MODE: RetainExtractionMode = "concise";
 
 export const RETAIN_STRATEGIES = {
+  // The project knowledge path has already reviewed this content before retain.
+  "engineering-record": { retain_extraction_mode: "chunks", retain_chunk_size: 12000 },
   git: { retain_mission: GIT_MISSION, retain_extraction_mode: DEFAULT_RETAIN_EXTRACTION_MODE },
   // ONE big aggregated document (last N commit messages, no diffs) -> a larger chunk size so it stays
   // in as few chunks as possible and the extractor sees the whole history arc at once.
@@ -91,15 +112,13 @@ export const RETAIN_STRATEGIES = {
     retain_extraction_mode: DEFAULT_RETAIN_EXTRACTION_MODE,
     retain_chunk_size: 12000,
   },
-  // ONE strategy for ALL developer conversations — backfilled decision chats and live working
-  // sessions alike (they are the same content type in the same JSON transcript format; the mission
-  // scales extraction to the substance, final-state-wins). Chunk big enough to hold a whole typical
-  // conversation in ONE chunk so the extractor sees the full proposal→revision arc (the 3000
-  // default SPLIT them into per-chunk fragments); very long sessions still split and fall back to
-  // the consolidation layer.
+  // ONE strategy for all developer conversations. Live coding sessions submit a bounded excerpt;
+  // imported history keeps its transcript shape. Custom extraction admits only durable conclusions
+  // and permits zero facts. A large chunk keeps proposal and final decision together.
   conversation: {
     retain_mission: CONVERSATION_MISSION,
-    retain_extraction_mode: DEFAULT_RETAIN_EXTRACTION_MODE,
+    retain_extraction_mode: "custom",
+    retain_custom_instructions: CONVERSATION_INSTRUCTIONS,
     retain_chunk_size: 12000,
   },
   // Structural documents (e.g. the codebase survey's ingested findings) aren't dialogue — the
@@ -269,7 +288,7 @@ const PAGE_TAXONOMY: readonly PageSpec[] = [
     source_query:
       "What are the core concepts, domain abstractions, and key entities in this project — " +
       "the vocabulary a developer must understand? For each, explain what it represents and its role, " +
-      "drawn from how they are introduced and discussed across the history and conversations.",
+      "drawn from how they are introduced and discussed across the project.",
     tags: ["knowledge:concept"],
   },
   {
@@ -297,7 +316,23 @@ const PAGE_TAXONOMY: readonly PageSpec[] = [
       "summary of what it describes, so each initiative links to its detailed page.",
     tags: ["knowledge:feature-work"],
   },
+  {
+    name: "Troubleshooting and playbooks",
+    source_query:
+      "Which troubleshooting and operating methods have been verified? Include the symptom, cause " +
+      "where known, applicable conditions, and the reason.",
+    tags: ["knowledge:experience"],
+  },
 ];
+
+const ENGINEERING_PAGE_QUERIES: Record<string, string> = {
+  "Component map":
+    "Which architecture boundaries and runtime behaviors have been verified for this project? " +
+    "Include affected versions or environments.",
+  "Key decisions and rationale":
+    "Which decisions and constraints govern future changes to this project? Include the rationale, " +
+    "applicability and reason. Distinguish desired behavior from any verified deviations.",
+};
 
 /** The seeded pages' names, in taxonomy order — the keys `RawConfig.pages` accepts. */
 export const PAGE_NAMES: readonly string[] = PAGE_TAXONOMY.map((page) => page.name);
@@ -341,7 +376,8 @@ export type CustomPagesConfig = Record<string, CustomPage>;
 export function pagesFor(
   project: string | undefined,
   pages: PagesConfig = {},
-  customPages: CustomPagesConfig = {}
+  customPages: CustomPagesConfig = {},
+  engineering = false
 ): PageSpec[] {
   const scope = pageScopeRule(project);
   // Matched case-insensitively on the same key `seedPages` matches live pages by, so a config
@@ -353,7 +389,15 @@ export function pagesFor(
   for (const page of PAGE_TAXONOMY) {
     const override = byName.get(page.name.toLowerCase());
     if (override === false) continue;
-    out.push({ ...page, source_query: (override?.source_query || page.source_query) + scope });
+    const engineeringQuery = ENGINEERING_PAGE_QUERIES[page.name];
+    const experience = page.name === "Troubleshooting and playbooks";
+    if (override === undefined && (engineering ? !engineeringQuery && !experience : experience))
+      continue;
+    out.push({
+      ...page,
+      source_query:
+        (override?.source_query || (engineering && engineeringQuery) || page.source_query) + scope,
+    });
   }
   // The user's own pages, seeded at the same root and treated exactly like a taxonomy page from
   // here on: same scoping clause, same drift re-sync, same trigger. Appended last so a taxonomy
@@ -642,6 +686,18 @@ export const CODING_BANK_TEMPLATE = {
 
 /** Bank-level missions the template seeds ONCE and then leaves alone (#2492). */
 const MISSION_FIELDS = ["reflect_mission", "retain_mission", "observations_mission"] as const;
+const LEGACY_CONVERSATION_MISSION_PREFIX =
+  "You are ingesting a developer conversation as a JSONL transcript";
+const LEGACY_CONVERSATION_INSTRUCTIONS =
+  "Return [] unless the completed exchange established durable engineering knowledge. " +
+  "Use no more than three facts. Put the complete conclusion, applicability, and rationale into each " +
+  "fact's what field. Leave optional dimension fields empty. Do not emit a fact for a normal code " +
+  "change or a successful test run. Do not treat a " +
+  "proposal as a decision unless the user confirmed it or the exchange verified it.";
+const LEGACY_ENGINEERING_OBSERVATIONS_MISSION =
+  "Consolidate durable project decisions, verified architecture, and reproducible engineering experience. " +
+  "Keep applicability. Combine corroborating knowledge, but distinguish required behavior from " +
+  "observed behavior. Treat a conclusion as superseded only when later information confirms the change.";
 
 /** Bank-scoped config OVERRIDES exactly as `GET /banks/{id}/config` reports them. */
 export type BankOverrides = Record<string, unknown>;
@@ -715,7 +771,8 @@ function isSet(v: unknown): boolean {
 export function codingBankManifest(
   overrides: BankOverrides | undefined,
   mode: RetainExtractionMode = DEFAULT_RETAIN_EXTRACTION_MODE,
-  defaults: Record<string, unknown> = {}
+  defaults: Record<string, unknown> = {},
+  engineering = false
 ): BankManifest | undefined {
   // Unreadable overrides — the bank does not exist yet, or the deployment has the bank-config API
   // switched off. Nothing can have been customised through an API that is not there, and this same
@@ -728,15 +785,27 @@ export function codingBankManifest(
   // The missions are seeded as a GROUP: the plugin writes all three together, so any one of them
   // being present means this bank has been seeded already, or its owner wrote their own (#2492).
   if (!MISSION_FIELDS.some((f) => isSet(current[f]))) {
-    bank.reflect_mission = template.reflect_mission;
+    bank.reflect_mission = engineering ? ENGINEERING_REFLECT_MISSION : template.reflect_mission;
     bank.enable_observations = template.enable_observations;
-    bank.observations_mission = template.observations_mission;
-    bank.retain_mission = template.retain_mission;
+    bank.observations_mission = engineering
+      ? ENGINEERING_OBSERVATIONS_MISSION
+      : template.observations_mission;
+    bank.retain_mission = engineering ? DOCUMENT_MISSION : template.retain_mission;
     bank.retain_extraction_mode = mode;
+  } else if (
+    engineering &&
+    current.observations_mission === LEGACY_ENGINEERING_OBSERVATIONS_MISSION
+  ) {
+    // Upgrade only the exact mission this plugin previously seeded. A bank owner who rewrote it
+    // keeps their wording, following the same additive rule as the rest of the manifest.
+    bank.observations_mission = ENGINEERING_OBSERVATIONS_MISSION;
   }
 
+  if (engineering && !isSet(current.consolidation_group_by_conclusion))
+    bank.consolidation_group_by_conclusion = true;
+
   if (!isSet(current.retain_default_strategy))
-    bank.retain_default_strategy = template.retain_default_strategy;
+    bank.retain_default_strategy = engineering ? "document" : template.retain_default_strategy;
   if (!isSet(current.entities_allow_free_form))
     bank.entities_allow_free_form = template.entities_allow_free_form;
 
@@ -747,10 +816,36 @@ export function codingBankManifest(
   const updates: Record<string, unknown> = {};
   for (const [name, def] of Object.entries(template.retain_strategies)) {
     // `custom` (the survey) carries its own instructions and is not the configured mode's to change.
-    const synced = def.retain_extraction_mode === "custom" ? {} : { retain_extraction_mode: mode };
+    const synced =
+      name === "engineering-record" || def.retain_extraction_mode === "custom"
+        ? {}
+        : { retain_extraction_mode: mode };
     const have = strategies[name] as Record<string, unknown> | null | undefined;
     if (!have || typeof have !== "object") updates[name] = { ...def, ...synced };
-    else if ("retain_extraction_mode" in synced && have.retain_extraction_mode !== mode)
+    else if (
+      name === "conversation" &&
+      def.retain_extraction_mode === "custom" &&
+      have.retain_mission === def.retain_mission &&
+      have.retain_extraction_mode === def.retain_extraction_mode &&
+      have.retain_chunk_size === def.retain_chunk_size &&
+      have.retain_custom_instructions === LEGACY_CONVERSATION_INSTRUCTIONS
+    ) {
+      // The previous selective strategy had no project-attribution instruction. Upgrade only that
+      // exact prompt; a mission, mode, chunk size or instructions edit belongs to the bank owner.
+      updates[name] = { ...have, retain_custom_instructions: def.retain_custom_instructions };
+    } else if (
+      name === "conversation" &&
+      def.retain_extraction_mode === "custom" &&
+      have.retain_extraction_mode === DEFAULT_RETAIN_EXTRACTION_MODE &&
+      have.retain_chunk_size === def.retain_chunk_size &&
+      typeof have.retain_mission === "string" &&
+      have.retain_mission.startsWith(LEGACY_CONVERSATION_MISSION_PREFIX) &&
+      !("retain_custom_instructions" in have)
+    ) {
+      // The conversation strategy shipped before selective engineering memory. Upgrade that exact
+      // template; a strategy the owner edited is still left alone.
+      updates[name] = def;
+    } else if ("retain_extraction_mode" in synced && have.retain_extraction_mode !== mode)
       updates[name] = { ...have, ...synced };
   }
   // The whole map is one config value, so the UNION has to be sent — not just the changes.

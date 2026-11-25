@@ -220,6 +220,13 @@ Leave it blank to use the server default — durable, specific facts that stay t
 
 Set `observations_mission` via the [bank config API](/developer/api/memory-banks#observations-configuration) or the [`HINDSIGHT_API_OBSERVATIONS_MISSION`](/developer/configuration#observations) environment variable.
 
+Set `consolidation_group_by_conclusion` to `true` in the bank config to consolidate
+complementary facts into one actionable conclusion. Consolidation can attach several
+new facts to one observation, update an existing conclusion, or skip facts that do
+not contribute to durable knowledge. This setting applies on subsequent consolidation
+runs. To regenerate existing observations from the retained facts, use the reset
+described below.
+
 ---
 
 ## Consolidation Strategies
@@ -264,7 +271,7 @@ How a strategy is matched:
   :::
 
   Remember that a strategy matches **observation scopes** — the tag sets consolidation groups observations under, set by [`observation_scopes`](./api/retain#observation_scopes) at retain time — not the tags of individual memories. A memory tagged with a user, a team and a company but retained with `observation_scopes: [["user:dana"], ["team:exec"], ["company:acme"]]` produces three single-tag scopes, none of which has both a company and a team.
-- **What a strategy can set:** `observations_mission`, `max_observations_per_scope`, `consolidation_source_facts_max_tokens` and `consolidation_source_facts_max_tokens_per_observation`. Every one is optional.
+- **What a strategy can set:** `observations_mission`, `consolidation_group_by_conclusion`, `max_observations_per_scope`, `consolidation_source_facts_max_tokens` and `consolidation_source_facts_max_tokens_per_observation`. Every one is optional.
 - **Anything a strategy leaves unset, and every scope no strategy matches,** uses the bank-wide value. The control plane shows these bank-wide values as the **Default** strategy.
 
 ### When two strategies match the same scope

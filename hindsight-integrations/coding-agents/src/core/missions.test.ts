@@ -305,6 +305,12 @@ describe("page trigger config resolution", () => {
 describe("codingBankManifest (#3927)", () => {
   const bankOf = (overrides: BankOverrides | undefined) => codingBankManifest(overrides)?.bank;
 
+  it("keeps the project label on conclusions extracted from a conversation", () => {
+    expect(RETAIN_STRATEGIES.conversation.retain_custom_instructions).toContain(
+      "begin every fact with that exact project label"
+    );
+  });
+
   it("seeds the full template on a bank with no overrides of its own", () => {
     // Unreadable overrides (no bank yet, or the bank-config API switched off) seed the same lot:
     // nothing can have been customised through an API that is not there.
@@ -324,6 +330,7 @@ describe("codingBankManifest (#3927)", () => {
     expect(Object.keys(bank!.retain_strategies as object).sort()).toEqual([
       "conversation",
       "document",
+      "engineering-record",
       "git",
       "gitlog",
       "mycustom",
@@ -347,6 +354,89 @@ describe("codingBankManifest (#3927)", () => {
     );
   });
 
+  it("upgrades the exact legacy conversation template without overwriting owner edits", () => {
+    const legacyConversation = {
+      retain_mission:
+        "You are ingesting a developer conversation as a JSONL transcript with old extraction rules.",
+      retain_extraction_mode: "concise",
+      retain_chunk_size: 12000,
+    };
+    const strategies = bankOf({
+      reflect_mission: "seeded",
+      retain_strategies: { conversation: legacyConversation },
+    })!.retain_strategies as Record<string, Record<string, unknown>>;
+    expect(strategies.conversation).toEqual(RETAIN_STRATEGIES.conversation);
+
+    const ownerEdited = { ...legacyConversation, retain_chunk_size: 6000 };
+    const preserved = bankOf({
+      reflect_mission: "seeded",
+      retain_strategies: { conversation: ownerEdited },
+    })!.retain_strategies as Record<string, Record<string, unknown>>;
+    expect(preserved.conversation).toEqual(ownerEdited);
+  });
+
+  it("adds project attribution to the previous selective conversation prompt only", () => {
+    const previousInstructions =
+      "Return [] unless the completed exchange established durable engineering knowledge. " +
+      "Use no more than three facts. Put the complete conclusion, applicability, and rationale into each " +
+      "fact's what field. Leave optional dimension fields empty. Do not emit a fact for a normal code " +
+      "change or a successful test run. Do not treat a " +
+      "proposal as a decision unless the user confirmed it or the exchange verified it.";
+    const previous = {
+      ...RETAIN_STRATEGIES.conversation,
+      retain_custom_instructions: previousInstructions,
+    };
+    const strategies = bankOf({
+      reflect_mission: "seeded",
+      retain_strategies: { conversation: previous },
+    })!.retain_strategies as Record<string, Record<string, unknown>>;
+    expect(strategies.conversation).toEqual(RETAIN_STRATEGIES.conversation);
+
+    const ownerEdited = {
+      ...previous,
+      retain_custom_instructions: previousInstructions + " Keep our local terminology.",
+    };
+    const preserved = bankOf({
+      reflect_mission: "seeded",
+      retain_strategies: { conversation: ownerEdited },
+    })!.retain_strategies as Record<string, Record<string, unknown>>;
+    expect(preserved.conversation).toEqual(ownerEdited);
+  });
+
+  it("upgrades only the plugin's old engineering observation mission", () => {
+    const legacyObservationMission =
+      "Consolidate durable project decisions, verified architecture, and reproducible engineering experience. " +
+      "Keep applicability. Combine corroborating knowledge, but distinguish required behavior from " +
+      "observed behavior. Treat a conclusion as superseded only when later information confirms the change.";
+    const settled = {
+      reflect_mission: "my reflect",
+      retain_mission: "my retain",
+      observations_mission: legacyObservationMission,
+    };
+    const upgraded = codingBankManifest(settled, "concise", {}, true)!.bank;
+    expect(upgraded.observations_mission).toContain("not a fact log");
+    expect(upgraded.observations_mission).toContain("file edits, commands, tool activity");
+    expect(upgraded.consolidation_group_by_conclusion).toBe(true);
+    expect(upgraded).not.toHaveProperty("reflect_mission");
+    expect(upgraded).not.toHaveProperty("retain_mission");
+
+    const ownerEdited = { ...settled, observations_mission: "MY OBSERVATIONS" };
+    const bank = codingBankManifest(ownerEdited, "concise", {}, true)!.bank;
+    expect(bank).not.toHaveProperty("observations_mission");
+    expect(bank.consolidation_group_by_conclusion).toBe(true);
+    expect(
+      codingBankManifest(
+        { ...ownerEdited, consolidation_group_by_conclusion: false },
+        "concise",
+        {},
+        true
+      )?.bank
+    ).not.toHaveProperty("consolidation_group_by_conclusion");
+    expect(codingBankManifest(undefined)?.bank).not.toHaveProperty(
+      "consolidation_group_by_conclusion"
+    );
+  });
+
   it("re-syncs the extraction mode of the plugin's own strategies to the configured one (#4560)", () => {
     // A bank seeded by a release that defaulted to verbose, plus a user tweak and a user strategy.
     const seeded = Object.fromEntries(
@@ -362,8 +452,9 @@ describe("codingBankManifest (#3927)", () => {
     };
     const strategies = bankOf({ reflect_mission: "seeded", retain_strategies: current })!
       .retain_strategies as Record<string, Record<string, unknown>>;
-    for (const name of ["git", "gitlog", "conversation", "document"])
+    for (const name of ["git", "gitlog", "document"])
       expect(strategies[name].retain_extraction_mode).toBe("concise");
+    expect(strategies.conversation.retain_extraction_mode).toBe("custom");
     // Only the mode moves: the user's other edits, their own strategy and the survey stay put.
     expect(strategies.conversation.retain_chunk_size).toBe(500);
     expect(strategies.mycustom).toEqual({ retain_extraction_mode: "verbose" });
@@ -374,6 +465,7 @@ describe("codingBankManifest (#3927)", () => {
       { reflect_mission: "seeded", retain_strategies: RETAIN_STRATEGIES },
       "verbose"
     )!.bank.retain_strategies as Record<string, Record<string, unknown>>;
+    expect(verbose.conversation.retain_extraction_mode).toBe("custom");
     expect(verbose.git.retain_extraction_mode).toBe("verbose");
     expect(codingBankManifest(undefined, "chunks")!.bank.retain_extraction_mode).toBe("chunks");
   });
@@ -523,13 +615,17 @@ describe("pagesFor page configuration", () => {
 
   it("seeds the whole taxonomy with its built-in queries when no config is given", () => {
     const pages = pagesFor("repo-a");
-    expect(pages.map((p) => p.name)).toEqual([...PAGE_NAMES]);
+    expect(pages.map((p) => p.name)).toEqual(
+      PAGE_NAMES.filter((n) => n !== "Troubleshooting and playbooks")
+    );
     for (const page of pages) expect(page.source_query.endsWith(scope)).toBe(true);
   });
 
   it("false skips a page and leaves the rest in taxonomy order", () => {
     const pages = pagesFor("repo-a", { "Component map": false });
-    expect(pages.map((p) => p.name)).toEqual(PAGE_NAMES.filter((n) => n !== "Component map"));
+    expect(pages.map((p) => p.name)).toEqual(
+      PAGE_NAMES.filter((n) => n !== "Component map" && n !== "Troubleshooting and playbooks")
+    );
   });
 
   it("a custom source_query replaces the built-in one, scoping clause still appended", () => {
@@ -561,7 +657,7 @@ describe("pagesFor page configuration", () => {
         },
       }
     );
-    expect(pages).toHaveLength(PAGE_NAMES.length + 1);
+    expect(pages).toHaveLength(PAGE_NAMES.length);
     const custom = pages[pages.length - 1];
     expect(custom.name).toBe("Security posture");
     expect(custom.source_query).toBe("what are our security decisions?" + scope);
@@ -580,7 +676,7 @@ describe("pagesFor page configuration", () => {
       { Roadmap: { source_query: "where is this going?" } }
     );
     expect(pages.map((p) => p.name)).toEqual([
-      ...PAGE_NAMES.filter((n) => n !== "Component map"),
+      ...PAGE_NAMES.filter((n) => n !== "Component map" && n !== "Troubleshooting and playbooks"),
       "Roadmap",
     ]);
   });

@@ -34,12 +34,14 @@ import { brandWord } from "./brand";
 import { diag, readHookEvent } from "./diag";
 import { setLogLevel } from "./log";
 import { parsePageList, buildPagesPreamble, type PageRef } from "./page-injection";
-import type { ClientOpts, RetainOpts } from "./hindsight";
+import { fetchWorkingRulesInjection } from "./working-rules-injection";
+import type { ClientOpts, RetainOpts, WorkingRulesProjection } from "./hindsight";
 import type { RetainExtractionMode } from "./missions";
 import { buildRetainStamp } from "./retain-stamp";
 import { detectLegacyClaudePlugin, legacyClaudePluginWarning } from "./legacy";
 import { HindsightClient } from "./hindsight";
 import {
+  readSessionCache,
   sessionCacheFile,
   sessionRootDir,
   stashPendingContext,
@@ -57,6 +59,11 @@ interface SeedContextClient {
   // never deferred — only a confirmed-empty bank is.
   hasDocuments?(): Promise<boolean>;
   pagesSupported?: boolean;
+  getWorkingRulesProjection?(opts?: {
+    branch?: string;
+    timeoutMs?: number;
+  }): Promise<WorkingRulesProjection | undefined>;
+  workingRulesSupported?: boolean;
   // Optional: applies the bank's missions and retain strategies when the deepen engine (which
   // otherwise does it) is not started. HindsightClient has it; the minimal test clients omit it.
   configureBankSettings?(opts: {
@@ -141,6 +148,8 @@ export interface SessionStartOutput {
   additionalContext?: string;
   /** Internal lifecycle signal: defer one auto-reflect while a new bank gains useful content. */
   deferInitialReflect?: boolean;
+  /** Projection revision injected at SessionStart so prompt hooks avoid repeating it unchanged. */
+  workingRulesRevision?: string;
 }
 
 /** Host-specific adapter for the shared SessionStart core. Claude and Codex use the
@@ -176,6 +185,7 @@ export async function buildSessionStartContext(args: {
   cfg: Config;
   client: SeedContextClient;
   harness?: string;
+  workingRulesRevision?: string;
   stateDir?: string;
   hasGit?: (dir: string) => boolean;
   startSeed?: (repoDir: string, opts?: { limit?: number; harness?: string }) => void;
@@ -238,7 +248,10 @@ export async function buildSessionStartContext(args: {
   let systemMessage: string | undefined;
 
   if (cfg.autoSeed !== false) {
-    if (hasGit(cwd)) {
+    if (cfg.projectScope && cfg.gitIngest === "none" && !cfg.codebaseSurvey) {
+      startSeed(cwd, { limit: cfg.seedLimit, harness });
+      deepening = true;
+    } else if (hasGit(cwd)) {
       // The LIVE bank is the ONLY state (cold-check-wins): delete the bank and the next session is
       // a true first-open — no client-side flags can contradict it. Opting out of memory is the
       // `disabled` config field (global or per-harness), not a hidden state file.
@@ -377,10 +390,16 @@ export async function buildSessionStartContext(args: {
     }
     /* fail-open preamble */
   }
-  const additionalContext = buildPagesPreamble(pages, {
+  const preamble = buildPagesPreamble(pages, {
+    engineering: Boolean(cfg.projectScope),
     reflectOnNewGoals: cfg.autoInject !== "reflect",
     extra: cfg.toolGuideExtra,
   });
+  const workingRules = await fetchWorkingRulesInjection(client, {
+    cwd,
+    previousRevision: args.workingRulesRevision,
+  });
+  const additionalContext = [preamble, workingRules.block].filter(Boolean).join("\n\n");
   // An empty page roster is NOT an empty bank: a bank with memories and no pages still answers a
   // reflect (#5209), so only the confirmed-empty probe above defers it.
   const deferInitialReflect = bankEmpty;
@@ -398,7 +417,10 @@ export async function buildSessionStartContext(args: {
       cold: cold === true,
     }).catch(() => undefined);
   }
-  systemMessage = buildSeedBanner(bankId, cold === true, gitNote);
+  systemMessage =
+    cfg.projectScope && cfg.gitIngest === "none"
+      ? `${brandWord()} · ${bankId} · ${cfg.projectScope.name}`
+      : buildSeedBanner(bankId, cold === true, gitNote);
 
   // The old per-agent plugin keeps running next to this one until the user removes it — say so
   // where they will see it. Only Claude Code had that plugin.
@@ -413,7 +435,12 @@ export async function buildSessionStartContext(args: {
   // ALWAYS record the session start (warm sessions used to log nothing — undebuggable).
   diag(harness, "session_start", { bank: bankId, cold, pages: pages.length, ms: Date.now() - t0 });
 
-  return { systemMessage, additionalContext, deferInitialReflect };
+  return {
+    systemMessage,
+    additionalContext,
+    deferInitialReflect,
+    workingRulesRevision: workingRules.projection?.revision,
+  };
 }
 
 /** Run one SessionStart hook invocation: stdin event in, (maybe) an additionalContext object on stdout. */
@@ -472,14 +499,28 @@ export async function runSessionStartHook(
       observationScopes: cfg.observationScopes,
     });
 
-    const out = await buildSessionStartContext({ cwd, sessionRoot, bankId, cfg, client, harness });
+    const cacheFile = sessionId
+      ? sessionCacheFile(harness, sessionId, cfg.projectScope?.id)
+      : undefined;
+    const cached = cacheFile ? readSessionCache(cacheFile) : undefined;
+    const out = await buildSessionStartContext({
+      cwd,
+      sessionRoot,
+      bankId,
+      cfg,
+      client,
+      harness,
+      workingRulesRevision: cached?.workingRulesRevision,
+    });
     // The registration's banner hint (e.g. TraeCode's workspace-MCP gate) rides the same
     // user-facing message as the legacy-plugin warning — the banner is the only visible channel.
     if (mcpHint)
       out.systemMessage = out.systemMessage ? `${out.systemMessage}\n${mcpHint}` : mcpHint;
-    if (out.deferInitialReflect && sessionId) {
-      writeSessionCache(sessionCacheFile(harness, sessionId, cfg.projectScope?.id), {
-        deferInitialReflect: true,
+    if ((out.deferInitialReflect || out.workingRulesRevision) && cacheFile) {
+      writeSessionCache(cacheFile, {
+        ...(out.deferInitialReflect ? {} : cached),
+        workingRulesRevision: out.workingRulesRevision ?? cached?.workingRulesRevision,
+        ...(out.deferInitialReflect ? { deferInitialReflect: true } : {}),
       });
     }
     if (spec.deferContextToToolHook && out.additionalContext && sessionId) {

@@ -87,8 +87,21 @@ const TOOL_GUIDE =
   "record it as a tracked page; then call it AGAIN with relates_to_page_id set to that page whenever the goal, " +
   "scope, or rationale materially changes mid-work, so the page tracks the current plan and not the opening one. " +
   "Skip bug fixes, small tweaks, chores, and trivial course-corrections.\n" +
-  "- hindsight_ingest_document(title, content) — save an external document or durable notes/findings you want " +
-  "remembered (not the current conversation — that is captured automatically at session end).";
+  "- hindsight_ingest_document(title, content) — save an explicitly supplied document or reference.\n" +
+  "- hindsight_recall(query) — retrieve raw facts when curated pages lack the evidence you need.\n" +
+  "- hindsight_edit_memory(...) — rewrite, archive, or restore one recalled memory only after the user explicitly requests that change.";
+
+const ENGINEERING_TOOL_GUIDE =
+  "- hindsight_reflect(query) — ask a concrete project question when remembered decisions, operating " +
+  "constraints, or verified troubleshooting experience could change what you do. Check applicability " +
+  "and credit memory used with a blockquote beginning `> 🧠 **From Hindsight memory**`.\n" +
+  "- hindsight_search_pages(query) / hindsight_read_page — read relevant project knowledge pages when they exist.\n" +
+  "- hindsight_ingest_document(title, content, reference) — save durable knowledge from a user-supplied " +
+  "document. Include its location and version when available.\n" +
+  "- hindsight_recall(query) — retrieve raw world/experience facts when pages lack the exact evidence. " +
+  "Results include IDs, text, source metadata, and state.\n" +
+  "- hindsight_edit_memory(...) — only after the user explicitly requests a correction, archive, or restore. " +
+  "Use the exact id, text, and state from hindsight_recall so stale edits are rejected.";
 
 /**
  * Any autoInject other than "reflect" means no first-prompt synthesis. Keep the pull trigger explicit,
@@ -105,6 +118,7 @@ export interface ToolGuideOpts {
    *  the agent straight to hindsight_reflect; it now goes to the pages first and keeps
    *  reflect for what they don't cover. The field name is unchanged so call sites stay stable. */
   reflectOnNewGoals?: boolean;
+  engineering?: boolean;
   /** cfg.toolGuideExtra: the team's own guidance, added after ours rather than replacing it. */
   extra?: string;
 }
@@ -112,7 +126,10 @@ export interface ToolGuideOpts {
 function toolGuide(opts?: ToolGuideOpts): string {
   const extra = opts?.extra?.trim();
   return (
-    (opts?.reflectOnNewGoals ? PAGES_FIRST_ON_GOALS : "") + TOOL_GUIDE + (extra ? `\n${extra}` : "")
+    (opts?.engineering
+      ? ENGINEERING_TOOL_GUIDE
+      : (opts?.reflectOnNewGoals ? PAGES_FIRST_ON_GOALS : "") + TOOL_GUIDE) +
+    (extra ? `\n${extra}` : "")
   );
 }
 
@@ -124,9 +141,11 @@ export function buildPagesPreamble(pages: PageRef[], opts?: ToolGuideOpts): stri
     "This repository has a Hindsight memory + pages (curated, continuously-updated pages plus the raw " +
     "memory behind them). The tools below are registered, but you must actually CALL them at the right moments:\n" +
     `${toolGuide(opts)}\n` +
-    "ALSO your correction tool: when you verify a Hindsight memory is wrong or stale, ingest a " +
-    '"Correction: <topic>" doc stating what memory claimed, what is true now, and the evidence — ' +
-    "newer facts supersede older ones.\n" +
+    (opts?.engineering
+      ? ""
+      : "ALSO your correction tool: when you verify a Hindsight memory is wrong or stale, ingest a " +
+        '"Correction: <topic>" doc stating what memory claimed, what is true now, and why — ' +
+        "newer facts supersede older ones.\n") +
     `${body}\n` +
     "This tool guide and the page list are re-injected for you periodically as things change.\n" +
     "</hindsight_pages>"

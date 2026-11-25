@@ -21,6 +21,7 @@ import { SURVEY_DOC_IDS } from "./survey";
 
 /** Minimal client shape (HindsightClient satisfies it structurally). */
 export interface StatusClient {
+  projectTag?: string;
   listDocumentIds(tag: string, tagsMatch?: "all" | "all_strict"): Promise<Set<string>>;
   listPages(): Promise<unknown>;
   pagesSupported?: boolean;
@@ -36,6 +37,7 @@ export interface SyncStatus {
   gitDiffDocs: number; // commits ingested individually with full diffs (git:<sha>)
   gitDiffTarget: number | null; // min(DEEPEN_DIFF_TARGET, repo commits); null when repo unknown
   chatDocs: number; // past/live conversations in the bank
+  documentDocs?: number; // explicitly ingested durable project references
   pagesCount: number;
   surveyBaseline: string | null; // HEAD sha at the last codebase survey START (null = never started)
   surveyDocs: number; // findings documents present (of 4) — completion signal, not just started
@@ -62,6 +64,32 @@ export async function syncStatus(
   bank: string,
   repoDir?: string
 ): Promise<SyncStatus> {
+  if (client.projectTag) {
+    const [chat, documents, surveys, pages, activeOps] = await Promise.all([
+      client.listDocumentIds("source:chat", "all_strict"),
+      client.listDocumentIds("source:upload", "all_strict"),
+      client.listDocumentIds("source:survey", "all_strict"),
+      client
+        .listPages()
+        .then(parsePageList)
+        .catch(() => []),
+      client.activeOperations().catch(() => null),
+    ]);
+    return {
+      bank,
+      gitlogPresent: false,
+      gitDiffDocs: 0,
+      gitDiffTarget: null,
+      chatDocs: chat.size,
+      documentDocs: documents.size,
+      pagesCount: pages.length,
+      surveyBaseline: null,
+      surveyDocs: surveys.size,
+      surveyCommitsBehind: null,
+      activeOps,
+      synced: activeOps === 0,
+    };
+  }
   const gitIds = await client.listDocumentIds("source:git", "all_strict");
   const chatIds = await client
     .listDocumentIds("source:chat", "all_strict")

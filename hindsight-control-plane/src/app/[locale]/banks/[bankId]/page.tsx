@@ -23,6 +23,7 @@ import { ObservationTreeView } from "@/components/observation-tree-view";
 import { WebhooksView } from "@/components/webhooks-view";
 import { AuditLogsView } from "@/components/audit-logs-view";
 import { LLMRequestsView } from "@/components/llm-requests-view";
+import { MemoryOrganizationView } from "@/components/memory-organization-view";
 import { FeatureNotEnabled } from "@/components/feature-not-enabled";
 import { useFeatures } from "@/lib/features-context";
 import { useBank } from "@/lib/bank-context";
@@ -76,6 +77,7 @@ type NavItem =
   | "recall"
   | "reflect"
   | "data"
+  | "organize"
   | "documents"
   | "entities"
   | "pages"
@@ -106,6 +108,7 @@ export default function BankPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const t = useTranslations("bank");
+  const tMemoryOrganization = useTranslations("memoryOrganization");
   const tCommon = useTranslations("common");
   const { features } = useFeatures();
   const { currentBank: bankId, setCurrentBank, loadBanks } = useBank();
@@ -600,6 +603,16 @@ export default function BankPage() {
                   <h1 className="text-3xl font-bold mb-2 text-foreground">{t("reflect")}</h1>
                   <p className="text-muted-foreground mb-6">{t("reflectDescription")}</p>
                   <ThinkView />
+                </div>
+              )}
+
+              {view === "organize" && bankId && (
+                <div>
+                  <h1 className="text-3xl font-bold mb-2 text-foreground">
+                    {tMemoryOrganization("title")}
+                  </h1>
+                  <p className="text-muted-foreground mb-6">{tMemoryOrganization("description")}</p>
+                  <MemoryOrganizationView key={bankId} bankId={bankId} />
                 </div>
               )}
 

@@ -18,20 +18,44 @@ describe("selectTools", () => {
     expect(selectTools(cfg, stubClient, "b")).toEqual([]);
   });
 
-  it("returns the eight hindsight_* tool specs when enabled", () => {
+  it("returns the twelve hindsight_* tool specs when enabled", () => {
     const cfg = resolveConfig({});
     const tools = selectTools(cfg, stubClient, "b");
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
         "hindsight_sync_status",
         "hindsight_diagnose",
+        "hindsight_recall",
+        "hindsight_edit_memory",
         "hindsight_search_pages",
         "hindsight_list_pages",
         "hindsight_read_page",
         "hindsight_reflect",
         "hindsight_capture_initiative",
         "hindsight_ingest_document",
+        "hindsight_working_rules",
+        "hindsight_manage_working_rules",
       ].sort()
+    );
+  });
+
+  it("exposes recall and editing in shared project-scoped mode without restoring removed tools", () => {
+    const client = {
+      projectScope: { name: "repo", id: "project-id" },
+    } as unknown as HindsightClient;
+    const tools = selectTools(resolveConfig({ bankMode: "shared" }), client, "b");
+    expect(tools.map((tool) => tool.name)).not.toEqual(
+      expect.arrayContaining([
+        "hindsight_survey",
+        "hindsight_save_survey",
+        "hindsight_revise_memory",
+        "hindsight_organize_memory",
+        "hindsight_apply_memory_organization",
+      ])
+    );
+    expect(tools).toHaveLength(12);
+    expect(tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(["hindsight_recall", "hindsight_edit_memory"])
     );
   });
 
@@ -217,15 +241,25 @@ describe("buildMcpServer", () => {
       idempotentHint: false,
       openWorldHint: false,
     };
+    // Direct memory edits can archive a fact, so they advertise destructiveHint: the host shows
+    // its normal destructive-action approval before the write.
+    const destructiveWrite = {
+      ...nonDestructiveWrite,
+      destructiveHint: true,
+    };
     const expected = {
       hindsight_sync_status: readOnly,
       hindsight_diagnose: readOnly,
+      hindsight_recall: readOnly,
+      hindsight_edit_memory: destructiveWrite,
       hindsight_search_pages: readOnly,
       hindsight_list_pages: readOnly,
       hindsight_read_page: readOnly,
       hindsight_reflect: readOnly,
       hindsight_capture_initiative: nonDestructiveWrite,
       hindsight_ingest_document: nonDestructiveWrite,
+      hindsight_working_rules: readOnly,
+      hindsight_manage_working_rules: nonDestructiveWrite,
     };
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = buildMcpServer(selectTools(resolveConfig({}), stubClient, "b"));

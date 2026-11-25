@@ -104,6 +104,20 @@ class TestDirectives:
         # Cleanup
         await memory.delete_bank(bank_id, request_context=request_context)
 
+    async def test_create_directive_creates_missing_bank(self, memory: MemoryEngine, request_context):
+        """A first directive on a bank nobody created makes the bank, not a raw FK 500 (#6853)."""
+        bank_id = f"test-directive-new-bank-{uuid.uuid4().hex[:8]}"
+
+        directive = await memory.create_directive(
+            bank_id=bank_id, name="d", content="Rule.", request_context=request_context
+        )
+
+        assert directive["bank_id"] == bank_id
+        listed = await memory.list_directives(bank_id=bank_id, request_context=request_context)
+        assert [d["id"] for d in listed.items] == [directive["id"]]
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
     async def test_directive_crud(self, memory: MemoryEngine, request_context):
         """Test basic CRUD operations for directives."""
         bank_id = f"test-directive-crud-{uuid.uuid4().hex[:8]}"
@@ -2374,7 +2388,7 @@ class TestMentalModelRefreshTagSecurity:
         await memory.wait_for_background_tasks()
 
         # Create mental model for user:alice with sensitive data
-        mm_alice = await memory.create_mental_model(
+        await memory.create_mental_model(
             bank_id=bank_id,
             name="Alice's Work Profile",
             source_query="What does Alice work on?",
@@ -2384,7 +2398,7 @@ class TestMentalModelRefreshTagSecurity:
         )
 
         # Create mental model for user:bob with sensitive data
-        mm_bob = await memory.create_mental_model(
+        await memory.create_mental_model(
             bank_id=bank_id,
             name="Bob's Work Profile",
             source_query="What does Bob work on?",
@@ -2394,7 +2408,7 @@ class TestMentalModelRefreshTagSecurity:
         )
 
         # Create mental model with no tags (should not be accessible from tagged models)
-        mm_untagged = await memory.create_mental_model(
+        await memory.create_mental_model(
             bank_id=bank_id,
             name="Company Info",
             source_query="What is the company info?",
@@ -2507,7 +2521,7 @@ class TestMentalModelRefreshTagSecurity:
         # Trigger consolidation manually (this should only refresh Alice's mental model)
         from hindsight_api.engine.consolidation.consolidator import run_consolidation_job
 
-        result = await run_consolidation_job(
+        await run_consolidation_job(
             memory_engine=memory,
             bank_id=bank_id,
             request_context=request_context,
@@ -2549,7 +2563,7 @@ class TestMentalModelRefreshTagSecurity:
         await memory.ensure_bank_profile(bank_id, request_context=request_context)
 
         # Create a directive
-        directive = await memory.create_directive(
+        await memory.create_directive(
             bank_id=bank_id,
             name="Response Style",
             content="Always be concise and professional",

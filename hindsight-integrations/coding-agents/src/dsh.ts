@@ -365,36 +365,57 @@ export function createDshHooks(resolve: (agent: DshAgent) => Workspace | undefin
  * facts to carry across; a parameter that is ever anything but a string fails loudly here rather
  * than registering a mis-typed tool.
  */
+type DshZodDef = {
+  type?: string;
+  format?: string;
+  innerType?: { def?: DshZodDef };
+  element?: { def?: DshZodDef };
+  entries?: Record<string, string>;
+};
+
+function toDshSchema(def: DshZodDef | undefined, toolName: string): Record<string, unknown> {
+  // `.optional()` wraps the real type, so unwrap before checking it — otherwise every optional
+  // parameter would pass the guard below whatever it actually holds.
+  let cur = def;
+  while (cur?.type === "optional" || cur?.type === "default") {
+    cur = cur.innerType?.def;
+  }
+  const inner = cur?.type;
+  if (inner === "enum") {
+    const values = cur?.entries ? [...new Set(Object.values(cur.entries))] : [];
+    if (!values.length) {
+      throw new Error(
+        `hindsight tool ${toolName}: dsh projection cannot express an empty "enum" parameter`
+      );
+    }
+    return { type: "string", enum: values };
+  }
+  if (inner === "array") {
+    return { type: "array", items: toDshSchema(cur?.element?.def, toolName) };
+  }
+  // The host compiles string/number/integer/boolean/null/array/enum (dsh-tools `compilePropertyMap`);
+  // anything else is refused here rather than registered as a mis-typed tool. Zod v4 spells an
+  // integer as `type: "number"` plus a format check.
+  if (inner !== undefined && !DSH_PARAM_TYPES.has(inner)) {
+    throw new Error(
+      `hindsight tool ${toolName}: dsh projection cannot express a "${inner}" parameter`
+    );
+  }
+  const type = inner === "number" && cur?.format !== undefined ? "integer" : (inner ?? "string");
+  return { type };
+}
+
 export function toDshParameters(spec: ToolSpec): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   for (const [key, schema] of Object.entries(spec.inputSchema)) {
     const zod = schema as {
-      def?: {
-        type?: string;
-        innerType?: { def?: { type?: string; format?: string } };
-        format?: string;
-      };
+      def?: DshZodDef;
       description?: string;
       isOptional?: () => boolean;
     };
-    // `.optional()` wraps the real type, so unwrap before checking it — otherwise every optional
-    // parameter would pass the guard below whatever it actually holds.
-    const unwrapped = zod.def?.type === "optional" ? zod.def.innerType?.def : zod.def;
-    const inner = unwrapped?.type;
-    // The host compiles string/number/integer/boolean/null (dsh-tools `compilePropertyMap`);
-    // anything else is refused here rather than registered as a mis-typed tool. Zod v4 spells an
-    // integer as `type: "number"` plus a format check, and `enum` is left out because it would
-    // need its member list carried across, which no current spec uses.
-    if (inner !== undefined && !DSH_PARAM_TYPES.has(inner)) {
-      throw new Error(
-        `hindsight tool ${spec.name}: dsh projection cannot express a "${inner}" parameter`
-      );
-    }
-    const type =
-      inner === "number" && unwrapped?.format !== undefined ? "integer" : (inner ?? "string");
     properties[key] = {
-      type,
+      ...toDshSchema(zod.def, spec.name),
       ...(zod.description ? { description: zod.description } : {}),
     };
     if (typeof zod.isOptional !== "function" || !zod.isOptional()) required.push(key);

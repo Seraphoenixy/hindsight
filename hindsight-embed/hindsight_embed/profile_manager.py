@@ -11,9 +11,12 @@ import math
 import os
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import IO, Optional
 
 logger = logging.getLogger(__name__)
@@ -180,6 +183,38 @@ def unlock_file(file_obj: IO[str]) -> None:
     """Release a lock acquired with lock_file()."""
     _clear_lock_owner(file_obj)
     _release_lock(file_obj)
+
+
+@contextmanager
+def lock_profile_env(path: Path) -> Iterator[None]:
+    """Serialize a profile's read-modify-write across CLI and local ops processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_name(f"{path.name}.lock").open("a", encoding="utf-8") as lock:
+        lock_file(lock)
+        try:
+            yield
+        finally:
+            unlock_file(lock)
+
+
+def write_profile_env(path: Path, content: str) -> None:
+    """Replace the config only after its private temporary file is complete."""
+    temp_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=f"{path.name}.", suffix=".tmp", dir=path.parent, delete=False
+        ) as temp:
+            temp_path = Path(temp.name)
+            temp.write(content)
+        temp_path.replace(path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def validate_profile_name(name: str) -> None:
+    if name and not name.replace("-", "").replace("_", "").isalnum():
+        raise ValueError(f"Invalid profile name '{name}'. Use alphanumeric chars, hyphens, and underscores.")
 
 
 from ._http_probe import probe_get
@@ -411,8 +446,7 @@ class ProfileManager:
         if not name:
             raise ValueError("Profile name cannot be empty")
 
-        if not name.replace("-", "").replace("_", "").isalnum():
-            raise ValueError(f"Invalid profile name '{name}'. Use alphanumeric chars, hyphens, and underscores.")
+        validate_profile_name(name)
 
         if port is not None and (port < 1024 or port > 65535):
             raise ValueError(f"Invalid port {port}. Must be between 1024-65535.")
@@ -440,7 +474,9 @@ class ProfileManager:
         # the profile carries the full documented option set as comments.
         from .env_template import render_config
 
-        config_path.write_text(render_config(config), encoding="utf-8")
+        # A session that read an in-place rewrite could drop DATABASE_URL and
+        # make the next daemon use a new empty pg0 instance (#6485).
+        write_profile_env(config_path, render_config(config))
 
         # Metadata now only tracks discovery + timestamps; the port moved to .env.
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -474,9 +510,10 @@ class ProfileManager:
 
         # Remove the lock file and the sidecar recording its holder (a crash
         # while holding the lock leaves the sidecar behind).
-        lock_path = self._get_profiles_dir() / f"{name}.lock"
-        lock_path.unlink(missing_ok=True)
-        lock_path.with_name(f"{lock_path.name}.owner").unlink(missing_ok=True)
+        # Same for the lock `profile create` holds while it rewrites the .env.
+        for lock_path in (self._get_profiles_dir() / f"{name}.lock", config_path.with_name(f"{config_path.name}.lock")):
+            lock_path.unlink(missing_ok=True)
+            lock_path.with_name(f"{lock_path.name}.owner").unlink(missing_ok=True)
 
         # Remove the active log and any retained rotation backups. A log that
         # cannot be removed (still held open on Windows, say) must not abort the
@@ -540,6 +577,7 @@ class ProfileManager:
         Returns:
             ProfilePaths with config, lock, log, and port.
         """
+        validate_profile_name(name)
         # Use dynamic path resolution to support testing with temporary HOME directories
         config_dir = Path.home() / ".hindsight"
         profiles_dir = config_dir / "profiles"

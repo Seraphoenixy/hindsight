@@ -11,9 +11,15 @@ import type {
   AddBankBackgroundData,
   AddBankBackgroundErrors,
   AddBankBackgroundResponses,
+  ApplyWorkingRulesOrganizationData,
+  ApplyWorkingRulesOrganizationErrors,
+  ApplyWorkingRulesOrganizationResponses,
   AuditLogStatsData,
   AuditLogStatsErrors,
   AuditLogStatsResponses,
+  CancelKnowledgeBankOperationData,
+  CancelKnowledgeBankOperationErrors,
+  CancelKnowledgeBankOperationResponses,
   CancelOperationData,
   CancelOperationErrors,
   CancelOperationResponses,
@@ -38,6 +44,9 @@ import type {
   CreateDirectiveData,
   CreateDirectiveErrors,
   CreateDirectiveResponses,
+  CreateKnowledgeBankData,
+  CreateKnowledgeBankErrors,
+  CreateKnowledgeBankResponses,
   CreateKnowledgeFolderData,
   CreateKnowledgeFolderErrors,
   CreateKnowledgeFolderResponses,
@@ -59,6 +68,9 @@ import type {
   CreateWebhookData,
   CreateWebhookErrors,
   CreateWebhookResponses,
+  CreateWorkingRuleData,
+  CreateWorkingRuleErrors,
+  CreateWorkingRuleResponses,
   DeleteBankAliasData,
   DeleteBankAliasErrors,
   DeleteBankAliasResponses,
@@ -71,6 +83,15 @@ import type {
   DeleteDocumentData,
   DeleteDocumentErrors,
   DeleteDocumentResponses,
+  DeleteKnowledgeBankData,
+  DeleteKnowledgeBankErrors,
+  DeleteKnowledgeBankOperationData,
+  DeleteKnowledgeBankOperationErrors,
+  DeleteKnowledgeBankOperationResponses,
+  DeleteKnowledgeBankResponses,
+  DeleteKnowledgeDocumentData,
+  DeleteKnowledgeDocumentErrors,
+  DeleteKnowledgeDocumentResponses,
   DeleteKnowledgeNodeData,
   DeleteKnowledgeNodeErrors,
   DeleteKnowledgeNodeResponses,
@@ -86,6 +107,9 @@ import type {
   DeleteWebhookData,
   DeleteWebhookErrors,
   DeleteWebhookResponses,
+  DeleteWorkingRuleData,
+  DeleteWorkingRuleErrors,
+  DeleteWorkingRuleResponses,
   DownloadFileData,
   DownloadFileErrors,
   DownloadFileResponses,
@@ -113,6 +137,9 @@ import type {
   ExportPagesData,
   ExportPagesErrors,
   ExportPagesResponses,
+  ExportWorkingRulesData,
+  ExportWorkingRulesErrors,
+  ExportWorkingRulesResponses,
   FileRetainData,
   FileRetainErrors,
   FileRetainResponses,
@@ -154,12 +181,33 @@ import type {
   GetGraphData,
   GetGraphErrors,
   GetGraphResponses,
+  GetKnowledgeBankConfigData,
+  GetKnowledgeBankConfigErrors,
+  GetKnowledgeBankConfigResponses,
+  GetKnowledgeBankData,
+  GetKnowledgeBankErrors,
+  GetKnowledgeBankOperationData,
+  GetKnowledgeBankOperationErrors,
+  GetKnowledgeBankOperationResponses,
+  GetKnowledgeBankResponses,
+  GetKnowledgeBankTimeseriesData,
+  GetKnowledgeBankTimeseriesErrors,
+  GetKnowledgeBankTimeseriesResponses,
   GetKnowledgeBaseTreeData,
   GetKnowledgeBaseTreeErrors,
   GetKnowledgeBaseTreeResponses,
+  GetKnowledgeDocumentData,
+  GetKnowledgeDocumentErrors,
+  GetKnowledgeDocumentFileData,
+  GetKnowledgeDocumentFileErrors,
+  GetKnowledgeDocumentFileResponses,
+  GetKnowledgeDocumentResponses,
   GetKnowledgePageData,
   GetKnowledgePageErrors,
   GetKnowledgePageResponses,
+  GetKnowledgePassageMediaData,
+  GetKnowledgePassageMediaErrors,
+  GetKnowledgePassageMediaResponses,
   GetLivenessData,
   GetLivenessResponses,
   GetMemoriesTimeseriesData,
@@ -193,6 +241,12 @@ import type {
   GetReadinessResponses,
   GetVersionData,
   GetVersionResponses,
+  GetWorkingRuleData,
+  GetWorkingRuleErrors,
+  GetWorkingRuleResponses,
+  GetWorkingRulesProjectionData,
+  GetWorkingRulesProjectionErrors,
+  GetWorkingRulesProjectionResponses,
   HealthEndpointHealthGetData,
   HealthEndpointHealthGetResponses,
   ImportBankTemplateData,
@@ -204,6 +258,12 @@ import type {
   ImportDocumentsData,
   ImportDocumentsErrors,
   ImportDocumentsResponses,
+  IngestKnowledgeFilesData,
+  IngestKnowledgeFilesErrors,
+  IngestKnowledgeFilesResponses,
+  IngestKnowledgeTextsData,
+  IngestKnowledgeTextsErrors,
+  IngestKnowledgeTextsResponses,
   ListAuditLogsData,
   ListAuditLogsErrors,
   ListAuditLogsResponses,
@@ -225,6 +285,18 @@ import type {
   ListEntitiesData,
   ListEntitiesErrors,
   ListEntitiesResponses,
+  ListKnowledgeBankOperationsData,
+  ListKnowledgeBankOperationsErrors,
+  ListKnowledgeBankOperationsResponses,
+  ListKnowledgeBanksData,
+  ListKnowledgeBanksErrors,
+  ListKnowledgeBanksResponses,
+  ListKnowledgeBankTagsData,
+  ListKnowledgeBankTagsErrors,
+  ListKnowledgeBankTagsResponses,
+  ListKnowledgeDocumentsData,
+  ListKnowledgeDocumentsErrors,
+  ListKnowledgeDocumentsResponses,
   ListLlmRequestsData,
   ListLlmRequestsErrors,
   ListLlmRequestsResponses,
@@ -249,17 +321,29 @@ import type {
   ListWebhooksData,
   ListWebhooksErrors,
   ListWebhooksResponses,
+  ListWorkingRulesData,
+  ListWorkingRulesErrors,
+  ListWorkingRulesResponses,
   LlmRequestStatsData,
   LlmRequestStatsErrors,
   LlmRequestStatsResponses,
   MetricsEndpointMetricsGetData,
   MetricsEndpointMetricsGetResponses,
+  MutateWorkingRulesData,
+  MutateWorkingRulesErrors,
+  MutateWorkingRulesResponses,
   PreviewConsolidationStrategiesData,
   PreviewConsolidationStrategiesErrors,
   PreviewConsolidationStrategiesResponses,
   PreviewPromptData,
   PreviewPromptErrors,
   PreviewPromptResponses,
+  PreviewWorkingRulesOrganizationData,
+  PreviewWorkingRulesOrganizationErrors,
+  PreviewWorkingRulesOrganizationResponses,
+  PromoteWorkingRuleData,
+  PromoteWorkingRuleErrors,
+  PromoteWorkingRuleResponses,
   RecallMemoriesData,
   RecallMemoriesErrors,
   RecallMemoriesResponses,
@@ -281,12 +365,24 @@ import type {
   ResetBankConfigData,
   ResetBankConfigErrors,
   ResetBankConfigResponses,
+  ResetKnowledgeBankConfigData,
+  ResetKnowledgeBankConfigErrors,
+  ResetKnowledgeBankConfigResponses,
+  RestoreWorkingRuleData,
+  RestoreWorkingRuleErrors,
+  RestoreWorkingRuleResponses,
   RetainMemoriesData,
   RetainMemoriesErrors,
   RetainMemoriesResponses,
+  RetryKnowledgeBankOperationData,
+  RetryKnowledgeBankOperationErrors,
+  RetryKnowledgeBankOperationResponses,
   RetryOperationData,
   RetryOperationErrors,
   RetryOperationResponses,
+  SearchKnowledgeBankData,
+  SearchKnowledgeBankErrors,
+  SearchKnowledgeBankResponses,
   SearchKnowledgeBaseData,
   SearchKnowledgeBaseErrors,
   SearchKnowledgeBaseResponses,
@@ -317,6 +413,9 @@ import type {
   UpdateDocumentData,
   UpdateDocumentErrors,
   UpdateDocumentResponses,
+  UpdateKnowledgeBankConfigData,
+  UpdateKnowledgeBankConfigErrors,
+  UpdateKnowledgeBankConfigResponses,
   UpdateKnowledgeNodeData,
   UpdateKnowledgeNodeErrors,
   UpdateKnowledgeNodeResponses,
@@ -332,6 +431,9 @@ import type {
   UpdateWebhookData,
   UpdateWebhookErrors,
   UpdateWebhookResponses,
+  UpdateWorkingRuleData,
+  UpdateWorkingRuleErrors,
+  UpdateWorkingRuleResponses,
 } from "./types.gen";
 
 export type Options<
@@ -351,6 +453,496 @@ export type Options<
    */
   meta?: Record<string, unknown>;
 };
+
+/**
+ * List knowledge banks
+ */
+export const listKnowledgeBanks = <ThrowOnError extends boolean = false>(
+  options?: Options<ListKnowledgeBanksData, ThrowOnError>
+) =>
+  (options?.client ?? client).get<
+    ListKnowledgeBanksResponses,
+    ListKnowledgeBanksErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks", ...options });
+
+/**
+ * Create a knowledge bank
+ */
+export const createKnowledgeBank = <ThrowOnError extends boolean = false>(
+  options: Options<CreateKnowledgeBankData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    CreateKnowledgeBankResponses,
+    CreateKnowledgeBankErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/knowledge-banks",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Delete a knowledge bank and everything in it
+ */
+export const deleteKnowledgeBank = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteKnowledgeBankData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<
+    DeleteKnowledgeBankResponses,
+    DeleteKnowledgeBankErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}", ...options });
+
+/**
+ * Get a knowledge bank
+ */
+export const getKnowledgeBank = <ThrowOnError extends boolean = false>(
+  options: Options<GetKnowledgeBankData, ThrowOnError>
+) =>
+  (options.client ?? client).get<GetKnowledgeBankResponses, GetKnowledgeBankErrors, ThrowOnError>({
+    url: "/v1/default/knowledge-banks/{bank_id}",
+    ...options,
+  });
+
+/**
+ * Reset a knowledge bank's ingest settings to the server's
+ */
+export const resetKnowledgeBankConfig = <ThrowOnError extends boolean = false>(
+  options: Options<ResetKnowledgeBankConfigData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<
+    ResetKnowledgeBankConfigResponses,
+    ResetKnowledgeBankConfigErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/config", ...options });
+
+/**
+ * Get a knowledge bank's ingest settings
+ */
+export const getKnowledgeBankConfig = <ThrowOnError extends boolean = false>(
+  options: Options<GetKnowledgeBankConfigData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    GetKnowledgeBankConfigResponses,
+    GetKnowledgeBankConfigErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/config", ...options });
+
+/**
+ * Override a knowledge bank's ingest settings
+ */
+export const updateKnowledgeBankConfig = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateKnowledgeBankConfigData, ThrowOnError>
+) =>
+  (options.client ?? client).patch<
+    UpdateKnowledgeBankConfigResponses,
+    UpdateKnowledgeBankConfigErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/knowledge-banks/{bank_id}/config",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Documents and passages added over time
+ */
+export const getKnowledgeBankTimeseries = <ThrowOnError extends boolean = false>(
+  options: Options<GetKnowledgeBankTimeseriesData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    GetKnowledgeBankTimeseriesResponses,
+    GetKnowledgeBankTimeseriesErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/stats/timeseries", ...options });
+
+/**
+ * Ingest files (PDF, images, audio, video, text, Office)
+ *
+ * Each file becomes one document, chunked into passages (or pre-processed first by the extension its ingestion strategy maps its type to) and embedded in the background. Poll the operation (GET /v1/default/knowledge-banks/{bank_id}/operations/{operation_id}), or the document's status, to know when it is searchable.
+ */
+export const ingestKnowledgeFiles = <ThrowOnError extends boolean = false>(
+  options: Options<IngestKnowledgeFilesData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    IngestKnowledgeFilesResponses,
+    IngestKnowledgeFilesErrors,
+    ThrowOnError
+  >({
+    ...formDataBodySerializer,
+    url: "/v1/default/knowledge-banks/{bank_id}/files/ingest",
+    ...options,
+    headers: {
+      "Content-Type": null,
+      ...options.headers,
+    },
+  });
+
+/**
+ * Ingest text documents
+ *
+ * Synchronous by default: returns once every document is searchable. With `async: true` each document is queued instead (202) and its operation returned.
+ */
+export const ingestKnowledgeTexts = <ThrowOnError extends boolean = false>(
+  options: Options<IngestKnowledgeTextsData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    IngestKnowledgeTextsResponses,
+    IngestKnowledgeTextsErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/knowledge-banks/{bank_id}/ingest",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List documents
+ */
+export const listKnowledgeDocuments = <ThrowOnError extends boolean = false>(
+  options: Options<ListKnowledgeDocumentsData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    ListKnowledgeDocumentsResponses,
+    ListKnowledgeDocumentsErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/documents", ...options });
+
+/**
+ * Delete a document
+ */
+export const deleteKnowledgeDocument = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteKnowledgeDocumentData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<
+    DeleteKnowledgeDocumentResponses,
+    DeleteKnowledgeDocumentErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}", ...options });
+
+/**
+ * Get a document and its passages
+ */
+export const getKnowledgeDocument = <ThrowOnError extends boolean = false>(
+  options: Options<GetKnowledgeDocumentData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    GetKnowledgeDocumentResponses,
+    GetKnowledgeDocumentErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}", ...options });
+
+/**
+ * List a knowledge bank's background operations, most recent first
+ */
+export const listKnowledgeBankOperations = <ThrowOnError extends boolean = false>(
+  options: Options<ListKnowledgeBankOperationsData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    ListKnowledgeBankOperationsResponses,
+    ListKnowledgeBankOperationsErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/operations", ...options });
+
+/**
+ * Cancel a pending or in-flight knowledge bank operation
+ */
+export const cancelKnowledgeBankOperation = <ThrowOnError extends boolean = false>(
+  options: Options<CancelKnowledgeBankOperationData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<
+    CancelKnowledgeBankOperationResponses,
+    CancelKnowledgeBankOperationErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}", ...options });
+
+/**
+ * Get a knowledge bank operation's status
+ */
+export const getKnowledgeBankOperation = <ThrowOnError extends boolean = false>(
+  options: Options<GetKnowledgeBankOperationData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    GetKnowledgeBankOperationResponses,
+    GetKnowledgeBankOperationErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}", ...options });
+
+/**
+ * Retry a failed or cancelled knowledge bank operation
+ */
+export const retryKnowledgeBankOperation = <ThrowOnError extends boolean = false>(
+  options: Options<RetryKnowledgeBankOperationData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RetryKnowledgeBankOperationResponses,
+    RetryKnowledgeBankOperationErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}/retry", ...options });
+
+/**
+ * Delete a finished knowledge bank operation's record
+ */
+export const deleteKnowledgeBankOperation = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteKnowledgeBankOperationData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<
+    DeleteKnowledgeBankOperationResponses,
+    DeleteKnowledgeBankOperationErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}/delete", ...options });
+
+/**
+ * List a knowledge bank's document tags, with how many documents carry each
+ */
+export const listKnowledgeBankTags = <ThrowOnError extends boolean = false>(
+  options: Options<ListKnowledgeBankTagsData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    ListKnowledgeBankTagsResponses,
+    ListKnowledgeBankTagsErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/tags", ...options });
+
+/**
+ * Download a document's original file
+ */
+export const getKnowledgeDocumentFile = <ThrowOnError extends boolean = false>(
+  options: Options<GetKnowledgeDocumentFileData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    GetKnowledgeDocumentFileResponses,
+    GetKnowledgeDocumentFileErrors,
+    ThrowOnError
+  >({ url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}/file", ...options });
+
+/**
+ * Stream a passage's media (page image, image, audio or video window)
+ */
+export const getKnowledgePassageMedia = <ThrowOnError extends boolean = false>(
+  options: Options<GetKnowledgePassageMediaData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    GetKnowledgePassageMediaResponses,
+    GetKnowledgePassageMediaErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}/passages/{index}/media",
+    ...options,
+  });
+
+/**
+ * Search passages by meaning: a text, image or video query, alone or combined
+ */
+export const searchKnowledgeBank = <ThrowOnError extends boolean = false>(
+  options: Options<SearchKnowledgeBankData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    SearchKnowledgeBankResponses,
+    SearchKnowledgeBankErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/knowledge-banks/{bank_id}/search",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List working rules
+ */
+export const listWorkingRules = <ThrowOnError extends boolean = false>(
+  options?: Options<ListWorkingRulesData, ThrowOnError>
+) =>
+  (options?.client ?? client).get<ListWorkingRulesResponses, ListWorkingRulesErrors, ThrowOnError>({
+    url: "/v1/default/working-rules",
+    ...options,
+  });
+
+/**
+ * Create a working rule
+ */
+export const createWorkingRule = <ThrowOnError extends boolean = false>(
+  options: Options<CreateWorkingRuleData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    CreateWorkingRuleResponses,
+    CreateWorkingRuleErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/working-rules",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Get filtered working rules projection
+ */
+export const getWorkingRulesProjection = <ThrowOnError extends boolean = false>(
+  options?: Options<GetWorkingRulesProjectionData, ThrowOnError>
+) =>
+  (options?.client ?? client).get<
+    GetWorkingRulesProjectionResponses,
+    GetWorkingRulesProjectionErrors,
+    ThrowOnError
+  >({ url: "/v1/default/working-rules/projection", ...options });
+
+/**
+ * Export working rules as Markdown
+ */
+export const exportWorkingRules = <ThrowOnError extends boolean = false>(
+  options?: Options<ExportWorkingRulesData, ThrowOnError>
+) =>
+  (options?.client ?? client).get<
+    ExportWorkingRulesResponses,
+    ExportWorkingRulesErrors,
+    ThrowOnError
+  >({ url: "/v1/default/working-rules/export", ...options });
+
+/**
+ * Mutate working rules by action and text match
+ */
+export const mutateWorkingRules = <ThrowOnError extends boolean = false>(
+  options: Options<MutateWorkingRulesData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    MutateWorkingRulesResponses,
+    MutateWorkingRulesErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/working-rules/mutate",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Preview AI-proposed working rules organization
+ */
+export const previewWorkingRulesOrganization = <ThrowOnError extends boolean = false>(
+  options: Options<PreviewWorkingRulesOrganizationData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    PreviewWorkingRulesOrganizationResponses,
+    PreviewWorkingRulesOrganizationErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/working-rules/organize/preview",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Apply approved working rules organization proposals
+ */
+export const applyWorkingRulesOrganization = <ThrowOnError extends boolean = false>(
+  options: Options<ApplyWorkingRulesOrganizationData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    ApplyWorkingRulesOrganizationResponses,
+    ApplyWorkingRulesOrganizationErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/working-rules/organize/apply",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Delete a working rule permanently
+ */
+export const deleteWorkingRule = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteWorkingRuleData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<
+    DeleteWorkingRuleResponses,
+    DeleteWorkingRuleErrors,
+    ThrowOnError
+  >({ url: "/v1/default/working-rules/{rule_id}", ...options });
+
+/**
+ * Get a working rule by ID
+ */
+export const getWorkingRule = <ThrowOnError extends boolean = false>(
+  options: Options<GetWorkingRuleData, ThrowOnError>
+) =>
+  (options.client ?? client).get<GetWorkingRuleResponses, GetWorkingRuleErrors, ThrowOnError>({
+    url: "/v1/default/working-rules/{rule_id}",
+    ...options,
+  });
+
+/**
+ * Update a working rule by ID
+ */
+export const updateWorkingRule = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateWorkingRuleData, ThrowOnError>
+) =>
+  (options.client ?? client).patch<
+    UpdateWorkingRuleResponses,
+    UpdateWorkingRuleErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/working-rules/{rule_id}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Restore an archived working rule
+ */
+export const restoreWorkingRule = <ThrowOnError extends boolean = false>(
+  options: Options<RestoreWorkingRuleData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RestoreWorkingRuleResponses,
+    RestoreWorkingRuleErrors,
+    ThrowOnError
+  >({ url: "/v1/default/working-rules/{rule_id}/restore", ...options });
+
+/**
+ * Promote an archived working rule into a memory bank
+ */
+export const promoteWorkingRule = <ThrowOnError extends boolean = false>(
+  options: Options<PromoteWorkingRuleData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    PromoteWorkingRuleResponses,
+    PromoteWorkingRuleErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/working-rules/{rule_id}/promote",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * Health check endpoint

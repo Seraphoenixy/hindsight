@@ -49,6 +49,22 @@ function makeClient(
       opts?: { limit?: number; timeoutMs?: number }
     ) => Promise<{ id: string; name: string; snippet: string }[]>;
     recallObservations: (query: string, opts: { timeoutMs: number }) => Promise<string[]>;
+    getWorkingRulesProjection: (opts?: { branch?: string; timeoutMs?: number }) => Promise<
+      | {
+          revision: string;
+          text: string;
+          entries: {
+            content: string;
+            importance: "critical" | "normal" | "low";
+            pinned: boolean;
+            scope: "global" | "project";
+          }[];
+          total_active_entries: number;
+          minimum_characters: number;
+          truncated: boolean;
+        }
+      | undefined
+    >;
   }> = {}
 ) {
   return {
@@ -911,5 +927,102 @@ describe("runHook prompt cleaning (#6488)", () => {
     const client = await run("<system-reminder>only host text</system-reminder>");
     expect(existsSync(journalPath(spec.harness, "s1"))).toBe(false);
     expect(client.reflect).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildHookOutput working rules revision injection", () => {
+  it("injects working rules when revision is new or changes, and stays quiet when unchanged", async () => {
+    const getWorkingRulesProjection = vi
+      .fn()
+      .mockResolvedValueOnce({
+        revision: "rev-1",
+        text: "Rule one",
+        entries: [{ content: "Rule one", importance: "normal", pinned: false, scope: "global" }],
+        total_active_entries: 1,
+        minimum_characters: 0,
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        revision: "rev-1",
+        text: "Rule one",
+        entries: [{ content: "Rule one", importance: "normal", pinned: false, scope: "global" }],
+        total_active_entries: 1,
+        minimum_characters: 0,
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        revision: "rev-2",
+        text: "Rule one\n\nRule two",
+        entries: [
+          { content: "Rule one", importance: "normal", pinned: false, scope: "global" },
+          { content: "Rule two", importance: "critical", pinned: true, scope: "global" },
+        ],
+        total_active_entries: 2,
+        minimum_characters: 0,
+        truncated: false,
+      })
+      .mockResolvedValue({
+        revision: "rev-empty",
+        text: "",
+        entries: [],
+        total_active_entries: 0,
+        minimum_characters: 0,
+        truncated: false,
+      });
+
+    const client = makeClient({
+      listPages: vi.fn(async () => ({ items: [] })),
+      getWorkingRulesProjection,
+    });
+    const cfg = resolveConfig({ autoInject: "none", pageRefreshEveryTurns: 0 });
+
+    const t1 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "hi",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t1.context).toContain('<hindsight_working_rules revision="rev-1" entries="1">');
+    expect(t1.context).toContain("Rule one");
+
+    const t2 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "next",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t2.context ?? "").not.toContain("<hindsight_working_rules");
+
+    const t3 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "after edit",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t3.context).toContain('<hindsight_working_rules revision="rev-2" entries="2">');
+    expect(t3.context).toContain("Rule two");
+    expect(t3.context).toContain("This block replaces all earlier Hindsight working rules");
+
+    const t4 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "after removal",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t4.context).toContain('<hindsight_working_rules revision="rev-empty" entries="0">');
+    expect(t4.context).toContain("No standing working rules apply");
+
+    const t5 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "next",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t5.context ?? "").not.toContain("<hindsight_working_rules");
   });
 });

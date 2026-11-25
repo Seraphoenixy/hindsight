@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { client } from "./api";
+import { shouldDeferDataplaneFetch } from "./base-path";
 
 /** Banks are fetched a page at a time; the selector pages as it is scrolled. */
 export const BANKS_PAGE_SIZE = 50;
@@ -64,6 +65,8 @@ function toBankInfo(bank: any): BankInfo {
 
 export function BankProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const skipInitialFetch = shouldDeferDataplaneFetch(pathname);
+  const initialBanksLoadedRef = useRef(false);
   const [currentBank, setCurrentBank] = useState<string | null>(null);
   const [bankInfos, setBankInfos] = useState<BankInfo[]>([]);
   const [banksLoading, setBanksLoading] = useState(true);
@@ -182,8 +185,16 @@ export function BankProvider({ children }: { children: React.ReactNode }) {
   }, [pathname]);
 
   useEffect(() => {
+    if (skipInitialFetch) {
+      if (!initialBanksLoadedRef.current) {
+        setBanksLoading(false);
+      }
+      return;
+    }
+    if (initialBanksLoadedRef.current) return;
+    initialBanksLoadedRef.current = true;
     loadBanks();
-  }, [loadBanks]);
+  }, [skipInitialFetch, loadBanks]);
 
   return (
     <BankContext.Provider

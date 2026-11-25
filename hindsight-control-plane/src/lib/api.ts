@@ -8,6 +8,11 @@ import { bankApi, bankStatsApi, chunkApi, documentApi, memoryApi } from "./bank-
 import { SESSION_REQUIRED_HEADER } from "./auth/session";
 import { stripBasePath, withBasePath } from "./base-path";
 import { appendTagFilter, type TagFilter, type TagsMatch } from "./tag-filter-params";
+import type {
+  MemoryOrganizationApplyRequestChange,
+  MemoryOrganizationApplyResponse,
+  MemoryOrganizationPreview,
+} from "./memory-organization-types";
 import {
   knowledgeApi,
   type ActivityBucket,
@@ -23,6 +28,13 @@ import {
   type KnowledgeBankConfig,
   type KnowledgeBankConfigUpdates,
 } from "./knowledge-banks";
+import type {
+  KnowledgeBankListResponse,
+  KnowledgeDeletedResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeTagsResponse,
+  KnowledgeTimeseriesResponse,
+} from "@vectorize-io/hindsight-client";
 
 /**
  * Reduce an API error `details` value to a string safe to render in a toast.
@@ -359,7 +371,8 @@ export type ModeFallbackReason =
   | "source_query_changed"
   | "structured_doc_unreadable"
   | "delta_ops_failed"
-  | "delta_ops_all_skipped";
+  | "delta_ops_all_skipped"
+  | "grounding_gone";
 
 export type RefreshOutcome =
   | "content_written"
@@ -1449,6 +1462,26 @@ export class ControlPlaneClient {
     });
   }
 
+  async previewMemoryOrganization(
+    bankId: string,
+    input: { topic: string; instructions: string; tag?: string }
+  ): Promise<MemoryOrganizationPreview> {
+    return this.fetchApi(bankApi(bankId, "/memory-organization/preview"), {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async applyMemoryOrganization(
+    bankId: string,
+    input: { undo: boolean; changes: MemoryOrganizationApplyRequestChange[] }
+  ): Promise<MemoryOrganizationApplyResponse> {
+    return this.fetchApi(bankApi(bankId, "/memory-organization/apply"), {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
   /**
    * Get chunk
    */
@@ -2469,7 +2502,7 @@ export class ControlPlaneClient {
     });
   }
 
-  // ── Knowledge banks (/api/knowledge-banks proxy) ──────────────────────────
+  // ── Knowledge banks (/api/knowledge-banks routes) ──────────────────────────
 
   /** One page, newest first; `q` matches part of the bank id. */
   async listKnowledgeBanks(params: { limit?: number; offset?: number; q?: string } = {}) {
@@ -2478,10 +2511,9 @@ export class ControlPlaneClient {
     if (params.offset !== undefined) query.set("offset", String(params.offset));
     if (params.q) query.set("q", params.q);
     const qs = query.toString();
-    return this.fetchApi<{ banks: KnowledgeBank[]; total: number; limit: number; offset: number }>(
-      knowledgeApi() + (qs ? `?${qs}` : ""),
-      { cache: "no-store" as RequestCache }
-    );
+    return this.fetchApi<KnowledgeBankListResponse>(knowledgeApi() + (qs ? `?${qs}` : ""), {
+      cache: "no-store" as RequestCache,
+    });
   }
 
   /** Every knowledge bank, page by page: for views that show them all (the banks page, the
@@ -2509,7 +2541,7 @@ export class ControlPlaneClient {
   }
 
   async deleteKnowledgeBank(bankId: string) {
-    return this.fetchApi<{ deleted: boolean }>(knowledgeApi(bankId), { method: "DELETE" });
+    return this.fetchApi<KnowledgeDeletedResponse>(knowledgeApi(bankId), { method: "DELETE" });
   }
 
   async getKnowledgeBankConfig(bankId: string) {
@@ -2533,6 +2565,61 @@ export class ControlPlaneClient {
     });
   }
 
+  // A knowledge bank's background jobs: the same shapes as a memory bank's (one job table), but
+  // under /knowledge-banks — the memory banks' operations endpoints refuse a knowledge bank.
+
+  async listKnowledgeBankOperations(
+    bankId: string,
+    options?: Parameters<ControlPlaneClient["listOperations"]>[1]
+  ): ReturnType<ControlPlaneClient["listOperations"]> {
+    const params = new URLSearchParams();
+    if (options?.status) params.append("status", options.status);
+    if (options?.type) params.append("type", options.type);
+    if (options?.limit) params.append("limit", options.limit.toString());
+    if (options?.offset) params.append("offset", options.offset.toString());
+    if (options?.excludeParents) params.append("exclude_parents", "true");
+    const query = params.toString();
+    return this.fetchApi(knowledgeApi(bankId, "operations") + (query ? `?${query}` : ""), {
+      cache: "no-store" as RequestCache,
+    });
+  }
+
+  async getKnowledgeBankOperation(
+    bankId: string,
+    operationId: string,
+    opts?: { includePayload?: boolean }
+  ): ReturnType<ControlPlaneClient["getOperationStatus"]> {
+    const qs = opts?.includePayload ? "?include_payload=true" : "";
+    return this.fetchApi(knowledgeApi(bankId, "operations", operationId) + qs, {
+      cache: "no-store" as RequestCache,
+    });
+  }
+
+  async cancelKnowledgeBankOperation(
+    bankId: string,
+    operationId: string
+  ): ReturnType<ControlPlaneClient["cancelOperation"]> {
+    return this.fetchApi(knowledgeApi(bankId, "operations", operationId), { method: "DELETE" });
+  }
+
+  async retryKnowledgeBankOperation(
+    bankId: string,
+    operationId: string
+  ): ReturnType<ControlPlaneClient["retryOperation"]> {
+    return this.fetchApi(knowledgeApi(bankId, "operations", operationId, "retry"), {
+      method: "POST",
+    });
+  }
+
+  async deleteKnowledgeBankOperation(
+    bankId: string,
+    operationId: string
+  ): ReturnType<ControlPlaneClient["deleteOperation"]> {
+    return this.fetchApi(knowledgeApi(bankId, "operations", operationId, "delete"), {
+      method: "DELETE",
+    });
+  }
+
   async listKnowledgeDocuments(
     bankId: string,
     params: {
@@ -2552,7 +2639,7 @@ export class ControlPlaneClient {
     if (params.q) search.set("q", params.q);
     if (params.status) search.set("status", params.status);
     if (params.media_type) search.set("media_type", params.media_type);
-    return this.fetchApi<{ documents: KnowledgeDocument[]; total: number }>(
+    return this.fetchApi<KnowledgeDocumentListResponse>(
       `${knowledgeApi(bankId, "documents")}?${search}`,
       { cache: "no-store" as RequestCache },
       { suppressErrorToast: quiet }
@@ -2566,7 +2653,7 @@ export class ControlPlaneClient {
   }
 
   async deleteKnowledgeDocument(bankId: string, documentId: string) {
-    return this.fetchApi<{ deleted: boolean }>(knowledgeApi(bankId, "documents", documentId), {
+    return this.fetchApi<KnowledgeDeletedResponse>(knowledgeApi(bankId, "documents", documentId), {
       method: "DELETE",
     });
   }
@@ -2603,26 +2690,21 @@ export class ControlPlaneClient {
     if (q) search.set("q", q);
     if (limit != null) search.set("limit", String(limit));
     const query = search.toString();
-    return this.fetchApi<{
-      items: Array<{ tag: string; count: number }>;
-      total: number;
-      limit: number;
-      offset: number;
-    }>(`${knowledgeApi(bankId, "tags")}${query ? `?${query}` : ""}`);
+    return this.fetchApi<KnowledgeTagsResponse>(
+      `${knowledgeApi(bankId, "tags")}${query ? `?${query}` : ""}`
+    );
   }
 
   /** `mediaType` counts only documents of that kind. */
   async getKnowledgeTimeseries(bankId: string, period: ActivityPeriod, mediaType?: MediaType) {
     const search = new URLSearchParams({ period });
     if (mediaType) search.set("media_type", mediaType);
-    return this.fetchApi<{
-      bank_id: string;
-      period: string;
-      trunc: "hour" | "day";
-      buckets: ActivityBucket[];
-    }>(`${knowledgeApi(bankId, "stats", "timeseries")}?${search}`, {
-      cache: "no-store" as RequestCache,
-    });
+    return this.fetchApi<KnowledgeTimeseriesResponse>(
+      `${knowledgeApi(bankId, "stats", "timeseries")}?${search}`,
+      {
+        cache: "no-store" as RequestCache,
+      }
+    );
   }
 
   /**
@@ -2831,6 +2913,127 @@ export class ControlPlaneClient {
       bankApi(bankId, `/llm-requests/stats${query ? `?${query}` : ""}`)
     );
   }
+
+  // ============= WORKING RULES =============
+
+  async listWorkingRules(
+    options: {
+      scope?: WorkingRuleScope;
+      project_id?: string;
+      include_archived?: boolean;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<WorkingRulesListResponse> {
+    const params = new URLSearchParams();
+    if (options.scope) params.set("scope", options.scope);
+    if (options.project_id) params.set("project_id", options.project_id);
+    if (options.include_archived) params.set("include_archived", "true");
+    if (options.q) params.set("q", options.q);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.offset !== undefined) params.set("offset", String(options.offset));
+    const qs = params.toString();
+    return this.fetchApi<WorkingRulesListResponse>(`/api/working-rules${qs ? `?${qs}` : ""}`, {
+      cache: "no-store" as RequestCache,
+    });
+  }
+
+  async createWorkingRule(input: {
+    content: string;
+    scope?: WorkingRuleScope;
+    project_id?: string | null;
+    importance?: WorkingRuleImportance;
+    pinned?: boolean;
+    branches?: string[];
+  }): Promise<WorkingRuleRecord> {
+    return this.fetchApi<WorkingRuleRecord>("/api/working-rules", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async updateWorkingRule(
+    ruleId: string,
+    input: {
+      content?: string;
+      importance?: WorkingRuleImportance;
+      pinned?: boolean;
+      branches?: string[];
+      scope?: WorkingRuleScope;
+      project_id?: string | null;
+      is_archived?: boolean;
+    }
+  ): Promise<WorkingRuleRecord> {
+    return this.fetchApi<WorkingRuleRecord>(
+      `/api/working-rules/${encodeURIComponent(ruleId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }
+    );
+  }
+
+  async deleteWorkingRule(ruleId: string): Promise<{ status: string }> {
+    return this.fetchApi<{ status: string }>(`/api/working-rules/${encodeURIComponent(ruleId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async restoreWorkingRule(ruleId: string): Promise<WorkingRuleRecord> {
+    return this.fetchApi<WorkingRuleRecord>(
+      `/api/working-rules/${encodeURIComponent(ruleId)}/restore`,
+      { method: "POST" }
+    );
+  }
+
+  async promoteWorkingRule(
+    ruleId: string,
+    input: { bank_id: string; tags?: string[] }
+  ): Promise<WorkingRulePromotedResult> {
+    return this.fetchApi<WorkingRulePromotedResult>(
+      `/api/working-rules/${encodeURIComponent(ruleId)}/promote`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      }
+    );
+  }
+
+  async exportWorkingRulesMarkdown(
+    options: { scope?: WorkingRuleScope; project_id?: string; include_archived?: boolean } = {}
+  ): Promise<{ markdown: string }> {
+    const params = new URLSearchParams();
+    if (options.scope) params.set("scope", options.scope);
+    if (options.project_id) params.set("project_id", options.project_id);
+    if (options.include_archived) params.set("include_archived", "true");
+    const qs = params.toString();
+    return this.fetchApi<{ markdown: string }>(
+      `/api/working-rules/export${qs ? `?${qs}` : ""}`,
+      { cache: "no-store" as RequestCache }
+    );
+  }
+
+  async previewWorkingRulesOrganization(input: {
+    instructions?: string;
+    scope?: WorkingRuleScope;
+    project_id?: string;
+  }): Promise<WorkingRuleOrganizePreview> {
+    return this.fetchApi<WorkingRuleOrganizePreview>("/api/working-rules/organize/preview", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async applyWorkingRulesOrganization(input: {
+    expected_revision: string;
+    proposals: WorkingRuleOrganizeProposalItem[];
+  }): Promise<WorkingRuleOrganizeApplyResult> {
+    return this.fetchApi<WorkingRuleOrganizeApplyResult>("/api/working-rules/organize/apply", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
 }
 
 // Export singleton instance
@@ -2857,4 +3060,81 @@ export interface ConsolidationStrategiesPreview {
   default: { match_count: number; observation_count: number; samples: StrategyScopePreview[] };
   scopes_scanned: number;
   complete: boolean;
+}
+
+// ============= WORKING RULES TYPES =============
+
+export type WorkingRuleScope = "global" | "project";
+export type WorkingRuleImportance = "critical" | "normal" | "low";
+export type WorkingRuleOrganizeAction = "add" | "replace" | "archive" | "remove";
+
+export interface WorkingRuleRecord {
+  id: string;
+  scope: WorkingRuleScope;
+  project_id?: string | null;
+  content: string;
+  importance: WorkingRuleImportance;
+  pinned: boolean;
+  branches: string[];
+  is_archived: boolean;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkingRulesUsage {
+  used_bytes: number;
+  limit_bytes: number;
+  pinned_chars: number;
+  pinned_limit_chars: number;
+  active_count: number;
+  archived_count: number;
+}
+
+export interface WorkingRulesListResponse {
+  items: WorkingRuleRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  revision: string;
+  usage: WorkingRulesUsage;
+}
+
+export interface WorkingRuleOrganizeProposalItem {
+  number: number;
+  action: WorkingRuleOrganizeAction;
+  reason: string;
+  rule_id?: string | null;
+  old_text?: string | null;
+  content?: string | null;
+  importance?: WorkingRuleImportance | null;
+  scope?: WorkingRuleScope;
+  project_id?: string | null;
+  branches?: string[] | null;
+}
+
+export interface WorkingRuleOrganizePreview {
+  expected_revision: string;
+  summary: string;
+  proposals: WorkingRuleOrganizeProposalItem[];
+}
+
+export interface WorkingRuleOrganizeApplyOutcome {
+  number: number;
+  ok: boolean;
+  error?: string | null;
+  rule?: WorkingRuleRecord | null;
+}
+
+export interface WorkingRuleOrganizeApplyResult {
+  revision: string;
+  results: WorkingRuleOrganizeApplyOutcome[];
+}
+
+export interface WorkingRulePromotedResult {
+  rule_id: string;
+  bank_id: string;
+  document_id: string;
+  unit_ids: string[];
 }

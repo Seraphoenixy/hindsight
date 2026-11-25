@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { buildPageTools } from "./page-tools";
+import { toDshParameters } from "../dsh";
 import { DEFAULT_REFLECT_TOOL_TIMEOUT_MS } from "./config";
 import type { HindsightClient } from "./hindsight";
 
@@ -13,8 +14,58 @@ function stubClient(overrides: Partial<Record<string, ReturnType<typeof vi.fn>>>
     listPages: vi.fn(async () => ({ pages: [] })),
     getPage: vi.fn(async (_id: string) => ({ id: _id })),
     recall: vi.fn(async (_q: string, _o: unknown) => [{ text: "a fact" }]),
+    engineeringRecords: vi.fn(async (_q: string, _limit: number) => []),
+    engineeringMemory: vi.fn(async (_id: string) => undefined),
+    curateEngineeringMemory: vi.fn(async (_id: string, _update: unknown) => ({})),
     captureInitiative: vi.fn(async (_a: unknown) => ({ page_id: "initiative-x" })),
     retain: vi.fn(async (..._args: unknown[]) => undefined),
+    getWorkingRulesProjection: vi.fn(async () => ({
+      revision: "rev-1",
+      text: "Always keep docs updated.",
+      entries: [
+        {
+          content: "Always keep docs updated.",
+          importance: "normal",
+          pinned: false,
+          scope: "global",
+        },
+      ],
+      total_active_entries: 1,
+      minimum_characters: 0,
+      truncated: false,
+    })),
+    listWorkingRules: vi.fn(async () => ({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+      revision: "rev-1",
+      usage: {
+        used_bytes: 0,
+        limit_bytes: 14336,
+        pinned_chars: 0,
+        pinned_limit_chars: 3072,
+        active_count: 0,
+        archived_count: 0,
+      },
+    })),
+    mutateWorkingRules: vi.fn(async (input: unknown) => ({
+      success: true,
+      action: "add",
+      message: "ok",
+      rule: null,
+      archived: [],
+      revision: "rev-2",
+      usage: {
+        used_bytes: 24,
+        limit_bytes: 14336,
+        pinned_chars: 0,
+        pinned_limit_chars: 3072,
+        active_count: 1,
+        archived_count: 0,
+      },
+      input,
+    })),
     ...overrides,
   } as unknown as HindsightClient;
 }
@@ -28,16 +79,20 @@ function findTool(tools: ReturnType<typeof buildPageTools>, name: string) {
 const EXPECTED_TOOLS = [
   "hindsight_sync_status",
   "hindsight_diagnose",
+  "hindsight_recall",
+  "hindsight_edit_memory",
   "hindsight_search_pages",
   "hindsight_list_pages",
   "hindsight_read_page",
   "hindsight_reflect",
   "hindsight_capture_initiative",
   "hindsight_ingest_document",
+  "hindsight_working_rules",
+  "hindsight_manage_working_rules",
 ];
 
 describe("buildPageTools", () => {
-  it("returns exactly the eight expected tools (as a set)", () => {
+  it("returns exactly the twelve expected tools (as a set)", () => {
     const client = stubClient();
     const tools = buildPageTools(client, "repo-a");
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
@@ -58,6 +113,87 @@ describe("buildPageTools", () => {
     expect(names).not.toContain("agent_knowledge_create_page");
     expect(names).not.toContain("agent_knowledge_update_page");
     expect(names).not.toContain("agent_knowledge_delete_page");
+  });
+
+  it("hindsight_recall returns raw evidence and preserves edit identifiers", async () => {
+    const record = {
+      id: "2f5632f6-d6a6-4d3f-9de8-329258d6cae6",
+      text: "Retry operations with their original ID.",
+      type: "experience",
+      tags: ["project:one"],
+      state: "valid",
+      document_id: "engineering-exchange:abc",
+      metadata: { project: "one" },
+    };
+    const client = stubClient({
+      engineeringRecords: vi.fn(async (_query: string, _limit: number) => [record]),
+    });
+    const result = await findTool(buildPageTools(client, "repo-a"), "hindsight_recall").handler({
+      query: "retry IDs",
+      limit: 5,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      records: [record],
+      crediting: expect.stringContaining("From Hindsight memory"),
+    });
+    expect(client.engineeringRecords).toHaveBeenCalledWith("retry IDs", 5);
+  });
+
+  it("hindsight_edit_memory rejects stale text before writing", async () => {
+    const client = stubClient({
+      engineeringMemory: vi.fn(async () => ({
+        id: "2f5632f6-d6a6-4d3f-9de8-329258d6cae6",
+        text: "changed elsewhere",
+        state: "valid",
+      })),
+    });
+    const result = await findTool(
+      buildPageTools(client, "repo-a"),
+      "hindsight_edit_memory"
+    ).handler({
+      memory_id: "2f5632f6-d6a6-4d3f-9de8-329258d6cae6",
+      expected_text: "original",
+      expected_state: "valid",
+      text: "corrected",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Memory changed since recall");
+    expect(client.curateEngineeringMemory).not.toHaveBeenCalled();
+  });
+
+  it("hindsight_edit_memory rewrites only an unchanged active fact", async () => {
+    const original = {
+      id: "2f5632f6-d6a6-4d3f-9de8-329258d6cae6",
+      text: "original",
+      type: "experience",
+      state: "valid",
+      tags: ["project:one"],
+    };
+    const updated = { ...original, text: "corrected", edited_at: "later" };
+    const client = stubClient({
+      engineeringMemory: vi.fn(async () => original),
+      curateEngineeringMemory: vi.fn(async () => updated),
+    });
+    const result = await findTool(
+      buildPageTools(client, "repo-a"),
+      "hindsight_edit_memory"
+    ).handler({
+      memory_id: original.id,
+      expected_text: original.text,
+      expected_state: "valid",
+      text: updated.text,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(client.curateEngineeringMemory).toHaveBeenCalledWith(original.id, {
+      text: "corrected",
+    });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      memory: { id: original.id, text: "corrected", state: "valid" },
+    });
   });
 
   it("hindsight_sync_status returns the syncStatus JSON for the given repoDir", async () => {
@@ -479,4 +615,67 @@ describe("buildPageTools", () => {
       expect(JSON.parse(result.content[0].text)).toEqual({ error: "boom: not found" });
     });
   }
+
+  it("exposes DSH-compatible schemas for every page tool including working rules", () => {
+    const tools = buildPageTools(stubClient(), "repo-a");
+    for (const tool of tools) {
+      expect(() => toDshParameters(tool)).not.toThrow();
+    }
+  });
+
+  it("hindsight_working_rules fetches projection by default and full list for view='all'", async () => {
+    const client = stubClient();
+    const tools = buildPageTools(client, "repo-a");
+    const reader = findTool(tools, "hindsight_working_rules");
+
+    const effective = await reader.handler({});
+    expect(effective.isError).toBeFalsy();
+    expect(JSON.parse(effective.content[0].text)).toMatchObject({
+      revision: "rev-1",
+      text: "Always keep docs updated.",
+    });
+    expect(client.getWorkingRulesProjection).toHaveBeenCalledTimes(1);
+
+    const all = await reader.handler({ view: "all", include_archived: true });
+    expect(all.isError).toBeFalsy();
+    expect(client.listWorkingRules).toHaveBeenCalledWith({
+      scope: undefined,
+      includeArchived: true,
+      q: undefined,
+    });
+  });
+
+  it("hindsight_manage_working_rules forwards mutations and fails clearly when unsupported", async () => {
+    const client = stubClient();
+    const manager = findTool(buildPageTools(client, "repo-a"), "hindsight_manage_working_rules");
+    const added = await manager.handler({
+      action: "add",
+      content: "Use bun for scripts.",
+      scope: "global",
+      importance: "critical",
+      pinned: true,
+      branches: ["main"],
+    });
+    expect(added.isError).toBeFalsy();
+    expect(client.mutateWorkingRules).toHaveBeenCalledWith({
+      action: "add",
+      content: "Use bun for scripts.",
+      old_text: undefined,
+      importance: "critical",
+      scope: "global",
+      pinned: true,
+      branches: ["main"],
+    });
+
+    const unsupported = findTool(
+      buildPageTools(
+        stubClient({ mutateWorkingRules: vi.fn(async () => undefined) }),
+        "repo-a"
+      ),
+      "hindsight_manage_working_rules"
+    );
+    const errRes = await unsupported.handler({ action: "add", content: "x" });
+    expect(errRes.isError).toBe(true);
+    expect(errRes.content[0].text).toContain("does not support Working Rules");
+  });
 });

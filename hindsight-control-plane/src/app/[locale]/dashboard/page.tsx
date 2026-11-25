@@ -5,10 +5,12 @@ import { BankSelector } from "@/components/bank-selector";
 import { BanksOverview } from "@/components/banks-overview";
 import { Spinner } from "@/components/ui/spinner";
 import { useBank } from "@/lib/bank-context";
+import { useFeatures } from "@/lib/features-context";
 import { useRouter } from "@/i18n/navigation";
 
 export default function DashboardPage() {
-  const { setCurrentBank } = useBank();
+  const { setCurrentBank, loadBanks } = useBank();
+  const { refreshFeatures } = useFeatures();
   const router = useRouter();
   const [ready, setReady] = useState(false);
 
@@ -29,13 +31,18 @@ export default function DashboardPage() {
         connected = false;
       }
       if (cancelled) return;
-      if (connected) setReady(true);
-      else router.replace("/local");
+      if (connected) {
+        void refreshFeatures();
+        void loadBanks();
+        setReady(true);
+      } else {
+        router.replace("/local");
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, [router, refreshFeatures, loadBanks]);
 
   // This page is the "all banks" view, so nothing is selected while it is open.
   // The selection survives navigating back here from a bank page otherwise, and the

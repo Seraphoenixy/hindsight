@@ -211,20 +211,16 @@ describe("profile and sync", () => {
 
     expect(result.status).toBe("updated");
     expect(result.mode).toBe("follow");
-    expect(runOps).toHaveBeenCalledWith(
-      cfg,
-      ["save-settings", "--profile", "coding-agent"],
-      {
-        input: {
-          values: {
-            HINDSIGHT_API_LLM_PROVIDER: "openai-responses",
-            HINDSIGHT_API_LLM_BASE_URL: "http://127.0.0.1:3425/v1",
-            HINDSIGHT_API_LLM_API_KEY: "magpie",
-            HINDSIGHT_API_LLM_MODEL: "codearts/deepseek-v4.1-flash-1017",
-          },
+    expect(runOps).toHaveBeenCalledWith(cfg, ["save-settings", "--profile", "coding-agent"], {
+      input: {
+        values: {
+          HINDSIGHT_API_LLM_PROVIDER: "openai-responses",
+          HINDSIGHT_API_LLM_BASE_URL: "http://127.0.0.1:3425/v1",
+          HINDSIGHT_API_LLM_API_KEY: "magpie",
+          HINDSIGHT_API_LLM_MODEL: "codearts/deepseek-v4.1-flash-1017",
         },
-      }
-    );
+      },
+    });
     expect(readProfileLlm("coding-agent", env).provider).toBe("openai-responses");
     const state = JSON.parse(readFileSync(managedStatePath(env), "utf8"));
     expect(state.profiles["coding-agent"].mode).toBe("follow");

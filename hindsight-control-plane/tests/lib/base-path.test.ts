@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { normalizeBasePath, sanitizeReturnTo, stripBasePath, withBasePath } from "@/lib/base-path";
+import {
+  isStandaloneRoute,
+  normalizeBasePath,
+  sanitizeReturnTo,
+  stripBasePath,
+  withBasePath,
+} from "@/lib/base-path";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -89,5 +95,21 @@ describe("base path helpers", () => {
     expect(stripBasePath("https://example.com/ai-memory/login")).toBe(
       "https://example.com/ai-memory/login"
     );
+  });
+
+  describe("isStandaloneRoute", () => {
+    it("matches /local and /login with or without basePath", () => {
+      expect(isStandaloneRoute("/local")).toBe(true);
+      expect(isStandaloneRoute("/local/extra")).toBe(true);
+      expect(isStandaloneRoute("/login")).toBe(true);
+      expect(isStandaloneRoute("/dashboard")).toBe(false);
+      expect(isStandaloneRoute("/banks/my-bank")).toBe(false);
+      expect(isStandaloneRoute(null)).toBe(false);
+
+      vi.stubEnv("NEXT_PUBLIC_BASE_PATH", "/ai-memory");
+      expect(isStandaloneRoute("/ai-memory/local")).toBe(true);
+      expect(isStandaloneRoute("/ai-memory/login")).toBe(true);
+      expect(isStandaloneRoute("/ai-memory/dashboard")).toBe(false);
+    });
   });
 });

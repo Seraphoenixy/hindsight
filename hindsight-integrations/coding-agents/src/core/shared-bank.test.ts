@@ -66,11 +66,18 @@ describe("shared bank", () => {
   });
 
   it("keeps transcript segments in their own project after a workspace switch", async () => {
-    const writes: { items: { document_id: string; content: string }[]; operation_id: string }[] =
-      [];
+    const writes: {
+      items: {
+        document_id: string;
+        content: string;
+        tags: string[];
+        metadata?: Record<string, string>;
+      }[];
+      operation_id: string;
+    }[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url: string, init: RequestInit) => {
+      vi.fn(async (url: string, init: RequestInit) => {
         const body = JSON.parse((init.body as string) || "{}");
         if (body.items) writes.push(body);
         return Response.json({ version: "0.0.0" });
@@ -80,22 +87,39 @@ describe("shared bank", () => {
     const time = "2026-01-01T00:00:00Z";
     const turns = [
       { role: "user", content: "left first" },
+      { role: "assistant", content: "left first verified" },
       { role: "user", content: "right only" },
+      { role: "assistant", content: "right only verified" },
       { role: "user", content: "left again" },
+      { role: "assistant", content: "left again verified" },
     ];
-    await retainLiveSession(left, "session", turns.slice(0, 1), time, "codex", { cursors });
-    await retainLiveSession(right, "session", turns.slice(0, 2), time, "codex", { cursors });
+    await retainLiveSession(left, "session", turns.slice(0, 2), time, "codex", { cursors });
+    await retainLiveSession(right, "session", turns.slice(0, 4), time, "codex", { cursors });
     await retainLiveSession(left, "session", turns, time, "codex", { cursors });
     expect(writes.map(({ items }) => items[0].document_id)).toEqual([
-      "project:left:conversation:session",
-      "project:right:conversation:session",
-      "project:left:conversation:session",
+      expect.stringMatching(/^project:left:engineering-exchange:/),
+      expect.stringMatching(/^project:right:engineering-exchange:/),
+      expect.stringMatching(/^project:left:engineering-exchange:/),
     ]);
+    expect(
+      writes.every(({ items }) =>
+        items[0].tags.includes(`project:${items[0].document_id.split(":")[1]}`)
+      )
+    ).toBe(true);
     expect(writes[1].items[0].content).toContain("right only");
     expect(writes[1].items[0].content).not.toContain("left first");
-    expect(writes[2].items[0].content).toContain("left first");
     expect(writes[2].items[0].content).toContain("left again");
     expect(writes[2].items[0].content).not.toContain("right only");
+    expect(writes.map(({ items }) => items[0].content.split("\n")[0])).toEqual([
+      "PROJECT: repo [left]",
+      "PROJECT: repo [right]",
+      "PROJECT: repo [left]",
+    ]);
+    expect(writes.map(({ items }) => items[0].metadata)).toEqual([
+      expect.objectContaining({ project: "repo", project_id: "left" }),
+      expect.objectContaining({ project: "repo", project_id: "right" }),
+      expect.objectContaining({ project: "repo", project_id: "left" }),
+    ]);
     expect(new Set(writes.map(({ operation_id }) => operation_id)).size).toBe(3);
   });
 
@@ -135,17 +159,17 @@ describe("shared bank", () => {
     await left.seedPages();
     await right.seedPages();
     await left.seedPages();
-    expect(nodes.map((node) => node.children?.length)).toEqual([5, 5]);
+    expect(nodes.map((node) => node.children?.length)).toEqual([3, 3]);
     expect(
       bodies
-        .slice(0, 5)
+        .slice(0, 3)
         .every(
           (body) => body.tags[0] === "project:left" && body.trigger.tags_match === "all_strict"
         )
     ).toBe(true);
-    expect(bodies.slice(5).every((body) => body.tags[0] === "project:right")).toBe(true);
-    expect(await left.searchPages("map")).toHaveLength(5);
-    expect(await left.searchPages("map", { allProjects: true })).toHaveLength(10);
+    expect(bodies.slice(3).every((body) => body.tags[0] === "project:right")).toBe(true);
+    expect(await left.searchPages("map")).toHaveLength(3);
+    expect(await left.searchPages("map", { allProjects: true })).toHaveLength(6);
     await expect(left.getPage("folder-1-0")).rejects.toThrow("not found in this project");
   });
 });

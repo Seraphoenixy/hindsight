@@ -42,6 +42,69 @@ export interface PageNode {
   children?: PageNode[];
 }
 
+export type WorkingRuleScope = "global" | "project";
+export type WorkingRuleImportance = "critical" | "normal" | "low";
+export type WorkingRuleAction = "add" | "replace" | "remove";
+
+export interface WorkingRuleRecord {
+  id: string;
+  scope: WorkingRuleScope;
+  project_id?: string | null;
+  content: string;
+  importance: WorkingRuleImportance;
+  pinned: boolean;
+  branches: string[];
+  is_archived: boolean;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkingRulesUsage {
+  used_bytes: number;
+  limit_bytes: number;
+  pinned_chars: number;
+  pinned_limit_chars: number;
+  active_count: number;
+  archived_count: number;
+}
+
+export interface WorkingRulesListResult {
+  items: WorkingRuleRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  revision: string;
+  usage: WorkingRulesUsage;
+}
+
+export interface WorkingRuleProjectionEntry {
+  content: string;
+  importance: WorkingRuleImportance;
+  pinned: boolean;
+  scope: WorkingRuleScope;
+}
+
+export interface WorkingRulesProjection {
+  revision: string;
+  text: string;
+  entries: WorkingRuleProjectionEntry[];
+  total_active_entries: number;
+  minimum_characters: number;
+  truncated: boolean;
+}
+
+export interface WorkingRuleMutationResult {
+  success: boolean;
+  action: WorkingRuleAction;
+  message: string;
+  rule?: WorkingRuleRecord | null;
+  archived: WorkingRuleRecord[];
+  revision: string;
+  usage: WorkingRulesUsage;
+}
+
 /**
  * How consolidation scopes the observations a retained memory feeds (`observation_scopes` on the
  * retain API). The scalar modes are the server's; a `string[][]` declares the scopes explicitly.
@@ -287,6 +350,23 @@ export const DEFAULT_PAGE_SEARCH_LIMIT = 10;
  * Such a bank sets `{"types": ["world", "experience"]}`, or `{"types": null}` for every type.
  * The budget stays low and entities are excluded because this runs inside a hook window.
  */
+export interface EngineeringMemory {
+  id: string;
+  text: string;
+  type?: "world" | "experience" | "observation" | string;
+  context?: string;
+  date?: string;
+  mentioned_at?: string | null;
+  tags?: string[];
+  document_id?: string | null;
+  metadata?: Record<string, string>;
+  state?: string;
+  updated_at?: string | null;
+  edited_at?: string | null;
+  invalidated_at?: string | null;
+  invalidation_reason?: string | null;
+}
+
 export const DEFAULT_RECALL_OPTIONS: Record<string, unknown> = {
   types: ["observation"],
   budget: "low",
@@ -387,6 +467,8 @@ export class HindsightClient {
   readonly opIds: string[] = []; // async operation ids collected by retain(), for drain()
   /** Tri-state capability probe: unknown until the first page request, then cached. */
   pagesSupported: boolean | undefined;
+  /** Tri-state capability probe: unknown until the first working-rules request, then cached. */
+  workingRulesSupported: boolean | undefined;
   /** Tri-state capability probe: unknown until the first append-mode retain, then cached. */
   private idempotentRetain: boolean | undefined;
   private readonly log: (msg: string) => void;
@@ -416,6 +498,22 @@ export class HindsightClient {
 
   get projectTag(): string | undefined {
     return this.projectScope && `project:${this.projectScope.id}`;
+  }
+
+  /** Readable project identity for extracted text and document metadata. */
+  get projectDescription(): string | undefined {
+    return this.projectScope ? `${this.projectScope.name} [${this.projectScope.id}]` : this.project;
+  }
+
+  /**
+   * Provenance copied onto every fact extracted from a conversation document. The tag scopes
+   * recall, while these fields remain readable in the memory detail after the source document is
+   * no longer part of a synthesized observation.
+   */
+  get projectMetadata(): Record<string, string> {
+    if (this.projectScope)
+      return { project: this.projectScope.name, project_id: this.projectScope.id };
+    return this.project ? { project: this.project } : {};
   }
 
   get memoryScope(): string {
@@ -559,6 +657,16 @@ export class HindsightClient {
         ]),
       ];
     }
+    // Conversation documents span shared banks. Stamp their project here, where every live and
+    // imported chat path converges, so extracted facts retain the association even though the
+    // consolidation layer later sees their text without the source document nearby.
+    const metadata =
+      opts.metadata || strategy === "conversation"
+        ? {
+            ...(opts.metadata ?? {}),
+            ...(strategy === "conversation" ? this.projectMetadata : {}),
+          }
+        : undefined;
     const item: Record<string, unknown> = {
       content,
       context,
@@ -571,17 +679,100 @@ export class HindsightClient {
       observation_scopes: scope ? [[scope]] : resolveRetainScopes(tags, this.observationScopes),
     };
     if (opts.timestamp) item.timestamp = opts.timestamp;
-    if (opts.metadata) item.metadata = opts.metadata;
+    if (metadata && Object.keys(metadata).length) item.metadata = metadata;
     if (opts.updateMode) item.update_mode = opts.updateMode;
     const body: Record<string, unknown> = { items: [item], async: true };
     if (opts.operationId) body.operation_id = opts.operationId;
     const r = await this.req("POST", this.bankUrl("/memories"), body);
+    if (!r.ok) throw new Error(`Retain failed (${r.status}): ${await r.text()}`);
     try {
       const j = (await r.json()) as { operation_id?: string };
       if (j.operation_id) this.opIds.push(j.operation_id);
     } catch {
       /* ignore */
     }
+  }
+
+  async extractEngineeringCandidates(
+    content: string,
+    instructions: string,
+    timeoutMs: number,
+    timestamp?: string
+  ): Promise<string[]> {
+    const response = await this.req(
+      "POST",
+      this.bankUrl("/memories/dry-run-extract"),
+      {
+        content,
+        timestamp,
+        context: "Engineering source evidence",
+        retain_mission:
+          "Extract durable engineering knowledge according to the custom instructions.",
+        retain_extraction_mode: "custom",
+        retain_custom_instructions: instructions,
+        retain_extract_causal_links: false,
+        retain_chunk_size: 24000,
+        entity_labels: [],
+      },
+      [],
+      timeoutMs
+    );
+    if (!response.ok)
+      throw new Error(`Engineering extraction is unavailable (${response.status}).`);
+    const data = (await response.json()) as { facts: { text: string }[] };
+    return data.facts.map((fact) => fact.text);
+  }
+
+  async ensureEngineeringStrategy(): Promise<void> {
+    const overrides = await this.readBankOverrides();
+    const strategies = overrides?.retain_strategies as Record<string, unknown> | undefined;
+    if (strategies?.["engineering-record"]) return;
+    await this.configureBankSettings({
+      extractionMode: overrides?.retain_extraction_mode as RetainExtractionMode | undefined,
+    });
+  }
+
+  async engineeringRecords(query: string, maxResults = 20): Promise<EngineeringMemory[]> {
+    const response = await this.req(
+      "POST",
+      this.bankUrl("/memories/recall"),
+      {
+        query,
+        types: ["world", "experience"],
+        budget: "mid",
+        max_tokens: 6000,
+        ...(this.projectTag ? { tags: [this.projectTag], tags_match: "all_strict" } : {}),
+      },
+      [],
+      30_000
+    );
+    if (response.status === 404) return [];
+    const data = (await response.json()) as { results: EngineeringMemory[] };
+    return data.results.filter((record) => this.ownsEngineeringMemory(record)).slice(0, maxResults);
+  }
+
+  private ownsEngineeringMemory(record: EngineeringMemory): boolean {
+    return !this.projectTag || Boolean(record.tags?.includes(this.projectTag));
+  }
+
+  async engineeringMemory(id: string): Promise<EngineeringMemory | undefined> {
+    const response = await this.req("GET", this.bankUrl(`/memories/${encodeURIComponent(id)}`));
+    if (response.status === 404) return undefined;
+    const record = (await response.json()) as EngineeringMemory;
+    return this.ownsEngineeringMemory(record) ? record : undefined;
+  }
+
+  async curateEngineeringMemory(
+    id: string,
+    update: { text?: string; state?: "valid" | "invalidated"; reason?: string }
+  ): Promise<EngineeringMemory> {
+    const response = await this.req(
+      "PATCH",
+      this.bankUrl(`/memories/${encodeURIComponent(id)}`),
+      update
+    );
+    if (!response.ok) throw new Error(`Memory ${id} is no longer available.`);
+    return (await response.json()) as EngineeringMemory;
   }
 
   /**
@@ -766,7 +957,8 @@ export class HindsightClient {
       const manifest = codingBankManifest(
         opts.reset ? undefined : await this.readBankOverrides(),
         opts.extractionMode,
-        opts.defaults
+        opts.defaults,
+        Boolean(this.projectScope)
       );
       if (!manifest) {
         this.log(`[bank] ${this.bank} already carries the coding structure — nothing to apply`);
@@ -1132,7 +1324,7 @@ export class HindsightClient {
   ): Promise<void> {
     // No project = a bank no single repository owns: the shared-bank clause. Pages seeded under the
     // old bank-named clause drift from it and are PATCHed below, which rebuilds them (#4490).
-    const pages = pagesFor(this.project, pagesConfig, customPages);
+    const pages = pagesFor(this.project, pagesConfig, customPages, Boolean(this.projectTag));
     const existing = new Map<string, PageNode>();
     let roots: PageNode[];
     try {
@@ -1159,7 +1351,7 @@ export class HindsightClient {
       const body = {
         name: page.name,
         source_query: page.source_query,
-        tags: this.projectTag ? [this.projectTag] : page.tags,
+        tags: this.projectTag ? [...new Set([this.projectTag, ...page.tags])] : page.tags,
         ...(parentId ? { parent_id: parentId } : {}),
         max_tokens: PAGE_MAX_TOKENS,
         // Resolved HERE, not in `buildPageTrigger`: a hashed cron (`H`) needs the page's identity,
@@ -1403,5 +1595,134 @@ export class HindsightClient {
     } catch {
       return undefined;
     }
+  }
+
+  workingRulesUrl(suffix = ""): string {
+    return `${this.apiUrl}/v1/default/working-rules${suffix}`;
+  }
+
+  private async workingRulesReq(
+    method: string,
+    suffix: string,
+    body?: unknown,
+    tolerate: number[] = [],
+    timeoutMs = 15_000
+  ): Promise<Response | undefined> {
+    if (this.workingRulesSupported === false) return undefined;
+    const url = this.workingRulesUrl(suffix);
+    const r = await this.req(method, url, body, tolerate, timeoutMs);
+    if (r.status === 404) {
+      // Distinguish FastAPI route 404 ("Not Found") from domain 404 (e.g. old_text / rule_id not found).
+      const clone = r.clone();
+      if (await isEndpointMissing(r)) {
+        this.workingRulesSupported = false;
+        return undefined;
+      }
+      if (!tolerate.includes(404)) {
+        throw new Error(`${method} ${url.split("?")[0]} -> 404 ${await clone.text()}`);
+      }
+      this.workingRulesSupported = true;
+      return r;
+    }
+    if (r.ok) this.workingRulesSupported = true;
+    return r;
+  }
+
+  async getWorkingRulesProjection(
+    opts: {
+      projectId?: string;
+      branch?: string;
+      maxChars?: number;
+      timeoutMs?: number;
+    } = {}
+  ): Promise<WorkingRulesProjection | undefined> {
+    const params = new URLSearchParams();
+    const projectId = opts.projectId ?? this.projectScope?.id;
+    if (projectId) params.set("project_id", projectId);
+    if (opts.branch) params.set("branch", opts.branch);
+    if (opts.maxChars !== undefined) params.set("max_chars", String(opts.maxChars));
+    const qs = params.toString();
+    const r = await this.workingRulesReq(
+      "GET",
+      `/projection${qs ? `?${qs}` : ""}`,
+      undefined,
+      [],
+      opts.timeoutMs ?? 2_000
+    );
+    if (!r) return undefined;
+    return (await r.json()) as WorkingRulesProjection;
+  }
+
+  async listWorkingRules(
+    opts: {
+      scope?: WorkingRuleScope;
+      projectId?: string;
+      includeArchived?: boolean;
+      q?: string;
+      limit?: number;
+      offset?: number;
+      timeoutMs?: number;
+    } = {}
+  ): Promise<WorkingRulesListResult | undefined> {
+    const params = new URLSearchParams();
+    if (opts.scope) params.set("scope", opts.scope);
+    const projectId = opts.projectId ?? (opts.scope === "project" ? this.projectScope?.id : undefined);
+    if (projectId) params.set("project_id", projectId);
+    if (opts.includeArchived) params.set("include_archived", "true");
+    if (opts.q) params.set("q", opts.q);
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    const r = await this.workingRulesReq(
+      "GET",
+      qs ? `?${qs}` : "",
+      undefined,
+      [],
+      opts.timeoutMs ?? 5_000
+    );
+    if (!r) return undefined;
+    return (await r.json()) as WorkingRulesListResult;
+  }
+
+  async mutateWorkingRules(
+    input: {
+      action: WorkingRuleAction;
+      content?: string;
+      old_text?: string;
+      importance?: WorkingRuleImportance;
+      scope?: WorkingRuleScope;
+      project_id?: string;
+      pinned?: boolean;
+      branches?: string[];
+      preserve_importance?: boolean;
+    },
+    timeoutMs = 15_000
+  ): Promise<WorkingRuleMutationResult | undefined> {
+    const scope = input.scope ?? "global";
+    const projectId = scope === "project" ? (input.project_id ?? this.projectScope?.id) : undefined;
+    if (scope === "project" && !projectId) {
+      throw new Error(
+        "project scope requires an active project context (projectScope or explicit project_id)"
+      );
+    }
+    const r = await this.workingRulesReq(
+      "POST",
+      "/mutate",
+      {
+        action: input.action,
+        content: input.content,
+        old_text: input.old_text,
+        importance: input.importance,
+        scope,
+        project_id: projectId,
+        pinned: input.pinned,
+        branches: input.branches,
+        preserve_importance: input.preserve_importance ?? true,
+      },
+      [],
+      timeoutMs
+    );
+    if (!r) return undefined;
+    return (await r.json()) as WorkingRuleMutationResult;
   }
 }

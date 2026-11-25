@@ -1,20 +1,12 @@
 #!/bin/bash
 set -e
 
-# Script to generate OpenAPI specification and update documentation
-# This runs the generate-openapi command from hindsight-dev and regenerates docs
+# Export the schema locally for the TypeScript SDK, with no model credentials.
 
-cd "$(dirname "$0")/.."
-ROOT_DIR=$(pwd)
-
-echo "Generating OpenAPI specification..."
-cd hindsight-dev
-uv run generate-openapi
-
-echo ""
-echo "Building documentation..."
-cd "$ROOT_DIR/hindsight-docs"
-npm run build
-
-echo ""
-echo "OpenAPI spec and documentation generated successfully!"
+PROJECT_DIR="$(cd "$(dirname "$0")/../hindsight-dev" && pwd)"
+export HINDSIGHT_API_LLM_PROVIDER=${HINDSIGHT_API_LLM_PROVIDER:-mock}
+if [ "$#" -gt 0 ]; then
+    uv run --project "$PROJECT_DIR" python -m hindsight_dev.generate_openapi "$1"
+else
+    uv run --project "$PROJECT_DIR" generate-openapi
+fi
