@@ -73,6 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add("profiles", "List every profile with its daemon status")
     add("config", "The profile's editable configuration (API key masked)")
     add("settings", "The grouped settings catalog with current values")
+    add("sync-settings", "The sync page's settings group with current values")
     add("models", "List model ids available from a provider, using an unsaved request body")
     add("env", "The profile's raw .env contents")
     add("paths", "On-disk references and URLs for the profile")
@@ -80,6 +81,13 @@ def _build_parser() -> argparse.ArgumentParser:
     add("daemon-status", "Whether the profile's daemon is running")
     add("ui-status", "Whether the profile's control plane is running")
     add("token", "The operations access token (created on first use)")
+
+    snapshot = add("snapshot", "Read several document sections in one process")
+    snapshot.add_argument(
+        "-i",
+        "--include",
+        help="Comma-separated sections to read (default: every section)",
+    )
 
     logs = add("logs", "Tail the profile's daemon or control-plane log")
     logs.add_argument("--lines", "-n", type=int, default=200, help="Number of lines to return")
@@ -93,6 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- mutating (JSON request on stdin) --------------------------------
     add("save-config", "Write ports and component version pins from stdin")
     add("save-settings", "Write grouped settings values from stdin")
+    add("save-sync-settings", "Write sync settings values from stdin")
     add("write-env", "Overwrite the profile's .env from stdin")
     add("delete-profile", "Stop the profile's processes, then delete it")
 
@@ -100,6 +109,14 @@ def _build_parser() -> argparse.ArgumentParser:
     add("daemon-start", "Start the profile's daemon (no-op when already healthy)")
     add("daemon-stop", "Stop the profile's daemon")
     add("daemon-restart", "Restart the profile's daemon to pick up new config")
+
+    # ---- local models & embedding migration ------------------------------
+    add("local-models", "List built-in GGUF presets and their download status")
+    add("download-local-model", "Start downloading a built-in GGUF preset (JSON body on stdin)")
+    add("embedding-check", "Check database vs target embedding dimension compatibility")
+    add("reembed-start", "Start background re-embed and restart daemon")
+    add("reembed-status", "Query background re-embed progress")
+    add("reset-memories", "Clear local memories/vectors and restart daemon")
 
     return parser
 
@@ -118,6 +135,13 @@ def _run(args: argparse.Namespace) -> Any:
     if command == "token":
         return {"token": auth.get_or_create_token(), "path": str(auth.token_file())}
 
+    if command == "snapshot":
+        raw = args.include
+        include = None if raw is None else [part.strip() for part in raw.split(",") if part.strip()]
+        if include is not None and not include:
+            raise ValueError("--include must name at least one section")
+        return service.to_json(service.read_snapshot(name, include))
+
     if command == "profiles":
         return {"profiles": [service.to_json(p) for p in service.list_profiles()]}
 
@@ -126,6 +150,9 @@ def _run(args: argparse.Namespace) -> Any:
 
     if command == "settings":
         return service.to_json(service.get_settings(name))
+
+    if command == "sync-settings":
+        return service.to_json(service.get_sync_settings(name))
 
     if command == "models":
         body = _read_body()
@@ -182,6 +209,12 @@ def _run(args: argparse.Namespace) -> Any:
             raise ValueError("values must be an object of env-var name -> string")
         return service.to_json(service.save_settings(name, {str(k): str(v) for k, v in values.items()}))
 
+    if command == "save-sync-settings":
+        values = _read_body().get("values") or {}
+        if not isinstance(values, dict):
+            raise ValueError("values must be an object of env-var name -> string")
+        return service.to_json(service.save_sync_settings(name, {str(k): str(v) for k, v in values.items()}))
+
     if command == "write-env":
         return service.to_json(service.write_env_file(name, _read_body().get("content", "")))
 
@@ -196,6 +229,39 @@ def _run(args: argparse.Namespace) -> Any:
 
     if command == "daemon-restart":
         return service.to_json(service.restart_daemon(name))
+
+    if command == "local-models":
+        return service.to_json(service.list_local_models(name))
+
+    if command == "download-local-model":
+        model = _read_body().get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must be a non-empty string")
+        return service.to_json(service.download_local_model(name, model.strip()))
+
+    if command == "embedding-check":
+        values = _read_body().get("values")
+        if values is not None and not isinstance(values, dict):
+            raise ValueError("values must be an object of env-var name -> string")
+        norm = {str(k): str(v) for k, v in values.items()} if isinstance(values, dict) else None
+        return service.to_json(service.check_embedding_compatibility(name, norm))
+
+    if command == "reembed-start":
+        values = _read_body().get("values")
+        if values is not None and not isinstance(values, dict):
+            raise ValueError("values must be an object of env-var name -> string")
+        norm = {str(k): str(v) for k, v in values.items()} if isinstance(values, dict) else None
+        return service.to_json(service.start_reembed(name, norm))
+
+    if command == "reembed-status":
+        return service.to_json(service.get_reembed_status(name))
+
+    if command == "reset-memories":
+        values = _read_body().get("values")
+        if values is not None and not isinstance(values, dict):
+            raise ValueError("values must be an object of env-var name -> string")
+        norm = {str(k): str(v) for k, v in values.items()} if isinstance(values, dict) else None
+        return service.to_json(service.reset_local_memories(name, norm))
 
     raise ValueError(f"unknown ops command '{command}'")
 

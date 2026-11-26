@@ -83,6 +83,41 @@ describe.skipIf(!embed)("hindsight-embed ops contract", () => {
     expect(Array.isArray(doc.unset_required)).toBe(true);
   });
 
+  it("reads several sections in one document", () => {
+    const doc = ops<{
+      profile: string;
+      sections: Record<string, { name?: string }>;
+      errors: Record<string, string>;
+    }>(["snapshot", "--include", "config,paths"]);
+    expect(doc.profile).toBe("");
+    expect(Object.keys(doc.sections)).toEqual(["config", "paths"]);
+    expect(doc.errors).toEqual({});
+  });
+
+  it("keeps sync settings on their own command and out of the local catalog", () => {
+    const local = ops<{ groups: { id: string }[] }>(["settings"]);
+    expect(local.groups.map((group) => group.id)).not.toContain("sync");
+
+    const sync = ops<{ groups: { id: string; fields: { key: string }[] }[] }>(["sync-settings"]);
+    expect(sync.groups.map((group) => group.id)).toEqual(["sync"]);
+    expect(sync.groups[0].fields.map((field) => field.key)).toContain(
+      "HINDSIGHT_SYNC_INTERVAL_SECONDS"
+    );
+  });
+
+  it("reports an unknown snapshot section as a JSON usage error", () => {
+    let failed = false;
+    try {
+      ops(["snapshot", "--include", "config,nope"]);
+    } catch (error) {
+      const err = error as { stdout?: string };
+      const doc = JSON.parse(err.stdout ?? "{}") as { error?: string };
+      expect(doc.error).toContain("unknown snapshot section");
+      failed = true;
+    }
+    expect(failed).toBe(true);
+  });
+
   it("writes a setting sent as a stdin request document", () => {
     const saved = ops<{ groups: { fields: { key: string; value: string }[] }[] }>(
       ["save-settings"],

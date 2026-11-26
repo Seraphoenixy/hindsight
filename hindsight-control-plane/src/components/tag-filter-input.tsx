@@ -63,7 +63,9 @@ export function TagFilterInput({
   // infinite suggestion-fetch loop. Hold it via a ref so the effect's dep list
   // only tracks input/value — the latest closure is used at fire time.
   const fetcherRef = useRef<FetchSuggestions | undefined>(undefined);
-  fetcherRef.current = fetchSuggestions ?? defaultFetcher;
+  useEffect(() => {
+    fetcherRef.current = fetchSuggestions ?? defaultFetcher;
+  });
 
   // Debounced fetch of suggestions when typing
   useEffect(() => {

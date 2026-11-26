@@ -1227,6 +1227,8 @@ class DaemonEmbedManager(EmbedManager):
                 env[key] = str(value)
 
         env["HINDSIGHT_API_DATABASE_URL"] = self.resolve_database_url(profile, config)
+        if profile and not env.get("HINDSIGHT_SYNC_STATE_DIR"):
+            env["HINDSIGHT_SYNC_STATE_DIR"] = str(paths.config.with_suffix(".sync"))
 
         database_url = env["HINDSIGHT_API_DATABASE_URL"]
         is_pg0 = database_url.startswith("pg0://")
@@ -1236,6 +1238,10 @@ class DaemonEmbedManager(EmbedManager):
             env["HINDSIGHT_API_LOG_LEVEL"] = "info"
         if "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT" not in env:
             env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(DEFAULT_DAEMON_IDLE_TIMEOUT)
+
+        # Never silently download multi-hundred-MB/GB GGUF weights during daemon startup;
+        # users download models explicitly via Local Settings or `llama_install --download-model`.
+        env.setdefault("HINDSIGHT_API_LLAMACPP_NO_AUTO_DOWNLOAD", "1")
 
         # Tell the daemon child it was already launched in a detached session
         # (via our Popen below) so daemonize() skips the redundant re-exec.

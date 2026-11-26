@@ -10,7 +10,7 @@ wins in both directions, and ``None`` (the default) inherits the global flag. Th
 value is then passed down, so each provider honours it through its existing
 ``strict_schema`` handling:
 
-- OpenAI-compatible / LiteLLM: ``response_format`` ``json_schema`` with ``strict: true``
+- OpenAI-compatible: ``response_format`` ``json_schema`` with ``strict: true``
 - Gemini: already grammar-enforces its native ``response_schema`` (flag is a no-op)
 - Providers without a strict mode ignore it.
 
@@ -23,7 +23,6 @@ reads the same retain-scoped field rather than the global flag, keeping the batc
 and streaming paths in agreement.
 """
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 import dataclasses
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -32,19 +31,19 @@ import pytest
 from pydantic import BaseModel
 
 from hindsight_api.config import (
+    ENV_LLM_OPENAI_COMPATIBLE_ENFORCE_SCHEMA,
+    ENV_LLM_OPENAI_COMPATIBLE_JSON_MODE,
     ENV_LLM_STRICT_SCHEMA,
     ENV_LLM_STRICT_SCHEMA_CONSOLIDATION,
     ENV_LLM_STRICT_SCHEMA_REFLECT,
     ENV_LLM_STRICT_SCHEMA_RETAIN,
-    ENV_LLM_OPENAI_COMPATIBLE_ENFORCE_SCHEMA,
-    ENV_LLM_OPENAI_COMPATIBLE_JSON_MODE,
     ENV_RETAIN_LLM_OPENAI_COMPATIBLE_JSON_MODE,
     HindsightConfig,
 )
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.structured_output import provider_json_schema
-
 
 # These tests assert the default json_object behaviour, not a job's JSON-mode override.
 pytestmark = pytest.mark.usefixtures("default_json_mode")
@@ -336,37 +335,6 @@ def test_openai_compatible_json_mode_env(monkeypatch):
     assert HindsightConfig.from_env().retain_llm_openai_compatible_json_mode is None
     monkeypatch.setenv(ENV_RETAIN_LLM_OPENAI_COMPATIBLE_JSON_MODE, "false")
     assert HindsightConfig.from_env().retain_llm_openai_compatible_json_mode is False
-
-
-# --------------------------------------------------------------------------- #
-# litellm: strict_schema -> response_format strict flag
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("strict", [True, False])
-@pytest.mark.asyncio
-async def test_litellm_response_format_strict_follows_arg(strict):
-    from hindsight_api.engine.providers.litellm_llm import LiteLLMLLM
-
-    llm = LiteLLMLLM(provider="litellm", api_key="test-key", base_url="", model="gpt-4o-mini")
-    response = SimpleNamespace(
-        choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content='{"ok": true}'))],
-        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
-    )
-    acompletion = AsyncMock(return_value=response)
-    with (
-        patch.object(llm, "_acompletion", acompletion),
-        patch("hindsight_api.engine.providers.litellm_llm.get_metrics_collector"),
-    ):
-        await llm.call(
-            messages=[{"role": "user", "content": "Return whether this worked."}],
-            response_format=_Resp,
-            strict_schema=strict,
-            max_retries=0,
-        )
-    rf = acompletion.call_args.kwargs["response_format"]
-    assert rf["type"] == "json_schema"
-    assert rf["json_schema"]["strict"] is strict
 
 
 # --------------------------------------------------------------------------- #

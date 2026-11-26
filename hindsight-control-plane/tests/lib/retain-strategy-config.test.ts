@@ -3,20 +3,9 @@ import {
   deserializeRetainStrategies,
   serializeRetainStrategies,
   type RetainStrategy,
-  type RetainStrategyValues,
 } from "../../src/lib/retain-strategy-config";
 
 const parseEntityLabels = (raw: unknown) => (Array.isArray(raw) ? raw : null);
-const baseValues = (overrides: Partial<RetainStrategyValues> = {}): RetainStrategyValues => ({
-  retain_extraction_mode: null,
-  retain_chunk_size: 3000,
-  retain_structured_chunk_size: null,
-  retain_mission: null,
-  retain_custom_instructions: null,
-  entities_allow_free_form: null,
-  entity_labels: null,
-  ...overrides,
-});
 
 describe("retain strategy config serialization", () => {
   it("omits null structured-chunk cap overrides", () => {

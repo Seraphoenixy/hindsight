@@ -69,7 +69,8 @@ describe("buildPagesPreamble", () => {
       }),
     ]) {
       expect(out).toMatch(/new task or goal.*pages FIRST/is);
-      expect(out).toMatch(/hindsight_reflect only when.*pages are too shallow/is);
+      expect(out).toMatch(/hindsight_recall when pages lack the evidence/);
+      expect(out).toMatch(/hindsight_reflect only when pages and recall are too shallow/);
       // No `s` flag ON PURPOSE: this must stay a per-LINE guard against the old wording
       // ("call hindsight_reflect with that goal FIRST"). With `s` it would span newlines and
       // match the legitimate "hindsight_reflect ..." / "FIRST STOP" lines further down the guide.

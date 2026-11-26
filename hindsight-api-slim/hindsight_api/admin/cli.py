@@ -15,10 +15,12 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import aiohttp
 import asyncpg
 import typer
+from filelock import Timeout
 
 from ..config import DEFAULT_DATABASE_SCHEMA, HindsightConfig, load_dotenv_for_entrypoint
 from ..db_url import is_oracle_url
@@ -94,6 +96,10 @@ BACKUP_TABLES = [
     "llm_requests",
     "graph_maintenance_queue",
     "entity_maintenance_queue",
+    "sync_object_state",
+    "sync_change_log",
+    "sync_cursors",
+    "sync_conflicts",
 ]
 
 MANIFEST_VERSION = "2"
@@ -355,62 +361,67 @@ async def _backup(
     extension-augmented list from ``_effective_backup_tables()``.
     """
     backup_tables = backup_tables if backup_tables is not None else BACKUP_TABLES
-    # sql_memories(), not get_memories(): backup reads this Postgres schema's own tables, whatever the store.
-    pg_store = sql_memories()
     conn = await asyncpg.connect(database_url)
     try:
-        tables: dict[str, Any] = {}
-        manifest: dict[str, Any] = {
-            "version": MANIFEST_VERSION,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "schema": schema,
-            "tables": tables,
-        }
-
-        # Use a transaction with REPEATABLE READ isolation to get a consistent
-        # snapshot across all tables. This prevents race conditions where
-        # entity_cooccurrences could reference entities created after the
-        # entities table was backed up.
+        # A consistent snapshot across tables preserves cross-table references.
         async with conn.transaction(isolation="repeatable_read"):
-            with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for i, table in enumerate(backup_tables, 1):
-                    typer.echo(f"  [{i}/{len(backup_tables)}] Backing up {table}...", nl=False)
-
-                    buffer = io.BytesIO()
-
-                    columns = await _table_columns(conn, schema, table)
-
-                    # Pin the ordered columns into both the stream and manifest.
-                    # PostgreSQL binary COPY does not encode column identities, so
-                    # restore must validate this shape before truncating any data.
-                    # asyncpg requires schema_name as separate parameter
-                    await conn.copy_from_table(
-                        table,
-                        schema_name=schema,
-                        columns=[column.name for column in columns],
-                        output=buffer,
-                        format="binary",
-                    )
-
-                    data = buffer.getvalue()
-                    zf.writestr(f"{table}.bin", data)
-
-                    # Get row count for manifest. Through the Postgres store, which alone may
-                    # name its own tables (#4969) — this walks every table of the schema.
-                    row_count = await pg_store.admin_count_rows(conn=conn, schema=schema, table=table)
-                    tables[table] = {
-                        "rows": row_count,
-                        "size_bytes": len(data),
-                        "columns": [{"name": column.name, "type_name": column.type_name} for column in columns],
-                    }
-
-                    typer.echo(f" {row_count} rows")
-
-                zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-
-        return manifest
+            return await _write_backup(conn, output_path, schema, backup_tables)
     finally:
         await conn.close()
+
+
+async def _write_backup(
+    conn: asyncpg.Connection, output_path: Path, schema: str, backup_tables: list[str], *, quiet: bool = False
+) -> dict[str, Any]:
+    """Write a backup using the caller's transaction and snapshot."""
+    pg_store = sql_memories()
+    tables: dict[str, Any] = {}
+    manifest: dict[str, Any] = {
+        "version": MANIFEST_VERSION,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "schema": schema,
+        "tables": tables,
+    }
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, table in enumerate(backup_tables, 1):
+            if not quiet:
+                typer.echo(f"  [{i}/{len(backup_tables)}] Backing up {table}...", nl=False)
+
+            buffer = io.BytesIO()
+
+            columns = await _table_columns(conn, schema, table)
+
+            # Pin the ordered columns into both the stream and manifest.
+            # PostgreSQL binary COPY does not encode column identities, so
+            # restore must validate this shape before truncating any data.
+            # asyncpg requires schema_name as separate parameter
+            await conn.copy_from_table(
+                table,
+                schema_name=schema,
+                columns=[column.name for column in columns],
+                output=buffer,
+                format="binary",
+            )
+
+            data = buffer.getvalue()
+            zf.writestr(f"{table}.bin", data)
+
+            # Get row count for manifest. Through the Postgres store, which alone may
+            # name its own tables (#4969) — this walks every table of the schema.
+            row_count = await pg_store.admin_count_rows(conn=conn, schema=schema, table=table)
+            tables[table] = {
+                "rows": row_count,
+                "size_bytes": len(data),
+                "columns": [{"name": column.name, "type_name": column.type_name} for column in columns],
+            }
+
+            if not quiet:
+                typer.echo(f" {row_count} rows")
+
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    return manifest
 
 
 async def _restore(
@@ -436,23 +447,14 @@ async def _restore(
             if manifest.get("version") != MANIFEST_VERSION:
                 raise ValueError(f"Unsupported backup version: {manifest.get('version')}")
 
-            # Complete the compatibility check before entering the transaction
-            # that truncates tables. This turns historical schema drift into an
-            # actionable error without risking the target's existing data.
-            restore_plans = await _validate_restore_schema(conn, manifest, schema)
-
-            # Backups made before working rules were included cannot replace them.
-            if "working_rules" not in restore_plans:
-                backup_tables = [table for table in backup_tables if table != "working_rules"]
-
-            # Use a transaction for atomic restore - either all tables are
-            # restored or none are, preventing partial/inconsistent state.
             async with conn.transaction():
+                await conn.execute("SET LOCAL hindsight.sync_applying = '1'")
+
+                restore_plans = await _validate_restore_schema(conn, manifest, schema)
+                if "working_rules" not in restore_plans:
+                    backup_tables = [table for table in backup_tables if table != "working_rules"]
+
                 typer.echo("  Clearing existing data...")
-                # Truncate tables in reverse order (respects FK constraints). Through the
-                # Postgres store, which alone may name its own tables (#4969).
-                # sql_memories(), not get_memories(): restore rewrites this Postgres schema's own tables,
-                # whatever the store.
                 await sql_memories().admin_truncate_tables(
                     conn=conn, schema=schema, tables=list(reversed(backup_tables))
                 )
@@ -564,6 +566,385 @@ def restore(
     total_rows = sum(t["rows"] for t in manifest["tables"].values())
     typer.echo(f"Restored {total_rows} rows across {len(manifest['tables'])} tables")
     typer.echo("Restore complete")
+
+
+@app.command()
+def sync(
+    server: str = typer.Argument(..., help="HTTPS URL of the Hindsight sync relay"),
+    state_dir: Path = typer.Option(..., help="Private state directory for this local replica"),
+    schema: str | None = typer.Option(None, help="Database schema, defaults to HINDSIGHT_API_DATABASE_SCHEMA"),
+    prefer: Literal["local", "remote"] | None = typer.Option(None, help="Choose the copy to keep on conflict"),
+    auto_resolve: bool = typer.Option(
+        True,
+        "--auto-resolve/--no-auto-resolve",
+        envvar="HINDSIGHT_SYNC_AUTO_RESOLVE",
+        help="For an established replica, keep the published version and preserve local edits for review",
+    ),
+):
+    """Sync a local Hindsight library with a sync relay (incremental object sync v3)."""
+    from ..engine.sync_service import SyncAuthError, SyncError, SyncManualChoiceRequired, synchronize_v3
+
+    config = HindsightConfig.from_env()
+    database_url = os.getenv("HINDSIGHT_API_DATABASE_URL")
+    if not database_url:
+        typer.echo("Error: Explicitly set HINDSIGHT_API_DATABASE_URL to the local replica", err=True)
+        raise typer.Exit(1)
+    if (
+        config.database_backend != "postgresql"
+        or is_oracle_url(database_url)
+        or config.file_storage_type != "native"
+        or config.file_storage_extension
+        or os.getenv("HINDSIGHT_API_MEMORIES_EXTENSION")
+        or config.kb_store_extension
+    ):
+        typer.echo("Error: Sync requires the built-in PostgreSQL stores and native file storage", err=True)
+        raise typer.Exit(1)
+    try:
+        result = asyncio.run(
+            synchronize_v3(
+                relay_url=server,
+                token=os.getenv("HINDSIGHT_SYNC_TOKEN", ""),
+                database_url=database_url,
+                schema=schema or config.database_schema,
+                state_dir=state_dir,
+                prefer=prefer,
+                auto_resolve=auto_resolve,
+            )
+        )
+    except Timeout as exc:
+        typer.echo("Error: Another sync command holds this replica's state lock", err=True)
+        raise typer.Exit(1) from exc
+    except asyncpg.LockNotAvailableError as exc:
+        typer.echo("Error: Local library is busy. Stop its API and workers, then retry", err=True)
+        raise typer.Exit(1) from exc
+    except (
+        SyncAuthError,
+        SyncManualChoiceRequired,
+        SyncError,
+        ValueError,
+        OSError,
+        aiohttp.ClientError,
+        asyncpg.PostgresError,
+    ) as exc:
+        typer.echo(f"Sync failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command()
+def sync_conflicts(
+    state_dir: Path | None = typer.Option(None, help="Private state directory (for device ID)"),
+    database_url: str | None = typer.Option(None, envvar="HINDSIGHT_API_DATABASE_URL", help="PostgreSQL database URL"),
+    schema: str | None = typer.Option(None, help="Database schema, defaults to HINDSIGHT_API_DATABASE_SCHEMA"),
+    show: str | None = typer.Option(None, help="Show the full record (and field diff) for a conflict ID"),
+    diff: bool = typer.Option(False, "--diff", help="Print unified JSON diff between local and remote payloads"),
+    confirm: str | None = typer.Option(None, help="Mark a conflict ID as reviewed"),
+    restore: str | None = typer.Option(
+        None, help="Restore either side of an object conflict ID as a new synced change"
+    ),
+    side: Literal["local", "remote"] | None = typer.Option(None, help="Side to restore ('local' or 'remote')"),
+    expected_version: int | None = typer.Option(
+        None, help="Optimistic lock: current local version required by --restore"
+    ),
+    note: str | None = typer.Option(None, help="Optional note saved with --confirm or --restore"),
+    unconfirmed_only: bool = typer.Option(False, "--unconfirmed-only", help="Show only unconfirmed conflict records"),
+):
+    """Review, diff, confirm, or restore per-object sync conflicts."""
+    import difflib
+
+    from ..engine.sync_journal import (
+        confirm_sync_conflict,
+        get_object_state,
+        get_sync_conflict,
+        list_sync_conflicts,
+    )
+    from ..engine.sync_service import SyncVersionConflictError, restore_sync_conflict_object
+
+    if sum(1 for x in (show, confirm, restore) if x is not None) > 1:
+        raise typer.BadParameter("Pass at most one of --show, --confirm, or --restore")
+    if note is not None and confirm is None and restore is None:
+        raise typer.BadParameter("Pass --note only with --confirm or --restore")
+    if restore is not None and (side is None or expected_version is None):
+        raise typer.BadParameter("--restore requires both --side local|remote and --expected-version")
+
+    config = HindsightConfig.from_env()
+    target_schema = schema or config.database_schema
+    resolved_db = database_url or os.getenv("HINDSIGHT_API_DATABASE_URL")
+
+    async def _db_action() -> bool:
+        if not resolved_db or is_oracle_url(resolved_db):
+            return False
+        pg_url = await resolve_database_url(resolved_db)
+        conn = await asyncpg.connect(pg_url)
+        try:
+            if restore is not None:
+                assert side is not None and expected_version is not None
+                dev_id = None
+                if state_dir is not None and (state_dir / "device.json").is_file():
+                    try:
+                        dev_id = json.loads((state_dir / "device.json").read_text()).get("device_id")
+                    except Exception:
+                        pass
+                updated = await restore_sync_conflict_object(
+                    conn,
+                    conflict_id=restore,
+                    side=side,
+                    expected_version=expected_version,
+                    note=note,
+                    device_id=dev_id,
+                    schema=target_schema,
+                )
+                typer.echo(updated.model_dump_json(indent=2))
+                return True
+
+            if confirm is not None:
+                rec = await get_sync_conflict(conn, confirm, schema=target_schema)
+                if rec is None:
+                    return False
+                updated = await confirm_sync_conflict(conn, confirm, note=note, schema=target_schema)
+                if updated is not None:
+                    typer.echo(updated.model_dump_json(indent=2))
+                return True
+
+            if show is not None:
+                rec = await get_sync_conflict(conn, show, schema=target_schema)
+                if rec is None:
+                    return False
+                st = await get_object_state(
+                    conn,
+                    object_type=rec.object_type,
+                    bank_id=rec.bank_id,
+                    object_id=rec.object_id,
+                    schema=target_schema,
+                )
+                typer.echo(rec.model_dump_json(indent=2))
+                typer.echo(f"current_object_version: {st.version if st is not None else 0}")
+                if diff:
+                    local_lines = json.dumps(
+                        rec.local_payload, indent=2, sort_keys=True, ensure_ascii=False, default=str
+                    ).splitlines(keepends=True)
+                    remote_lines = json.dumps(
+                        rec.remote_payload, indent=2, sort_keys=True, ensure_ascii=False, default=str
+                    ).splitlines(keepends=True)
+                    typer.echo(
+                        "".join(difflib.unified_diff(local_lines, remote_lines, fromfile="local", tofile="remote"))
+                    )
+                return True
+
+            page = await list_sync_conflicts(
+                conn, limit=200, offset=0, unconfirmed_only=unconfirmed_only, schema=target_schema
+            )
+            for rec in page.items:
+                st = await get_object_state(
+                    conn,
+                    object_type=rec.object_type,
+                    bank_id=rec.bank_id,
+                    object_id=rec.object_id,
+                    schema=target_schema,
+                )
+                cur_ver = st.version if st is not None else 0
+                review = "confirmed" if rec.confirmation is not None else "awaiting review"
+                restored = f", restored {rec.restored_side}->v{rec.restored_version}" if rec.restored_at else ""
+                typer.echo(
+                    f"[object] {rec.id}  {rec.detected_at.isoformat()}  {rec.object_type}:{rec.bank_id}/{rec.object_id}  "
+                    f"kept={rec.resolution} (local={rec.local_device_id}@v{rec.local_version}, "
+                    f"remote={rec.remote_device_id}@v{rec.remote_version}, current=v{cur_ver})  {review}{restored}"
+                )
+            return page.total > 0
+        finally:
+            await conn.close()
+
+    try:
+        handled_in_db = asyncio.run(_db_action())
+        if handled_in_db and (show or confirm or restore):
+            return
+        if restore is not None and not handled_in_db:
+            raise ValueError("Object conflict restore requires a configured PostgreSQL database and valid conflict ID")
+        if not handled_in_db:
+            typer.echo("No sync conflict records")
+    except (SyncVersionConflictError, ValueError, OSError, asyncpg.PostgresError) as exc:
+        typer.echo(f"Could not process sync conflicts: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+sync_device_app = typer.Typer(help="Manage per-device sync credentials on a Hindsight relay")
+app.add_typer(sync_device_app, name="sync-device")
+
+
+@sync_device_app.command("pake-init")
+def sync_device_pake_init(
+    server: str = typer.Argument(..., help="HTTPS URL of the Hindsight sync relay"),
+):
+    """Set the relay master password once using the administrator credential."""
+    from ..engine.aiohttp_session import per_phase_timeout
+    from ..engine.sync_service import RelayV3Client, SyncError, validate_relay_url, validate_sync_token
+    from .sync_pake import initialize_pake
+
+    async def _run(url: str, token: str, password: str) -> None:
+        async with aiohttp.ClientSession(timeout=per_phase_timeout(30, connect=10)) as session:
+            await initialize_pake(RelayV3Client(url, session, token=token), password)
+
+    try:
+        url = validate_relay_url(server)
+        token = validate_sync_token(os.getenv("HINDSIGHT_SYNC_TOKEN", ""))
+        password = typer.prompt("Master password", hide_input=True, confirmation_prompt=True)
+        asyncio.run(_run(url, token, password))
+    except (SyncError, ValueError, aiohttp.ClientError, TimeoutError) as exc:
+        typer.echo(f"Failed to initialize PAKE: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo("Relay master password initialized")
+
+
+@sync_device_app.command("login")
+def sync_device_login(
+    server: str = typer.Argument(..., help="HTTPS URL of the Hindsight sync relay"),
+    name: str | None = typer.Option(None, "--name", help="Human-readable label for a new device"),
+    state_dir: Path | None = typer.Option(
+        None, "--state-dir", envvar="HINDSIGHT_SYNC_STATE_DIR", help="Private state directory of this replica"
+    ),
+):
+    """Sign in using the master password and save the device credential for automatic sync."""
+    from ..engine.sync_scheduler import default_sync_state_dir
+    from ..engine.sync_service import SyncError, validate_relay_url
+    from .sync_pake import sign_in_device
+
+    directory = state_dir or default_sync_state_dir()
+    try:
+        url = validate_relay_url(server)
+        password = typer.prompt("Master password", hide_input=True)
+        device = asyncio.run(sign_in_device(url, password, directory, name=name))
+    except (SyncError, ValueError, aiohttp.ClientError, OSError, TimeoutError) as exc:
+        typer.echo(f"Sync login failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Signed in as {device.device_id}. Credential saved to {directory / 'device.json'}")
+
+
+@sync_device_app.command("list")
+def sync_device_list(
+    server: str = typer.Argument(..., help="HTTPS URL of the Hindsight sync relay"),
+):
+    """List devices registered on the sync relay."""
+    from ..engine.aiohttp_session import per_phase_timeout
+    from ..engine.sync_service import RelayV3Client, SyncError
+
+    token = os.getenv("HINDSIGHT_SYNC_TOKEN", "")
+
+    async def _run():
+        async with aiohttp.ClientSession(timeout=per_phase_timeout(30, connect=10)) as session:
+            client = RelayV3Client(server, session, token=token)
+            return await client.list_devices()
+
+    try:
+        devices = asyncio.run(_run())
+    except (SyncError, ValueError, aiohttp.ClientError) as exc:
+        typer.echo(f"Failed to list sync devices: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if not devices:
+        typer.echo("No registered sync devices")
+        return
+    for d in devices:
+        state = "active" if d.active else f"revoked ({d.revoked_at})"
+        typer.echo(f"{d.device_id}  name={d.name}  status={state}  last_seen={d.last_seen_at or 'never'}")
+
+
+@sync_device_app.command("register")
+def sync_device_register(
+    server: str = typer.Argument(..., help="HTTPS URL of the Hindsight sync relay"),
+    name: str = typer.Option(..., "--name", help="Human-readable label for this device"),
+    device_id: str | None = typer.Option(None, "--device-id", help="Optional explicit device ID"),
+    state_dir: Path | None = typer.Option(None, "--state-dir", help="Optional state dir to persist device.json"),
+):
+    """Provision a new per-device token on the sync relay."""
+    from ..engine.aiohttp_session import per_phase_timeout
+    from ..engine.sync_service import DeviceIdentity, RelayV3Client, SyncError, save_device_identity, validate_relay_url
+
+    token = os.getenv("HINDSIGHT_SYNC_TOKEN", "")
+
+    async def _run():
+        async with aiohttp.ClientSession(timeout=per_phase_timeout(30, connect=10)) as session:
+            client = RelayV3Client(server, session, token=token)
+            return await client.register_device(name=name, device_id=device_id)
+
+    try:
+        prov = asyncio.run(_run())
+        if state_dir is not None:
+            save_device_identity(
+                state_dir,
+                DeviceIdentity(
+                    device_id=prov.device_id,
+                    token=prov.token,
+                    name=prov.name,
+                    relay_url=validate_relay_url(server),
+                    per_device_token=True,
+                    created_at=datetime.now(timezone.utc),
+                ),
+            )
+    except (SyncError, ValueError, aiohttp.ClientError, OSError) as exc:
+        typer.echo(f"Failed to register sync device: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(prov.model_dump_json(indent=2))
+
+
+@sync_device_app.command("rotate")
+def sync_device_rotate(
+    server: str = typer.Argument(..., help="HTTPS URL of the Hindsight sync relay"),
+    device_id: str = typer.Argument(..., help="Device ID whose token should be rotated"),
+    state_dir: Path | None = typer.Option(None, "--state-dir", help="Update device.json in this directory if matching"),
+):
+    """Rotate a device's bearer token on the sync relay (invalidates its previous token immediately)."""
+    from ..engine.aiohttp_session import per_phase_timeout
+    from ..engine.sync_service import (
+        RelayV3Client,
+        SyncError,
+        load_device_identity,
+        save_device_identity,
+        validate_relay_url,
+    )
+
+    token = os.getenv("HINDSIGHT_SYNC_TOKEN", "")
+
+    async def _run():
+        async with aiohttp.ClientSession(timeout=per_phase_timeout(30, connect=10)) as session:
+            client = RelayV3Client(server, session, token=token)
+            return await client.rotate_device(device_id)
+
+    try:
+        prov = asyncio.run(_run())
+        if state_dir is not None:
+            cur = load_device_identity(state_dir, validate_relay_url(server))
+            if cur is not None and cur.device_id == prov.device_id:
+                save_device_identity(
+                    state_dir,
+                    cur.model_copy(update={"token": prov.token, "per_device_token": True}),
+                )
+    except (SyncError, ValueError, aiohttp.ClientError, OSError) as exc:
+        typer.echo(f"Failed to rotate sync device token: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(prov.model_dump_json(indent=2))
+
+
+@sync_device_app.command("revoke")
+def sync_device_revoke(
+    server: str = typer.Argument(..., help="HTTPS URL of the Hindsight sync relay"),
+    device_id: str = typer.Argument(..., help="Device ID to revoke permanently"),
+):
+    """Revoke a device credential so it can no longer read or write sync data."""
+    from ..engine.aiohttp_session import per_phase_timeout
+    from ..engine.sync_service import RelayV3Client, SyncError
+
+    token = os.getenv("HINDSIGHT_SYNC_TOKEN", "")
+
+    async def _run():
+        async with aiohttp.ClientSession(timeout=per_phase_timeout(30, connect=10)) as session:
+            client = RelayV3Client(server, session, token=token)
+            return await client.revoke_device(device_id)
+
+    try:
+        info = asyncio.run(_run())
+    except (SyncError, ValueError, aiohttp.ClientError) as exc:
+        typer.echo(f"Failed to revoke sync device: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(info.model_dump_json(indent=2))
 
 
 async def _run_migration(

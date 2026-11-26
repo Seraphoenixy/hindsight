@@ -20,11 +20,6 @@ import { resolveEmbedCommand } from "./ops";
 let cached: string | null = null;
 let inflight: Promise<string | null> | null = null;
 
-/** Drop the cached token so the next call re-reads it from the CLI. */
-export function invalidateOpsToken(): void {
-  cached = null;
-}
-
 /**
  * Return the ops token, or null when the embed CLI cannot supply one.
  *

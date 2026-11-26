@@ -176,12 +176,13 @@ function useFieldEditor(
 ): FieldEditor {
   const t = useTranslations("bankConfig");
   const [draft, setDraft] = useState(block.value ?? "");
+  const [prevBlockValue, setPrevBlockValue] = useState(block.value);
+  if (block.value !== prevBlockValue) {
+    setPrevBlockValue(block.value);
+    setDraft(block.value ?? "");
+  }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // The preview refetches after every save, so the block's value is the source of
-  // truth; re-seed the draft whenever it changes underneath us.
-  useEffect(() => setDraft(block.value ?? ""), [block.value]);
 
   function save(next: string) {
     setSaving(true);
@@ -216,7 +217,6 @@ function BlockControl({
   editor,
   editing,
   setEditing,
-  onClose,
   name,
 }: {
   block: Block;
@@ -703,9 +703,12 @@ function RunSettingRow({
 }) {
   const t = useTranslations("bankConfig");
   const [draft, setDraft] = useState(setting.value ?? "");
+  const [prevSettingValue, setPrevSettingValue] = useState(setting.value);
+  if (setting.value !== prevSettingValue) {
+    setPrevSettingValue(setting.value);
+    setDraft(setting.value ?? "");
+  }
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => setDraft(setting.value ?? ""), [setting.value]);
 
   function save() {
     if (draft === (setting.value ?? "")) return;
@@ -1043,7 +1046,6 @@ function PromptPreviewDialog({
   onSaved?: (field: string, value: unknown) => void;
 }) {
   const t = useTranslations("bankConfig");
-  const tCommon = useTranslations("common");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loading, setLoading] = useState(false);
   // Whether anything is on screen yet. A ref, not `preview`, because the load effect
@@ -1097,12 +1099,19 @@ function PromptPreviewDialog({
     };
   }, [open, bankId, operation, reloads, strategy]);
 
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (!open) {
+      setPreview(null);
+    }
+  }
+
   // Closing discards what was on screen, so the next open starts from the spinner
   // rather than briefly showing another bank's or operation's blocks.
   useEffect(() => {
     if (!open) {
       hasPreview.current = false;
-      setPreview(null);
     }
   }, [open]);
 

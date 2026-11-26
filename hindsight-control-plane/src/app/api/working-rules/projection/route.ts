@@ -7,8 +7,6 @@ export async function GET(request: NextRequest) {
   const response = await sdk.getWorkingRulesProjection({
     client: lowLevelClient,
     query: {
-      project_id: sp.get("project_id") ?? undefined,
-      branch: sp.get("branch") ?? undefined,
       max_chars: sp.has("max_chars") ? Number(sp.get("max_chars")) : undefined,
     },
   });

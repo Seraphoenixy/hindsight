@@ -287,10 +287,10 @@ class TestService:
 class TestSettingsCatalog:
     def test_catalog_is_well_formed(self):
         """Every group is non-empty, keys unique, selects carry their options."""
-        keys = [f.key for g in settings_module.SETTING_GROUPS for f in g.fields]
+        keys = [f.key for g in settings_module.ALL_SETTING_GROUPS for f in g.fields]
         assert len(keys) == len(set(keys)), "duplicate key in the catalog"
         assert len(keys) >= 30, "the form should cover more than the old 7-field wizard"
-        for group in settings_module.SETTING_GROUPS:
+        for group in settings_module.ALL_SETTING_GROUPS:
             assert group.fields, f"group {group.id} has no fields"
             assert group.label and group.description
             for field in group.fields:
@@ -298,6 +298,20 @@ class TestSettingsCatalog:
                 assert field.label and field.description
                 if field.kind in ("select", "combo"):
                     assert field.options, f"{field.key} is a {field.kind} with no options"
+
+    def test_sync_connection_credentials_live_only_in_the_sync_panel(self):
+        """The settings catalog must not duplicate the relay URL or token inputs.
+
+        The sync panel owns signed PAKE connection setup. Leaving either legacy
+        bearer-token field in the generic settings form presents users with two
+        different ways to configure the same server. Sync also has its own page
+        (ADR-012), so its group must not be in the local catalog at all.
+        """
+        assert all(group.id != "sync" for group in settings_module.SETTING_GROUPS)
+        sync_group = settings_module.SYNC_SETTING_GROUP
+        sync_keys = {field.key for field in sync_group.fields}
+        assert "HINDSIGHT_SYNC_RELAY_URL" not in sync_keys
+        assert "HINDSIGHT_SYNC_TOKEN" not in sync_keys
 
     def test_every_label_has_a_chinese_counterpart(self):
         """Chinese is the default language, so a missing 中文 label is a blank UI.
@@ -307,7 +321,7 @@ class TestSettingsCatalog:
         instead of rendering its English label among Chinese ones.
         """
         missing: list[str] = []
-        for group in settings_module.SETTING_GROUPS:
+        for group in settings_module.ALL_SETTING_GROUPS:
             if not group.label_zh or not group.description_zh:
                 missing.append(f"group {group.id}")
             for field in group.fields:
@@ -326,12 +340,12 @@ class TestSettingsCatalog:
 
         text = load_template()
         assert text, "bundled env template not found"
-        missing = [k for k in settings_module.field_index() if k not in text]
+        missing = [k for k in settings_module.managed_keys() if k not in text]
         assert not missing, f"catalog keys absent from the env template: {missing}"
 
     def test_combo_options_and_labels_line_up(self):
         """A combo offers each known value once, with a display name in both languages."""
-        for group in settings_module.SETTING_GROUPS:
+        for group in settings_module.ALL_SETTING_GROUPS:
             for field in group.fields:
                 if field.kind != "combo":
                     continue
@@ -493,6 +507,41 @@ class TestOpsCommands:
         assert field["label"] and field["label_zh"]
         assert field["description"] and field["description_zh"]
 
+    def test_sync_group_has_its_own_document_and_is_not_in_local_settings(self, temp_hindsight_dir):
+        """Sync moved to its own page (ADR-012); the local form must not offer it."""
+        code, local = run_ops(["settings"])
+        assert code == 0
+        assert "sync" not in {group["id"] for group in local["groups"]}
+
+        code, sync = run_ops(["sync-settings"])
+        assert code == 0
+        assert [group["id"] for group in sync["groups"]] == ["sync"]
+
+    def test_sync_settings_save_through_their_own_command(self, temp_hindsight_dir):
+        code, doc = run_ops(
+            ["save-sync-settings"],
+            stdin='{"values":{"HINDSIGHT_SYNC_AUTO_ENABLED":"false","HINDSIGHT_SYNC_INTERVAL_SECONDS":"30"}}',
+        )
+        assert code == 0
+        fields = {field["key"]: field["value"] for field in doc["groups"][0]["fields"]}
+        assert fields["HINDSIGHT_SYNC_AUTO_ENABLED"] == "false"
+        assert fields["HINDSIGHT_SYNC_INTERVAL_SECONDS"] == "30"
+        # The daemon reads the same .env, and the values are still absent from
+        # the local form's document.
+        assert service._read_raw_env("")["HINDSIGHT_SYNC_INTERVAL_SECONDS"] == "30"
+        _, local = run_ops(["settings"])
+        assert "sync" not in {group["id"] for group in local["groups"]}
+
+    def test_each_save_path_rejects_the_other_page_keys(self, temp_hindsight_dir):
+        """Two documents, two write paths: neither accepts the other's keys."""
+        code, doc = run_ops(["save-settings"], stdin='{"values":{"HINDSIGHT_SYNC_INTERVAL_SECONDS":"5"}}')
+        assert code == 2
+        assert "unknown setting" in doc["error"]
+
+        code, doc = run_ops(["save-sync-settings"], stdin='{"values":{"HINDSIGHT_API_LLM_MODEL":"x"}}')
+        assert code == 2
+        assert "unknown setting" in doc["error"]
+
     def test_config_masks_the_api_key(self, temp_hindsight_dir):
         service.save_llm_config("", "openai", "sk-secret-value-123", "gpt-4o", "")
         code, doc = run_ops(["config"])
@@ -594,6 +643,59 @@ class TestOpsCommands:
         assert code == 0
         assert doc["token"]
         assert auth.read_token() == doc["token"]
+
+    def test_snapshot_reads_the_requested_sections_in_order(self, temp_hindsight_dir):
+        """One process answers the whole first paint, in the caller's order."""
+        service.save_llm_config("", "groq", "", "", "")
+        code, doc = run_ops(["snapshot", "--include", "config,paths,env"])
+        assert code == 0
+        assert doc["profile"] == ""
+        assert list(doc["sections"]) == ["config", "paths", "env"]
+        assert doc["sections"]["config"]["provider"] == "groq"
+        assert isinstance(doc["sections"]["paths"]["port"], int)
+        assert doc["errors"] == {}
+
+    def test_snapshot_defaults_to_every_section(self, temp_hindsight_dir, monkeypatch):
+        """Without `--include` the CLI asks the service for the full catalog, so a
+        human or a script gets the whole profile rather than a page's subset."""
+        captured: dict[str, object] = {}
+
+        def fake_snapshot(name, include=None):
+            captured["name"] = name
+            captured["include"] = include
+            return service.SnapshotView(profile=name, sections={}, errors={})
+
+        monkeypatch.setattr(service, "read_snapshot", fake_snapshot)
+        code, doc = run_ops(["snapshot"])
+        assert code == 0
+        assert captured == {"name": "", "include": None}
+        assert doc == {"profile": "", "sections": {}, "errors": {}}
+
+    def test_snapshot_keeps_the_other_sections_when_one_fails(self, temp_hindsight_dir, monkeypatch):
+        """A failing section is data the page can name, not a blank page."""
+
+        def broken(name):
+            raise RuntimeError("database is unreachable")
+
+        monkeypatch.setitem(service.SNAPSHOT_SECTIONS, "config", broken)
+        code, doc = run_ops(["snapshot", "--include", "config,paths"])
+        assert code == 0
+        assert "config" not in doc["sections"]
+        assert "port" in doc["sections"]["paths"]
+        assert "database is unreachable" in doc["errors"]["config"]
+
+    def test_snapshot_rejects_an_unknown_section(self, temp_hindsight_dir):
+        """A typo must not look like an empty panel, so it is a usage error that
+        names both the bad value and the accepted ones."""
+        code, doc = run_ops(["snapshot", "--include", "config,nope"])
+        assert code == 2
+        assert "nope" in doc["error"]
+        assert "settings" in doc["error"]
+
+    def test_snapshot_rejects_an_empty_include(self, temp_hindsight_dir):
+        code, doc = run_ops(["snapshot", "--include", ","])
+        assert code == 2
+        assert "at least one section" in doc["error"]
 
     def test_ui_status_does_not_start_or_stop_anything(self, temp_hindsight_dir, monkeypatch):
         """The control plane cannot drive its own lifecycle.

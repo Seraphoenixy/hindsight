@@ -80,14 +80,13 @@ def test_output_too_long_error_is_a_single_class_across_modules():
     what the providers raise and the #2579 auto-split becomes dead code.
     """
     from hindsight_api.engine import llm_interface, llm_wrapper, multi_llm
-    from hindsight_api.engine.providers import litellm_llm, openai_compatible_llm
+    from hindsight_api.engine.providers import openai_compatible_llm
     from hindsight_api.engine.retain import fact_extraction
 
     canonical = llm_interface.OutputTooLongError
     assert llm_wrapper.OutputTooLongError is canonical
     assert fact_extraction.OutputTooLongError is canonical
     assert multi_llm.OutputTooLongError is canonical
-    assert litellm_llm.OutputTooLongError is canonical
     assert openai_compatible_llm.OutputTooLongError is canonical
 
 
@@ -209,6 +208,56 @@ async def test_non_dict_json_all_retries_raises():
 
     # Budget 3 => 3 retries after the initial request.
     assert llm_config.call.call_count == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fact_kind", "start", "end"),
+    [
+        ("conversation", "2026-11-25T09:00:00+00:00", "2026-11-25T09:00:00+00:00"),
+        ("event", "2026-11-25T09:00:00+00:00", None),
+        ("event", None, None),
+        ("conversation", None, None),
+    ],
+)
+async def test_occurrence_times_survive_classification_without_using_ingestion_time(fact_kind, start, end):
+    from hindsight_api.engine.retain.fact_extraction import _extract_facts_from_chunk
+
+    config = _make_config()
+    llm = _make_llm_config(
+        mock_response={
+            "facts": [
+                {
+                    "what": "The project adopted the recall default.",
+                    "when": "",
+                    "where": "",
+                    "who": "",
+                    "why": "",
+                    "fact_type": "world",
+                    "fact_kind": fact_kind,
+                    "occurred_start": start,
+                    "occurred_end": end,
+                }
+            ]
+        }
+    )
+    with patch(
+        "hindsight_api.engine.retain.fact_extraction._build_extraction_prompt_and_schema",
+        return_value=ExtractionPrompt(system_prompt="system prompt", response_schema=MagicMock()),
+    ):
+        facts, _usage = await _extract_facts_from_chunk(
+            chunk="The project adopted the recall default.",
+            chunk_index=0,
+            total_chunks=1,
+            event_date=datetime(2026, 11, 26, tzinfo=timezone.utc),
+            context="",
+            llm_config=llm,
+            config=config,
+            agent_name="test-agent",
+        )
+    assert len(facts) == 1
+    assert facts[0].occurred_start == start
+    assert facts[0].occurred_end == (end or start)
 
 
 @pytest.mark.asyncio

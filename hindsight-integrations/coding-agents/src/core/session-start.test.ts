@@ -30,7 +30,9 @@ vi.mock("./config", async (importOriginal) => {
   return {
     ...actual,
     loadConfig: (...a: Parameters<typeof actual.loadConfig>) =>
-      rawConfig ? actual.resolveConfig(rawConfig) : actual.loadConfig(...a),
+      rawConfig
+        ? actual.resolveConfig({ serverMode: "self-hosted", apiToken: "test-key", ...rawConfig })
+        : actual.loadConfig(...a),
   };
 });
 
@@ -768,7 +770,7 @@ describe("buildSessionStartContext — crashed-survey retry (baseline without fi
     const out = await buildSessionStartContext({
       cwd: "/tmp/x",
       bankId: "bank-1",
-      cfg: resolveConfig({ surveyRefreshCommits: 50 }),
+      cfg: resolveConfig({ surveyRefreshCommits: 50, apiToken: "test-key" }),
       client,
       hasGit: () => true,
       startSeed: vi.fn(),
@@ -810,7 +812,7 @@ describe("buildSessionStartContext — survey attempt limit (#5623)", () => {
         buildSessionStartContext({
           cwd: "/tmp/x",
           bankId: "bank-1",
-          cfg: resolveConfig({ surveyRefreshCommits: 50 }),
+          cfg: resolveConfig({ surveyRefreshCommits: 50, apiToken: "test-key" }),
           client: {
             listDocumentIds: async (tag: string) =>
               tag === "source:survey-baseline"

@@ -33,7 +33,8 @@ vi.mock("./config", async (importOriginal) => {
   // them so a developer's real profile/uv installation can never turn a unit test into a 30 s wait.
   return {
     ...actual,
-    loadConfig: () => actual.resolveConfig({ daemonAutoStart: false, ...rawConfig }),
+    loadConfig: () =>
+      actual.resolveConfig({ serverMode: "self-hosted", apiToken: "test-key", ...rawConfig }),
   };
 });
 

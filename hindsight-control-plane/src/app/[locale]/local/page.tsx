@@ -13,10 +13,15 @@
 import { getOrCreateOpsToken } from "@/lib/ops-token";
 import { resolveEmbedCommand } from "@/lib/ops";
 import { LocalSettingsPanel } from "@/components/local-settings-panel";
+import { isLoopbackHostname, requestHostname } from "@/lib/local-access";
+import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
 export default async function LocalPage() {
-  const token = await getOrCreateOpsToken();
+  const requestHeaders = new Headers(await headers());
+  const token = isLoopbackHostname(requestHostname(requestHeaders))
+    ? await getOrCreateOpsToken()
+    : null;
   return <LocalSettingsPanel token={token} embedCommand={resolveEmbedCommand().join(" ")} />;
 }

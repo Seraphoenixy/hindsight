@@ -12,11 +12,8 @@ import {
   Copy,
   Download,
   FileText,
-  GitBranch,
   Moon,
   PencilLine,
-  Pin,
-  PinOff,
   Plus,
   RotateCcw,
   ScrollText,
@@ -30,7 +27,6 @@ import {
   type WorkingRuleOrganizeAction,
   type WorkingRuleOrganizeProposalItem,
   type WorkingRuleRecord,
-  type WorkingRuleScope,
   type WorkingRulesUsage,
 } from "@/lib/api";
 
@@ -71,12 +67,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-type ScopeFilter = "all" | WorkingRuleScope;
 type ViewTab = "active" | "archived" | "organize";
 
 const IMPORTANCE_BADGE: Record<WorkingRuleImportance, string> = {
@@ -106,8 +100,6 @@ export function WorkingRulesView() {
   const { theme, toggleTheme } = useTheme();
 
   const [tab, setTab] = useState<ViewTab>("active");
-  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
-  const [projectFilter, setProjectFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [rules, setRules] = useState<WorkingRuleRecord[]>([]);
@@ -119,11 +111,7 @@ export function WorkingRulesView() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<WorkingRuleRecord | null>(null);
   const [formContent, setFormContent] = useState("");
-  const [formScope, setFormScope] = useState<WorkingRuleScope>("global");
-  const [formProjectId, setFormProjectId] = useState("");
   const [formImportance, setFormImportance] = useState<WorkingRuleImportance>("normal");
-  const [formPinned, setFormPinned] = useState(false);
-  const [formBranches, setFormBranches] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Delete confirmation dialog state
@@ -159,8 +147,6 @@ export function WorkingRulesView() {
     setError(null);
     try {
       const res = await client.listWorkingRules({
-        scope: scopeFilter === "all" ? undefined : scopeFilter,
-        project_id: projectFilter.trim() || undefined,
         include_archived: true,
         q: searchQuery.trim() || undefined,
         limit: 500,
@@ -173,7 +159,7 @@ export function WorkingRulesView() {
     } finally {
       setLoading(false);
     }
-  }, [scopeFilter, projectFilter, searchQuery]);
+  }, [searchQuery]);
 
   useEffect(() => {
     void loadRules();
@@ -185,22 +171,14 @@ export function WorkingRulesView() {
   const openCreateDialog = () => {
     setEditingRule(null);
     setFormContent("");
-    setFormScope(scopeFilter === "project" ? "project" : "global");
-    setFormProjectId(projectFilter.trim());
     setFormImportance("normal");
-    setFormPinned(false);
-    setFormBranches("");
     setEditorOpen(true);
   };
 
   const openEditDialog = (rule: WorkingRuleRecord) => {
     setEditingRule(rule);
     setFormContent(rule.content);
-    setFormScope(rule.scope);
-    setFormProjectId(rule.project_id ?? "");
     setFormImportance(rule.importance);
-    setFormPinned(rule.pinned);
-    setFormBranches(rule.branches.join(", "));
     setEditorOpen(true);
   };
 
@@ -208,26 +186,16 @@ export function WorkingRulesView() {
     if (!formContent.trim()) return;
     setSaving(true);
     try {
-      const branches = parseCsvList(formBranches);
-      const projectId = formScope === "project" ? formProjectId.trim() || null : null;
       if (editingRule) {
         await client.updateWorkingRule(editingRule.id, {
           content: formContent.trim(),
-          scope: formScope,
-          project_id: projectId,
           importance: formImportance,
-          pinned: formPinned,
-          branches,
         });
         toast.success(t("updated"));
       } else {
         await client.createWorkingRule({
           content: formContent.trim(),
-          scope: formScope,
-          project_id: projectId,
           importance: formImportance,
-          pinned: formPinned,
-          branches,
         });
         toast.success(t("created"));
       }
@@ -237,15 +205,6 @@ export function WorkingRulesView() {
       toast.error(err instanceof Error ? err.message : t("saveFailed"));
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleTogglePin = async (rule: WorkingRuleRecord) => {
-    try {
-      await client.updateWorkingRule(rule.id, { pinned: !rule.pinned });
-      await loadRules();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : t("saveFailed"));
     }
   };
 
@@ -281,7 +240,7 @@ export function WorkingRulesView() {
 
   const openPromoteDialog = async (rule: WorkingRuleRecord) => {
     setPromoteTarget(rule);
-    setPromoteTags(rule.project_id ? `project:${rule.project_id}` : "");
+    setPromoteTags("");
     setPromoteBankId("");
     try {
       const res = await client.listBanks({ limit: 100 });
@@ -315,8 +274,6 @@ export function WorkingRulesView() {
     setExportLoading(true);
     try {
       const res = await client.exportWorkingRulesMarkdown({
-        scope: scopeFilter === "all" ? undefined : scopeFilter,
-        project_id: projectFilter.trim() || undefined,
         include_archived: true,
       });
       setExportMarkdown(res.markdown);
@@ -353,8 +310,6 @@ export function WorkingRulesView() {
     try {
       const preview = await client.previewWorkingRulesOrganization({
         instructions: organizeInstructions.trim(),
-        scope: scopeFilter === "all" ? undefined : scopeFilter,
-        project_id: projectFilter.trim() || undefined,
       });
       setOrganizePreview(preview);
       setSelectedProposals(new Set(preview.proposals.map((p) => p.number)));
@@ -396,10 +351,9 @@ export function WorkingRulesView() {
     }
   };
 
-  const bytesPct = usage && usage.limit_bytes > 0 ? Math.min(100, Math.round((usage.used_bytes / usage.limit_bytes) * 100)) : 0;
-  const pinnedPct =
-    usage && usage.pinned_limit_chars > 0
-      ? Math.min(100, Math.round((usage.pinned_chars / usage.pinned_limit_chars) * 100))
+  const bytesPct =
+    usage && usage.limit_bytes > 0
+      ? Math.min(100, Math.round((usage.used_bytes / usage.limit_bytes) * 100))
       : 0;
 
   return (
@@ -418,7 +372,12 @@ export function WorkingRulesView() {
           <span>{t("title")}</span>
         </div>
         <span className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="ghost" onClick={toggleTheme} aria-label={theme === "light" ? tNav("darkMode") : tNav("lightMode")}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={toggleTheme}
+            aria-label={theme === "light" ? tNav("darkMode") : tNav("lightMode")}
+          >
             {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
           </Button>
           <LanguageSwitcher />
@@ -445,7 +404,7 @@ export function WorkingRulesView() {
 
         {usage && (
           <Card>
-            <CardContent className="grid gap-4 pt-5 sm:grid-cols-2 lg:grid-cols-3">
+            <CardContent className="grid gap-4 pt-5 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">{t("usageBytes")}</span>
@@ -463,26 +422,14 @@ export function WorkingRulesView() {
                   />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">{t("pinnedBudget")}</span>
-                  <span className="font-mono">
-                    {usage.pinned_chars} / {usage.pinned_limit_chars}
-                  </span>
-                </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-full transition-all",
-                      pinnedPct >= 90 ? "bg-red-500" : "bg-primary"
-                    )}
-                    style={{ width: `${pinnedPct}%` }}
-                  />
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs sm:col-span-2 lg:col-span-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div>
-                  <span className="text-muted-foreground">{t("countsSummary", { active: usage.active_count, archived: usage.archived_count })}</span>
+                  <span className="text-muted-foreground">
+                    {t("countsSummary", {
+                      active: usage.active_count,
+                      archived: usage.archived_count,
+                    })}
+                  </span>
                 </div>
                 {revision && (
                   <code className="rounded bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
@@ -495,24 +442,6 @@ export function WorkingRulesView() {
         )}
 
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={scopeFilter} onValueChange={(v) => setScopeFilter(v as ScopeFilter)}>
-            <SelectTrigger className="w-full sm:w-40" aria-label={t("scopeLabel")}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t("scopeAll")}</SelectItem>
-              <SelectItem value="global">{t("scopeGlobal")}</SelectItem>
-              <SelectItem value="project">{t("scopeProject")}</SelectItem>
-            </SelectContent>
-          </Select>
-
-          <Input
-            value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
-            placeholder={t("projectFilterPlaceholder")}
-            className="w-full sm:w-48"
-          />
-
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -524,7 +453,9 @@ export function WorkingRulesView() {
         {error && (
           <Alert variant="destructive">
             <AlertTitle>{t("loadFailed")}</AlertTitle>
-            <AlertDescription>{error === "__load_failed__" ? t("loadFailed") : error}</AlertDescription>
+            <AlertDescription>
+              {error === "__load_failed__" ? t("loadFailed") : error}
+            </AlertDescription>
           </Alert>
         )}
 
@@ -567,38 +498,9 @@ export function WorkingRulesView() {
                         >
                           {t(`importance.${rule.importance}`)}
                         </span>
-                        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-                          {rule.scope === "project" && rule.project_id
-                            ? `${t("scopeProject")}: ${rule.project_id}`
-                            : t("scopeGlobal")}
-                        </span>
-                        {rule.pinned && (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                            <Pin className="h-3 w-3" />
-                            {t("pinnedLabel")}
-                          </span>
-                        )}
-                        {rule.branches.map((branch) => (
-                          <span
-                            key={branch}
-                            className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
-                          >
-                            <GitBranch className="h-3 w-3" />
-                            {branch}
-                          </span>
-                        ))}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleTogglePin(rule)}
-                          title={rule.pinned ? t("unpin") : t("pin")}
-                          aria-label={rule.pinned ? t("unpin") : t("pin")}
-                        >
-                          {rule.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-                        </Button>
                         <Button
                           size="sm"
                           variant="ghost"
@@ -663,11 +565,6 @@ export function WorkingRulesView() {
                         >
                           {t(`importance.${rule.importance}`)}
                         </span>
-                        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-                          {rule.scope === "project" && rule.project_id
-                            ? `${t("scopeProject")}: ${rule.project_id}`
-                            : t("scopeGlobal")}
-                        </span>
                         {rule.archive_reason && (
                           <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
                             {rule.archive_reason}
@@ -684,11 +581,7 @@ export function WorkingRulesView() {
                           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
                           {t("restoreAction")}
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => openPromoteDialog(rule)}
-                        >
+                        <Button size="sm" variant="outline" onClick={() => openPromoteDialog(rule)}>
                           <ArrowUpRight className="mr-1.5 h-3.5 w-3.5" />
                           {t("promoteAction")}
                         </Button>
@@ -731,7 +624,11 @@ export function WorkingRulesView() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-muted-foreground">{t("organizeHint")}</p>
                   <Button onClick={handlePreviewOrganize} disabled={previewingOrganize}>
-                    {previewingOrganize ? <Spinner className="mr-2 h-4 w-4" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                    {previewingOrganize ? (
+                      <Spinner className="mr-2 h-4 w-4" />
+                    ) : (
+                      <Sparkles className="mr-2 h-4 w-4" />
+                    )}
                     {previewingOrganize ? t("organizing") : t("generateOrganizePreview")}
                   </Button>
                 </div>
@@ -756,7 +653,11 @@ export function WorkingRulesView() {
                         )
                       }
                     >
-                      {applyingOrganize ? <Spinner className="mr-1.5 h-3.5 w-3.5" /> : <Check className="mr-1.5 h-3.5 w-3.5" />}
+                      {applyingOrganize ? (
+                        <Spinner className="mr-1.5 h-3.5 w-3.5" />
+                      ) : (
+                        <Check className="mr-1.5 h-3.5 w-3.5" />
+                      )}
                       {t("applySelected")}
                     </Button>
                   )}
@@ -797,7 +698,9 @@ export function WorkingRulesView() {
                                 </span>
                               )}
                             </div>
-                            <code className="font-mono text-xs text-muted-foreground">#{item.number}</code>
+                            <code className="font-mono text-xs text-muted-foreground">
+                              #{item.number}
+                            </code>
                           </div>
 
                           <p className="text-xs text-muted-foreground">{item.reason}</p>
@@ -840,76 +743,28 @@ export function WorkingRulesView() {
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>{t("scopeLabel")}</Label>
-                <Select value={formScope} onValueChange={(v) => setFormScope(v as WorkingRuleScope)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="global">{t("scopeGlobal")}</SelectItem>
-                    <SelectItem value="project">{t("scopeProject")}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label>{t("importanceLabel")}</Label>
-                <Select
-                  value={formImportance}
-                  onValueChange={(v) => setFormImportance(v as WorkingRuleImportance)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="critical">{t("importance.critical")}</SelectItem>
-                    <SelectItem value="normal">{t("importance.normal")}</SelectItem>
-                    <SelectItem value="low">{t("importance.low")}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {formScope === "project" && (
-              <div className="space-y-1.5">
-                <Label htmlFor="rule-project-id">{t("projectIdLabel")}</Label>
-                <Input
-                  id="rule-project-id"
-                  value={formProjectId}
-                  onChange={(e) => setFormProjectId(e.target.value)}
-                  placeholder={t("projectIdPlaceholder")}
-                />
-              </div>
-            )}
-
             <div className="space-y-1.5">
-              <Label htmlFor="rule-branches">{t("branchesLabel")}</Label>
-              <Input
-                id="rule-branches"
-                value={formBranches}
-                onChange={(e) => setFormBranches(e.target.value)}
-                placeholder={t("branchesPlaceholder")}
-              />
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border px-3 py-2">
-              <div className="space-y-0.5">
-                <Label htmlFor="rule-pinned">{t("pinnedLabel")}</Label>
-                <p className="text-xs text-muted-foreground">{t("pinnedHint")}</p>
-              </div>
-              <Switch id="rule-pinned" checked={formPinned} onCheckedChange={setFormPinned} />
+              <Label>{t("importanceLabel")}</Label>
+              <Select
+                value={formImportance}
+                onValueChange={(v) => setFormImportance(v as WorkingRuleImportance)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="critical">{t("importance.critical")}</SelectItem>
+                  <SelectItem value="normal">{t("importance.normal")}</SelectItem>
+                  <SelectItem value="low">{t("importance.low")}</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditorOpen(false)}>
               {tCommon("cancel")}
             </Button>
-            <Button
-              onClick={handleSaveRule}
-              disabled={saving || !formContent.trim() || (formScope === "project" && !formProjectId.trim())}
-            >
+            <Button onClick={handleSaveRule} disabled={saving || !formContent.trim()}>
               {saving && <Spinner className="mr-2 h-4 w-4" />}
               {tCommon("save")}
             </Button>
@@ -928,12 +783,7 @@ export function WorkingRulesView() {
               <Spinner />
             </div>
           ) : (
-            <Textarea
-              readOnly
-              rows={14}
-              value={exportMarkdown}
-              className="font-mono text-xs"
-            />
+            <Textarea readOnly rows={14} value={exportMarkdown} className="font-mono text-xs" />
           )}
           <DialogFooter>
             <Button variant="outline" onClick={handleCopyMarkdown} disabled={!exportMarkdown}>

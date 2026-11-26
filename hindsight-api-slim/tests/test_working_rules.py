@@ -25,7 +25,6 @@ from hindsight_api.engine.query_analyzer import DateparserQueryAnalyzer
 from hindsight_api.engine.response_models import LLMCallResult
 from hindsight_api.engine.task_backend import SyncTaskBackend
 from hindsight_api.engine.working_rules import (
-    WorkingRuleCapacityError,
     WorkingRuleConflictError,
     WorkingRuleNotFoundError,
     WorkingRuleRecord,
@@ -34,8 +33,6 @@ from hindsight_api.engine.working_rules import (
     _LLMOrganizeSuggestion,
     _match_rule_by_old_text,
     _pack_for_capacity,
-    assert_pinned_budget,
-    normalize_working_rule_branches,
     normalize_working_rule_content,
     working_rules_utf8_bytes,
 )
@@ -124,27 +121,19 @@ def _sample_rule(
     content: str,
     *,
     importance: str = "normal",
-    pinned: bool = False,
-    scope: str = "global",
-    project_id: str | None = None,
-    branches: list[str] | None = None,
     updated_at: datetime | None = None,
 ) -> WorkingRuleRecord:
     ts = updated_at or datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
     return WorkingRuleRecord(
         id=rule_id,
-        scope=scope,  # type: ignore[arg-type]
-        project_id=project_id,
         content=content,
         importance=importance,  # type: ignore[arg-type]
-        pinned=pinned,
-        branches=branches or [],
         created_at=ts,
         updated_at=ts,
     )
 
 
-def test_normalize_content_and_branches_validation():
+def test_normalize_content_validation():
     assert normalize_working_rule_content("  hello   world\nline2  ") == "hello world line2"
 
     with pytest.raises(WorkingRuleValidationError):
@@ -155,16 +144,6 @@ def test_normalize_content_and_branches_validation():
 
     with pytest.raises(WorkingRuleValidationError):
         normalize_working_rule_content("a" * 100, max_bytes=50)
-
-    assert normalize_working_rule_branches(["main", "feat/work-1", "release_v2.0"]) == [
-        "main",
-        "feat/work-1",
-        "release_v2.0",
-    ]
-
-    for bad in ([""], ["-flag"], ["a..b"], ["a//b"], ["a@{b}"], ["main", "main"], ["bad branch"]):
-        with pytest.raises(WorkingRuleValidationError):
-            normalize_working_rule_branches(bad)
 
 
 def test_match_rule_exact_precedes_substring():
@@ -179,26 +158,22 @@ def test_match_rule_exact_precedes_substring():
         _match_rule_by_old_text([r1, r2], "nonexistent")
 
 
-def test_pack_for_capacity_preserves_pinned_and_evicts_lowest_priority():
-    pinned = _sample_rule("p", "Pinned rule", importance="low", pinned=True)
+def test_pack_for_capacity_evicts_lowest_priority():
     crit = _sample_rule("c", "Critical rule", importance="critical")
     low = _sample_rule("l", "Low rule to evict", importance="low")
     pending = _sample_rule("n", "Brand new normal rule", importance="normal")
 
-    keep_bytes = working_rules_utf8_bytes([pinned, crit, pending])
-    overflow = _pack_for_capacity([pinned, crit, low], pending, keep_bytes)
+    keep_bytes = working_rules_utf8_bytes([crit, pending])
+    overflow = _pack_for_capacity([crit, low], pending, keep_bytes)
     assert [r.id for r in overflow] == ["l"]
-
-    with pytest.raises(WorkingRuleCapacityError):
-        assert_pinned_budget([_sample_rule("p2", "x" * 200, pinned=True)], pinned_limit_chars=100)
 
 
 @pytest.mark.asyncio
 async def test_working_rules_http_crud_projection_and_overflow(wr_client, wr_memory, monkeypatch):
-    # 1. Create global critical pinned rule and normal branch-scoped rule.
+    # 1. Create critical rule and normal rule.
     r1 = await wr_client.post(
         "/v1/default/working-rules",
-        json={"content": "Always run lint before commit", "importance": "critical", "pinned": True},
+        json={"content": "Always run lint before commit", "importance": "critical"},
     )
     assert r1.status_code == 200, r1.text
     r1_id = r1.json()["rule"]["id"]
@@ -208,54 +183,18 @@ async def test_working_rules_http_crud_projection_and_overflow(wr_client, wr_mem
         json={
             "content": "Use release checklist",
             "importance": "normal",
-            "branches": ["release/1.0"],
         },
     )
     assert r2.status_code == 200, r2.text
 
-    # 2. Project-scoped rule.
-    r3 = await wr_client.post(
-        "/v1/default/working-rules",
-        json={
-            "content": "Keep API handlers SQL-free",
-            "scope": "project",
-            "project_id": "proj-alpha",
-            "importance": "critical",
-        },
-    )
-    assert r3.status_code == 200, r3.text
+    # 2. Projection includes active rules.
+    proj = await wr_client.get("/v1/default/working-rules/projection")
+    assert proj.status_code == 200
+    body_proj = proj.json()
+    assert "Always run lint before commit" in body_proj["text"]
+    assert "Use release checklist" in body_proj["text"]
 
-    # 3. Projection on branch=main hides release/1.0 rule and excludes proj-alpha when project_id differs.
-    proj_main = await wr_client.get(
-        "/v1/default/working-rules/projection",
-        params={"project_id": "proj-alpha", "branch": "main"},
-    )
-    assert proj_main.status_code == 200
-    body_main = proj_main.json()
-    assert "#### Pinned Rules (must follow)" in body_main["text"]
-    assert "Always run lint before commit" in body_main["text"]
-    assert "Keep API handlers SQL-free" in body_main["text"]
-    assert "Use release checklist" not in body_main["text"]
-    assert "critical" not in body_main["text"]
-
-    # Projection on release/1.0 includes the branch-scoped rule.
-    proj_rel = await wr_client.get(
-        "/v1/default/working-rules/projection",
-        params={"project_id": "proj-other", "branch": "release/1.0"},
-    )
-    assert proj_rel.status_code == 200
-    assert "Use release checklist" in proj_rel.json()["text"]
-    assert "Keep API handlers SQL-free" not in proj_rel.json()["text"]
-
-    # Isolate the branch change from project scope when checking the revision.
-    proj_other_main = await wr_client.get(
-        "/v1/default/working-rules/projection",
-        params={"project_id": "proj-other", "branch": "main"},
-    )
-    assert proj_other_main.status_code == 200
-    assert proj_other_main.json()["revision"] != proj_rel.json()["revision"]
-
-    # 4. Mutate: duplicate add is idempotent; replace preserves higher importance.
+    # 3. Mutate: duplicate add is idempotent; replace preserves higher importance.
     dup = await wr_client.post(
         "/v1/default/working-rules/mutate",
         json={"action": "add", "content": "Always run lint before commit"},
@@ -274,7 +213,6 @@ async def test_working_rules_http_crud_projection_and_overflow(wr_client, wr_mem
     )
     assert rep.status_code == 200
     assert rep.json()["rule"]["importance"] == "critical"
-    assert rep.json()["rule"]["pinned"] is True
 
     # 5. Export markdown.
     exp = await wr_client.get("/v1/default/working-rules/export")
@@ -387,20 +325,6 @@ async def test_working_rules_organize_preview_and_apply(wr_client, wr_memory):
     assert outcomes[1]["ok"] is True
     assert outcomes[1]["rule"]["content"] == "Run Python tests with uv run pytest"
     assert outcomes[1]["rule"]["importance"] == "critical"
-
-
-@pytest.mark.asyncio
-async def test_working_rules_concurrent_pinned_adds_share_budget(
-    wr_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(_get_raw_config(), "working_rules_pinned_limit_chars", 60)
-    responses = await asyncio.gather(
-        wr_client.post("/v1/default/working-rules", json={"content": "First pinned rule", "pinned": True}),
-        wr_client.post("/v1/default/working-rules", json={"content": "Second pinned rule", "pinned": True}),
-    )
-    assert sorted(response.status_code for response in responses) == [200, 400]
-    listing = await wr_client.get("/v1/default/working-rules")
-    assert listing.json()["total"] == 1
 
 
 @pytest.mark.asyncio

@@ -356,8 +356,11 @@ function ObservationRow({
 export function ObservationTreeView() {
   const t = useTranslations("observationTree");
   const { currentBank: bankId } = useBank();
-  const [tree, setTree] = useState<ObservationTreeFolder | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [treeState, setTreeState] = useState<{
+    key: string;
+    tree: ObservationTreeFolder | null;
+    error: string | null;
+  }>({ key: "", tree: null, error: null });
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState(INDEX);
   const [query, setQuery] = useState("");
@@ -369,26 +372,40 @@ export function ObservationTreeView() {
   // topics. Strict modes, like the entities page: a tag should not pull in untagged memories.
   const [scopeTags, setScopeTags] = useState<string[]>([]);
   const [scopeMatch, setScopeMatch] = useState<"any" | "all">("any");
+  const scopeKey = `${bankId ?? ""}:${JSON.stringify(scopeTags)}:${scopeMatch}`;
+  const tree = treeState.key === scopeKey ? treeState.tree : null;
+  const error = treeState.key === scopeKey ? treeState.error : null;
+
+  const [prevScopeKey, setPrevScopeKey] = useState(scopeKey);
+  if (scopeKey !== prevScopeKey) {
+    setPrevScopeKey(scopeKey);
+    // Topic paths differ per scope; start each scope at its root index.md.
+    setSelected(INDEX);
+    setOpen(new Set());
+  }
 
   useEffect(() => {
     if (!bankId) return;
     let stale = false;
-    setTree(null);
-    setError(null);
-    // Topic paths differ per scope; start each scope at its root index.md.
-    setSelected(INDEX);
-    setOpen(new Set());
     client
       .getObservationTree(bankId, {
         tags: scopeTags,
         tags_match: scopeMatch === "all" ? "all_strict" : "any_strict",
       })
-      .then((t) => !stale && setTree(t))
-      .catch((e) => !stale && setError(e instanceof Error ? e.message : String(e)));
+      .then((t) => !stale && setTreeState({ key: scopeKey, tree: t, error: null }))
+      .catch(
+        (e) =>
+          !stale &&
+          setTreeState({
+            key: scopeKey,
+            tree: null,
+            error: e instanceof Error ? e.message : String(e),
+          })
+      );
     return () => {
       stale = true;
     };
-  }, [bankId, scopeTags, scopeMatch]);
+  }, [bankId, scopeTags, scopeMatch, scopeKey]);
 
   const { files, byPath, folders } = useMemo(() => {
     const all: ObservationTreeFile[] = [];

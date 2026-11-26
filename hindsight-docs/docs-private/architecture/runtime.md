@@ -5,10 +5,14 @@
 | 组件 | 职责 | 主要实现 |
 | --- | --- | --- |
 | coding-agents | 编码代理记忆采集、检索与 stdio MCP 工具 | `hindsight-integrations/coding-agents/src/` |
-| Magpie 插件 | 状态显示、启动、停止、重启、打开管理界面 | `src/magpie.ts`、`src/core/magpie-process.ts`、`magpie/page/` |
+| Magpie 插件 | 状态显示、启动、停止、重启、打开管理界面 | `src/magpie.ts`、`src/core/magpie-process.ts`、`hindsight-integrations/magpie/page/` |
 | 控制平面 | 记忆库界面及 `/local` 本地设置 | `hindsight-control-plane/` |
 | embed CLI | Profile、配置和进程生命周期的统一实现 | `hindsight-embed/hindsight_embed/` |
 | API | retain、recall、reflect、知识库及后台任务 | `hindsight-api-slim/` |
+| Linux 同步中继 | v3 对象级同步中继，维护因果对象日志、SHA-256 附件与设备凭据 | `hindsight-sync-server/` |
+
+启用多端同步后，每台设备继续使用本地 PostgreSQL。Linux 中继与记忆 API 独立部署，后台调度器与
+`hindsight-admin sync` 按对象级增量日志与内容寻址附件同步变更。部署和冲突处理见 [Linux 记忆库同步服务](../maintenance/linux-sync.md)。
 
 表中 `src/` 与 `magpie/` 简写相对于 coding-agents 包。
 
@@ -16,8 +20,9 @@
 
 1. Magpie 页面通过 options bridge 传递显式操作，宿主调用 embed CLI。
 2. 完整控制平面在系统浏览器打开；Magpie 沙箱页面保留进程状态与控制按钮。
-3. 控制平面 `/local` 通过服务端 `src/lib/ops.ts` 调用 `hindsight-embed ops`，不在 Node 中重写平台进程管理。
+3. 控制平面 `/local` 通过服务端 `src/lib/ops.ts` 调用 `hindsight-embed ops`，不在 Node 中重写平台进程管理；页面读模型用一次 `ops snapshot` 按 section 分组取回（诊断类后置），写操作仍逐条调用。
 4. 本地运维路由验证 loopback Host、Origin 与 ops token；令牌不能通过公开 GET 接口获取。
+5. 多端同步的配置入口是 `/sync`：登录由运行中的 daemon 完成，状态目录/自动同步/检查间隔由 `ops sync-settings` 写入 profile `.env`；`/local` 不再包含同步标签页。
 
 常用本地配置为 API `9077`、控制平面 `19077`、Profile `coding-agent`。这些是本地集成常用值，具体实例仍以插件选项、Profile 与进程状态为准，不与通用 API 开发端口混淆。
 
@@ -37,7 +42,7 @@
 | --- | --- |
 | 全局 LLM 并发 | `2` |
 | retain / consolidation LLM 并发 | 分别为 `1` / `1` |
-| HTTP MCP | 默认关闭；coding-agents 的 stdio MCP 独立保留 |
+| HTTP MCP | 保留功能，默认关闭；支持多库、单记忆库和单知识库端点，coding-agents 的 stdio MCP 同时保留 |
 | 记忆嵌入 | `local`，由原生 llama.cpp 服务提供；不是原先的 Python 模型栈 |
 | 记忆重排 | `rrf` |
 | 决策模型 | 默认关闭。启用后，召回、整合初筛、Reflect 和页面刷新共享决策客户端实现 |
@@ -49,9 +54,15 @@
 
 本地设置可选 Antigravity 作为 API 的 LLM 后端。服务进程通过同一系统用户已登录的 `agy` 执行模型调用。Antigravity 编码代理的记忆 hook 仍走 Coding Agents 集成。
 
+HTTP MCP 通过 `HINDSIGHT_API_MCP_ENABLED=true` 启用；知识库工具还需 `HINDSIGHT_API_ENABLE_KB=true`。每库 `mcp_server_instructions` 配置连接初始化说明（最多 4000 字符），知识库搜索可通过 `enable_reranking` 覆盖服务端默认值。
+
 ## 工程知识与经验
 
-Coding Agents 默认使用按项目隔离的共享库。对话写入只保存有来源的工程结论，
+Coding Agents 默认使用按项目隔离的共享库。项目身份取自主仓库目录名（Unicode NFC、转小写，
+标签和文档 ID 使用 URI 编码），不含本地路径短校验。同名工作区跨机器共用项目身份；用户负责
+为不等价的工作区命名不同名称。Linked worktree 仍取主仓库名。项目页面文件夹只显示归一化名称。
+既有带路径短码的标签、文档 ID 和页面目录不会自动重写，其内容仍可通过跨项目查询或管理界面访问。
+对话写入只保存有来源的工程结论，
 允许普通任务产出零条。`hindsight_ingest_document` 从显式提交的文档提取有依据的知识。默认关闭后台代码巡检、
 Git 历史导入和历史会话导入。事实经服务端提取，再以 `engineering-record` 策略保存筛选后的结论。
 
@@ -59,6 +70,17 @@ Git 历史导入和历史会话导入。事实经服务端提取，再以 `engin
 提取和写入登记为后台 retain 操作，供 worker 执行。模型较慢时不再占用 Hook 的 30 秒时限；
 操作可在活动列表查看状态，失败后可从操作记录重试。相同会话片段使用幂等操作 ID，
 重送不会登记第二个任务。
+
+Coding Agents 的自动注入只走检索路径：`autoInject` 默认 `recall`（可选 `pages`、`none`），
+在首个提示注入一次，不调用子 LLM。`hindsight_reflect` 仍是显式工具，调用时使用服务端子 LLM，
+不参与自动召回；页面刷新、consolidation 与 retain 提取属于后台记忆维护。
+服务端默认关闭重排（`enable_reranking: false`），召回直接使用 RRF 融合顺序，
+跳过 cross-encoder 和 recall decision model。显式启用重排后才使用对应服务端模型配置。
+
+事实时间区分 `mentioned_at`（来源提及时间）与 `occurred_start/end`（事件发生范围），
+召回工具与自动注入均透传。会话写回保留各轮来源时间，提取按来源支持的精度记录已确认决策、
+变更和验证事件；未知时间保留为空，不以入库时间补齐。明确的旧值、新值、适用范围与替代时间
+保存在结论中；发生时间不等于规则有效期，也不凭较新的记录时间自动归档旧事实。
 
 工程共享库默认启用按结论合并 Observation。后台合并在当前项目范围内比较已有结论，
 把支持同一决策、约束或排障经验的事实合成一条，后续同主题补充更新原条目。

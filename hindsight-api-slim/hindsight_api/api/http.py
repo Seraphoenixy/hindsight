@@ -2765,8 +2765,8 @@ class DryRunExtractRequest(BaseModel):
         default=None,
         deprecated=True,
         description=(
-            "Deprecated: describe the speaker in `context` instead. Narrator override (memory owner) "
-            "primed in the prompt; still honored for backwards compatibility."
+            "Deprecated and ignored: real retain never primes a narrator, so neither does the dry run. "
+            "Describe the speaker in `context` instead. Still accepted so old callers don't fail."
         ),
     )
     strategy: str | None = Field(
@@ -4501,6 +4501,8 @@ def create_app(
         poller = None
         poller_task = None
         loop_watchdog = None
+        sync_scheduler = None
+        app.state.sync_scheduler = None
 
         # Initialize OpenTelemetry metrics. Remember the collector we displace so
         # shutdown can put it back: the collector is a module global, so an app
@@ -4598,11 +4600,46 @@ def create_app(
             await http_extension.on_startup()
             logging.info("HTTP extension started")
 
+        # The scheduler can use credentials saved by a PAKE device login.
+        if initialize_memory and (
+            config.sync_relay_url
+            or (
+                config.database_backend == "postgresql"
+                and config.file_storage_type == "native"
+                and not config.file_storage_extension
+                and not config.kb_store_extension
+                and not os.getenv("HINDSIGHT_API_MEMORIES_EXTENSION")
+            )
+        ):
+            from pathlib import Path
+
+            from ..engine.sync_scheduler import SyncScheduler, default_sync_state_dir
+
+            sync_state_dir = Path(config.sync_state_dir) if config.sync_state_dir else default_sync_state_dir()
+            sync_scheduler = SyncScheduler(
+                memory=memory,
+                relay_url=config.sync_relay_url or "",
+                token=config.sync_token or "",
+                state_dir=sync_state_dir,
+                schema=config.database_schema,
+                interval_seconds=config.sync_interval_seconds,
+                auto_enabled=config.sync_auto_enabled,
+                auto_resolve=config.sync_auto_resolve,
+                batch_max_items=config.sync_batch_max_items,
+                batch_max_bytes=config.sync_batch_max_bytes,
+            )
+            app.state.sync_scheduler = sync_scheduler
+            sync_scheduler.start()
+
         yield
 
         # Stop the loop watchdog first so it doesn't fire during teardown.
         if loop_watchdog is not None:
             loop_watchdog.stop()
+
+        if sync_scheduler is not None:
+            await sync_scheduler.stop()
+            app.state.sync_scheduler = None
 
         # Shutdown worker poller if running
         if poller is not None:
@@ -4902,11 +4939,13 @@ def _register_routes(app: FastAPI):
 
     app.state.refuse_knowledge_bank = _refuse_knowledge_bank
 
+    from hindsight_api.api.sync import build_router as _build_sync_router
     from hindsight_api.api.working_rules import build_router as _build_working_rules_router
     from hindsight_api.knowledge.routes import build_router as _build_knowledge_router
 
     app.include_router(_build_knowledge_router(get_request_context))
     app.include_router(_build_working_rules_router(get_request_context))
+    app.include_router(_build_sync_router(get_request_context))
 
     def precheck_for(operation: PrecheckOperation):
         """
@@ -5342,7 +5381,6 @@ def _register_routes(app: FastAPI):
                 event_date=body.timestamp,
                 strategy=body.strategy,
                 overrides=overrides,
-                agent_name=body.agent_name,
                 request_context=request_context,
             )
         except ValueError as e:

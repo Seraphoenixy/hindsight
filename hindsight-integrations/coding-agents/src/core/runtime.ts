@@ -18,7 +18,7 @@
  */
 import type { Config } from "./config";
 import { maybeAutoUpdate } from "./auto-update";
-import { DAEMON_WAIT_RETAIN_MS, DAEMON_WAIT_SESSION_START_MS, ensureDaemon } from "./daemon";
+import { DAEMON_WAIT_RETAIN_MS, ensureDaemon, isHookServerReady } from "./daemon";
 import { diag } from "./diag";
 import { describeError, log, setLogLevel } from "./log";
 import type { HindsightClient } from "./hindsight";
@@ -52,6 +52,7 @@ export class RuntimeCore {
   /** Write-backs started and not yet settled — what `flush` waits for. */
   private readonly inFlight = new Set<Promise<void>>();
   private deferInitialReflect = false;
+  private retrySeedWhenReady = false;
   /** Host-notice channel (opencode/Kilo: client.tui.showToast via the adapter). Optional, fail-open. */
   private notify?: (title: string, message: string) => void;
 
@@ -91,7 +92,7 @@ export class RuntimeCore {
       repoDir: this.projectDir,
       harness: this.harness,
       pageTrigger: buildPageTrigger(this.cfg),
-      reflectTimeoutMs: this.cfg.reflectToolTimeoutMs,
+      reflectToolTimeoutMs: this.cfg.reflectToolTimeoutMs,
       reflectBudget: this.cfg.reflectBudget,
       toolGuideExtra: this.cfg.toolGuideExtra,
       stampFor: () =>
@@ -128,12 +129,11 @@ export class RuntimeCore {
     // with no skills directory (opencode; opencode2 registers it in memory instead).
     syncCompanionSkill(this.harness, { install: true });
     // Daemon mode: this is the SessionStart of a persistent-plugin host, so it owns the same
-    // warm-up the hook harnesses do in `runSessionStartHook` — start it before the user has typed
-    // anything, wait only briefly, and let a cold one keep coming up in the background. Without it
-    // these hosts never started a daemon at all and every request failed with ECONNREFUSED (#3524);
-    // `runSessionStartHook` is a hook-only wrapper, so calling `buildSessionStartContext` directly
-    // (as every plugin harness does) skipped the ensure entirely.
-    await ensureDaemon(this.cfg, this.harness, { waitMs: DAEMON_WAIT_SESSION_START_MS });
+    // warm-up request as runSessionStartHook. A later prompt can use the daemon once it is ready.
+    if (!(await ensureDaemon(this.cfg, this.harness))) {
+      this.retrySeedWhenReady = true;
+      return;
+    }
     void maybeAutoUpdate(this.cfg);
     try {
       const out = await buildSessionStartContext({
@@ -170,9 +170,13 @@ export class RuntimeCore {
     const prompt = stripInjectedMemory(rawPrompt).trim();
     // No prompt text means no recall, so no block for this turn either: the previous turn's block
     // must not be handed out again, since every host now persists it into the user message.
-    if (!prompt) {
+    if (!prompt || !(await isHookServerReady(this.cfg))) {
       this.injection.delete(sessionId);
       return;
+    }
+    if (this.retrySeedWhenReady) {
+      this.retrySeedWhenReady = false;
+      void this.seedIfCold(this.projectDir);
     }
     const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
     this.turnCount.set(sessionId, turns);
@@ -207,7 +211,7 @@ export class RuntimeCore {
       blocks.push(
         buildPagesPreamble(output.pages, {
           engineering: Boolean(this.cfg.projectScope),
-          reflectOnNewGoals: this.cfg.autoInject !== "reflect",
+          reflectOnNewGoals: true,
           extra: this.cfg.toolGuideExtra,
         })
       );

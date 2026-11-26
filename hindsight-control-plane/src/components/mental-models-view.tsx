@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { client, type TagGroup, type TagsMatch } from "@/lib/api";
 import { formatAbsoluteDateTime, formatRelativeTime } from "@/lib/relative-time";
@@ -172,7 +172,7 @@ export function MentalModelsView() {
     );
   });
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!currentBank) return;
 
     setLoading(true);
@@ -193,7 +193,7 @@ export function MentalModelsView() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentBank, selectedTags, tagsMatch, hidePages]);
 
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
 
@@ -242,7 +242,7 @@ export function MentalModelsView() {
       setMentalModels((prev) => prev.filter((m) => m.id !== deleteTarget.id));
       if (selectedMentalModel?.id === deleteTarget.id) setSelectedMentalModel(null);
       setDeleteTarget(null);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setDeleting(false);
@@ -270,7 +270,7 @@ export function MentalModelsView() {
     if (currentBank) {
       loadData();
     }
-  }, [currentBank, selectedTags, tagsMatch, hidePages]);
+  }, [currentBank, loadData]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -804,7 +804,7 @@ function CreateMentalModelDialog({
 
       resetForms();
       onCreated();
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setCreating(false);
@@ -925,6 +925,15 @@ function CreateMentalModelDialog({
   );
 }
 
+export function buildMentalModelFormState(mentalModel: MentalModel) {
+  return {
+    name: mentalModel.name,
+    sourceQuery: mentalModel.source_query,
+    maxTokens: String(mentalModel.max_tokens || 2048),
+    tags: mentalModel.tags.join(", "),
+  };
+}
+
 export function UpdateMentalModelDialog({
   open,
   mentalModel,
@@ -939,19 +948,13 @@ export function UpdateMentalModelDialog({
   const t = useTranslations("mentalModels");
   const { currentBank } = useBank();
   const [updating, setUpdating] = useState(false);
-  const buildFormState = () => ({
-    name: mentalModel.name,
-    sourceQuery: mentalModel.source_query,
-    maxTokens: String(mentalModel.max_tokens || 2048),
-    tags: mentalModel.tags.join(", "),
-  });
-  const [form, setForm] = useState(buildFormState);
+  const [form, setForm] = useState(() => buildMentalModelFormState(mentalModel));
   const [triggerForm, setTriggerForm] = useState(() => triggerFormFromTrigger(mentalModel.trigger));
 
   // Reset form when mental model changes or dialog opens
   useEffect(() => {
     if (open) {
-      setForm(buildFormState());
+      setForm(buildMentalModelFormState(mentalModel));
       setTriggerForm(triggerFormFromTrigger(mentalModel.trigger));
     }
   }, [open, mentalModel]);
@@ -983,7 +986,7 @@ export function UpdateMentalModelDialog({
 
       onUpdated(updated);
       onClose();
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setUpdating(false);
@@ -1153,7 +1156,7 @@ function FilesView({
                         isStale={m.is_stale}
                         trigger={m.trigger}
                         refreshFailedAt={m.last_refresh_failed_at}
-                        retrying={refreshAttempts.has(m.id)}
+                        attempt={refreshAttempts.get(m.id)}
                         variant="dot"
                         className="ml-auto"
                       />

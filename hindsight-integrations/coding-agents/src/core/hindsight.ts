@@ -5,6 +5,7 @@
  * (missions + git/chat retain strategies), retains memories, reflects, drains async operations, and
  * creates pages. Nothing here knows about opencode/claude-code/etc.
  */
+import { selectRecallCandidates } from "./recall-selection";
 import {
   type BankOverrides,
   buildPageTrigger,
@@ -42,18 +43,13 @@ export interface PageNode {
   children?: PageNode[];
 }
 
-export type WorkingRuleScope = "global" | "project";
 export type WorkingRuleImportance = "critical" | "normal" | "low";
 export type WorkingRuleAction = "add" | "replace" | "remove";
 
 export interface WorkingRuleRecord {
   id: string;
-  scope: WorkingRuleScope;
-  project_id?: string | null;
   content: string;
   importance: WorkingRuleImportance;
-  pinned: boolean;
-  branches: string[];
   is_archived: boolean;
   archived_at?: string | null;
   archive_reason?: string | null;
@@ -64,8 +60,6 @@ export interface WorkingRuleRecord {
 export interface WorkingRulesUsage {
   used_bytes: number;
   limit_bytes: number;
-  pinned_chars: number;
-  pinned_limit_chars: number;
   active_count: number;
   archived_count: number;
 }
@@ -82,8 +76,6 @@ export interface WorkingRulesListResult {
 export interface WorkingRuleProjectionEntry {
   content: string;
   importance: WorkingRuleImportance;
-  pinned: boolean;
-  scope: WorkingRuleScope;
 }
 
 export interface WorkingRulesProjection {
@@ -357,6 +349,8 @@ export interface EngineeringMemory {
   context?: string;
   date?: string;
   mentioned_at?: string | null;
+  occurred_start?: string | null;
+  occurred_end?: string | null;
   tags?: string[];
   document_id?: string | null;
   metadata?: Record<string, string>;
@@ -365,6 +359,7 @@ export interface EngineeringMemory {
   edited_at?: string | null;
   invalidated_at?: string | null;
   invalidation_reason?: string | null;
+  scores?: { semantic?: number | null; keyword?: number | null };
 }
 
 export const DEFAULT_RECALL_OPTIONS: Record<string, unknown> = {
@@ -502,7 +497,7 @@ export class HindsightClient {
 
   /** Readable project identity for extracted text and document metadata. */
   get projectDescription(): string | undefined {
-    return this.projectScope ? `${this.projectScope.name} [${this.projectScope.id}]` : this.project;
+    return this.projectScope?.name ?? this.project;
   }
 
   /**
@@ -525,7 +520,7 @@ export class HindsightClient {
   }
 
   private projectFolderName(): string | undefined {
-    return this.projectScope && `${this.projectScope.name} [${this.projectScope.id}]`;
+    return this.projectScope?.name.normalize("NFC").toLowerCase();
   }
 
   private readScope(all = false): Record<string, unknown> {
@@ -740,7 +735,7 @@ export class HindsightClient {
         query,
         types: ["world", "experience"],
         budget: "mid",
-        max_tokens: 6000,
+        max_tokens: 12000,
         ...(this.projectTag ? { tags: [this.projectTag], tags_match: "all_strict" } : {}),
       },
       [],
@@ -748,7 +743,24 @@ export class HindsightClient {
     );
     if (response.status === 404) return [];
     const data = (await response.json()) as { results: EngineeringMemory[] };
-    return data.results.filter((record) => this.ownsEngineeringMemory(record)).slice(0, maxResults);
+    return selectRecallCandidates(
+      data.results.filter((record) => this.ownsEngineeringMemory(record)),
+      this.recallSimilarityFloor
+    ).slice(0, maxResults);
+  }
+
+  private get recallSimilarityFloor(): number {
+    const scores = this.recallOptions.min_scores;
+    const threshold =
+      scores && typeof scores === "object"
+        ? (scores as Record<string, unknown>).semantic
+        : undefined;
+    return typeof threshold === "number" &&
+      Number.isFinite(threshold) &&
+      threshold >= 0 &&
+      threshold <= 1
+      ? threshold
+      : 0.5;
   }
 
   private ownsEngineeringMemory(record: EngineeringMemory): boolean {
@@ -1145,8 +1157,18 @@ export class HindsightClient {
       opts.timeoutMs
     );
     if (r.status === 404) return [];
-    const j = (await r.json()) as { results?: { text?: string }[] };
-    return (j.results ?? []).map((x) => (x.text ?? "").trim()).filter(Boolean);
+    const j = (await r.json()) as { results?: EngineeringMemory[] };
+    return selectRecallCandidates(j.results ?? [], this.recallSimilarityFloor).map((record) => {
+      const provenance = [
+        record.id && `memory_id=${record.id}`,
+        `mentioned_at=${record.mentioned_at ?? "unknown"}`,
+        `occurred_start=${record.occurred_start ?? "unknown"}`,
+        `occurred_end=${record.occurred_end ?? "unknown"}`,
+      ]
+        .filter(Boolean)
+        .join("; ");
+      return `[${provenance}; historical record, verify current applicability]\n${record.text.trim()}`;
+    });
   }
 
   /** Set once a server answered on the deprecated `/knowledge-base/...` paths: one from before the
@@ -1630,16 +1652,11 @@ export class HindsightClient {
 
   async getWorkingRulesProjection(
     opts: {
-      projectId?: string;
-      branch?: string;
       maxChars?: number;
       timeoutMs?: number;
     } = {}
   ): Promise<WorkingRulesProjection | undefined> {
     const params = new URLSearchParams();
-    const projectId = opts.projectId ?? this.projectScope?.id;
-    if (projectId) params.set("project_id", projectId);
-    if (opts.branch) params.set("branch", opts.branch);
     if (opts.maxChars !== undefined) params.set("max_chars", String(opts.maxChars));
     const qs = params.toString();
     const r = await this.workingRulesReq(
@@ -1655,8 +1672,6 @@ export class HindsightClient {
 
   async listWorkingRules(
     opts: {
-      scope?: WorkingRuleScope;
-      projectId?: string;
       includeArchived?: boolean;
       q?: string;
       limit?: number;
@@ -1665,9 +1680,6 @@ export class HindsightClient {
     } = {}
   ): Promise<WorkingRulesListResult | undefined> {
     const params = new URLSearchParams();
-    if (opts.scope) params.set("scope", opts.scope);
-    const projectId = opts.projectId ?? (opts.scope === "project" ? this.projectScope?.id : undefined);
-    if (projectId) params.set("project_id", projectId);
     if (opts.includeArchived) params.set("include_archived", "true");
     if (opts.q) params.set("q", opts.q);
     if (opts.limit !== undefined) params.set("limit", String(opts.limit));
@@ -1690,21 +1702,10 @@ export class HindsightClient {
       content?: string;
       old_text?: string;
       importance?: WorkingRuleImportance;
-      scope?: WorkingRuleScope;
-      project_id?: string;
-      pinned?: boolean;
-      branches?: string[];
       preserve_importance?: boolean;
     },
     timeoutMs = 15_000
   ): Promise<WorkingRuleMutationResult | undefined> {
-    const scope = input.scope ?? "global";
-    const projectId = scope === "project" ? (input.project_id ?? this.projectScope?.id) : undefined;
-    if (scope === "project" && !projectId) {
-      throw new Error(
-        "project scope requires an active project context (projectScope or explicit project_id)"
-      );
-    }
     const r = await this.workingRulesReq(
       "POST",
       "/mutate",
@@ -1713,10 +1714,6 @@ export class HindsightClient {
         content: input.content,
         old_text: input.old_text,
         importance: input.importance,
-        scope,
-        project_id: projectId,
-        pinned: input.pinned,
-        branches: input.branches,
         preserve_importance: input.preserve_importance ?? true,
       },
       [],

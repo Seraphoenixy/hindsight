@@ -27,7 +27,7 @@ from hindsight_api.engine.providers.llamacpp_llm import LlamaCppLLM
 
 def test_defaults_match_upstream_local_experience():
     assert DEFAULT_EMBEDDINGS_PROVIDER == "local"
-    assert DEFAULT_EMBEDDINGS_LOCAL_MODEL == "BAAI/bge-small-en-v1.5"
+    assert DEFAULT_EMBEDDINGS_LOCAL_MODEL == "qwen3-0.6b"
     assert DEFAULT_RERANKER_PROVIDER == "rrf"
     assert DEFAULT_RERANKER_LOCAL_MODEL == "hindsight-ai/hs-rerank-1"
     assert PROVIDER_DEFAULT_MODELS["llamacpp"] == "gemma-4-e2b-it"
@@ -53,7 +53,7 @@ def test_local_embeddings_uses_managed_llamacpp(monkeypatch, provider):
     try:
         emb = create_embeddings_from_env()
         assert isinstance(emb, LlamaCppEmbeddings)
-        assert emb.dimension == 384
+        assert emb.dimension == 1024
     finally:
         clear_config_cache()
 

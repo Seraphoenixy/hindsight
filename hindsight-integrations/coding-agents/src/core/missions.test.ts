@@ -403,6 +403,32 @@ describe("codingBankManifest (#3927)", () => {
     expect(preserved.conversation).toEqual(ownerEdited);
   });
 
+  it("upgrades the exact pre-temporal conversation template and preserves owner edits", () => {
+    const current = RETAIN_STRATEGIES.conversation;
+    const previous = {
+      ...current,
+      retain_custom_instructions: current.retain_custom_instructions.replace(
+        /Leave unrelated descriptive dimensions empty\.[\s\S]*?recency alone\./,
+        "Leave optional dimension fields empty."
+      ),
+    };
+    expect(previous.retain_custom_instructions).not.toBe(current.retain_custom_instructions);
+    const strategies = bankOf({
+      reflect_mission: "seeded",
+      retain_strategies: { conversation: previous },
+    })!.retain_strategies as Record<string, unknown>;
+    expect(strategies.conversation).toEqual(current);
+    const edited = {
+      ...previous,
+      retain_custom_instructions: previous.retain_custom_instructions + " Keep our terms.",
+    };
+    const preserved = bankOf({
+      reflect_mission: "seeded",
+      retain_strategies: { conversation: edited },
+    })!.retain_strategies as Record<string, unknown>;
+    expect(preserved.conversation).toEqual(edited);
+  });
+
   it("upgrades only the plugin's old engineering observation mission", () => {
     const legacyObservationMission =
       "Consolidate durable project decisions, verified architecture, and reproducible engineering experience. " +

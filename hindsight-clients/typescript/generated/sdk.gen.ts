@@ -38,6 +38,9 @@ import type {
   CloneBankData,
   CloneBankErrors,
   CloneBankResponses,
+  ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostData,
+  ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostErrors,
+  ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostResponses,
   CreateBankAliasData,
   CreateBankAliasErrors,
   CreateBankAliasResponses,
@@ -163,6 +166,9 @@ import type {
   GetChunkData,
   GetChunkErrors,
   GetChunkResponses,
+  GetConflictDetailV1DefaultSyncConflictsConflictIdGetData,
+  GetConflictDetailV1DefaultSyncConflictsConflictIdGetErrors,
+  GetConflictDetailV1DefaultSyncConflictsConflictIdGetResponses,
   GetDirectiveData,
   GetDirectiveErrors,
   GetDirectiveResponses,
@@ -239,6 +245,9 @@ import type {
   GetPageTreeResponses,
   GetReadinessData,
   GetReadinessResponses,
+  GetSyncStatusV1DefaultSyncStatusGetData,
+  GetSyncStatusV1DefaultSyncStatusGetErrors,
+  GetSyncStatusV1DefaultSyncStatusGetResponses,
   GetVersionData,
   GetVersionResponses,
   GetWorkingRuleData,
@@ -273,6 +282,12 @@ import type {
   ListBanksData,
   ListBanksErrors,
   ListBanksResponses,
+  ListConflictsV1DefaultSyncConflictsGetData,
+  ListConflictsV1DefaultSyncConflictsGetErrors,
+  ListConflictsV1DefaultSyncConflictsGetResponses,
+  ListDevicesV1DefaultSyncDevicesGetData,
+  ListDevicesV1DefaultSyncDevicesGetErrors,
+  ListDevicesV1DefaultSyncDevicesGetResponses,
   ListDirectivesData,
   ListDirectivesErrors,
   ListDirectivesResponses,
@@ -359,6 +374,9 @@ import type {
   RegenerateEntityObservationsData,
   RegenerateEntityObservationsErrors,
   RegenerateEntityObservationsResponses,
+  RegisterDeviceV1DefaultSyncDevicesPostData,
+  RegisterDeviceV1DefaultSyncDevicesPostErrors,
+  RegisterDeviceV1DefaultSyncDevicesPostResponses,
   ReprocessDocumentData,
   ReprocessDocumentErrors,
   ReprocessDocumentResponses,
@@ -368,6 +386,9 @@ import type {
   ResetKnowledgeBankConfigData,
   ResetKnowledgeBankConfigErrors,
   ResetKnowledgeBankConfigResponses,
+  RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostData,
+  RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostErrors,
+  RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostResponses,
   RestoreWorkingRuleData,
   RestoreWorkingRuleErrors,
   RestoreWorkingRuleResponses,
@@ -380,6 +401,12 @@ import type {
   RetryOperationData,
   RetryOperationErrors,
   RetryOperationResponses,
+  RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostData,
+  RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostErrors,
+  RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostResponses,
+  RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostData,
+  RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostErrors,
+  RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostResponses,
   SearchKnowledgeBankData,
   SearchKnowledgeBankErrors,
   SearchKnowledgeBankResponses,
@@ -398,6 +425,9 @@ import type {
   TriggerConsolidationData,
   TriggerConsolidationErrors,
   TriggerConsolidationResponses,
+  TriggerSyncV1DefaultSyncTriggerPostData,
+  TriggerSyncV1DefaultSyncTriggerPostErrors,
+  TriggerSyncV1DefaultSyncTriggerPostResponses,
   UpdateBankConfigData,
   UpdateBankConfigErrors,
   UpdateBankConfigResponses,
@@ -791,7 +821,7 @@ export const createWorkingRule = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Get filtered working rules projection
+ * Get working rules projection
  */
 export const getWorkingRulesProjection = <ThrowOnError extends boolean = false>(
   options?: Options<GetWorkingRulesProjectionData, ThrowOnError>
@@ -943,6 +973,164 @@ export const promoteWorkingRule = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
+
+/**
+ * Get Sync Status
+ */
+export const getSyncStatusV1DefaultSyncStatusGet = <ThrowOnError extends boolean = false>(
+  options?: Options<GetSyncStatusV1DefaultSyncStatusGetData, ThrowOnError>
+) =>
+  (options?.client ?? client).get<
+    GetSyncStatusV1DefaultSyncStatusGetResponses,
+    GetSyncStatusV1DefaultSyncStatusGetErrors,
+    ThrowOnError
+  >({ url: "/v1/default/sync/status", ...options });
+
+/**
+ * Trigger Sync
+ */
+export const triggerSyncV1DefaultSyncTriggerPost = <ThrowOnError extends boolean = false>(
+  options: Options<TriggerSyncV1DefaultSyncTriggerPostData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    TriggerSyncV1DefaultSyncTriggerPostResponses,
+    TriggerSyncV1DefaultSyncTriggerPostErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/sync/trigger",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List Conflicts
+ */
+export const listConflictsV1DefaultSyncConflictsGet = <ThrowOnError extends boolean = false>(
+  options?: Options<ListConflictsV1DefaultSyncConflictsGetData, ThrowOnError>
+) =>
+  (options?.client ?? client).get<
+    ListConflictsV1DefaultSyncConflictsGetResponses,
+    ListConflictsV1DefaultSyncConflictsGetErrors,
+    ThrowOnError
+  >({ url: "/v1/default/sync/conflicts", ...options });
+
+/**
+ * Get Conflict Detail
+ */
+export const getConflictDetailV1DefaultSyncConflictsConflictIdGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetConflictDetailV1DefaultSyncConflictsConflictIdGetData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    GetConflictDetailV1DefaultSyncConflictsConflictIdGetResponses,
+    GetConflictDetailV1DefaultSyncConflictsConflictIdGetErrors,
+    ThrowOnError
+  >({ url: "/v1/default/sync/conflicts/{conflict_id}", ...options });
+
+/**
+ * Confirm Conflict
+ */
+export const confirmConflictV1DefaultSyncConflictsConflictIdConfirmPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostResponses,
+    ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/sync/conflicts/{conflict_id}/confirm",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Restore Conflict
+ */
+export const restoreConflictV1DefaultSyncConflictsConflictIdRestorePost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostResponses,
+    RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/sync/conflicts/{conflict_id}/restore",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List Devices
+ */
+export const listDevicesV1DefaultSyncDevicesGet = <ThrowOnError extends boolean = false>(
+  options?: Options<ListDevicesV1DefaultSyncDevicesGetData, ThrowOnError>
+) =>
+  (options?.client ?? client).get<
+    ListDevicesV1DefaultSyncDevicesGetResponses,
+    ListDevicesV1DefaultSyncDevicesGetErrors,
+    ThrowOnError
+  >({ url: "/v1/default/sync/devices", ...options });
+
+/**
+ * Register Device
+ */
+export const registerDeviceV1DefaultSyncDevicesPost = <ThrowOnError extends boolean = false>(
+  options: Options<RegisterDeviceV1DefaultSyncDevicesPostData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RegisterDeviceV1DefaultSyncDevicesPostResponses,
+    RegisterDeviceV1DefaultSyncDevicesPostErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/sync/devices",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Rotate Device
+ */
+export const rotateDeviceV1DefaultSyncDevicesDeviceIdRotatePost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostResponses,
+    RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostErrors,
+    ThrowOnError
+  >({ url: "/v1/default/sync/devices/{device_id}/rotate", ...options });
+
+/**
+ * Revoke Device
+ */
+export const revokeDeviceV1DefaultSyncDevicesDeviceIdRevokePost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostResponses,
+    RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostErrors,
+    ThrowOnError
+  >({ url: "/v1/default/sync/devices/{device_id}/revoke", ...options });
 
 /**
  * Health check endpoint

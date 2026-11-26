@@ -158,7 +158,7 @@ export function ThinkView() {
       setFeedback("");
       setFeedbackSubmitted(true);
       setTimeout(() => setFeedbackSubmitted(false), 3000);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setFeedbackSubmitting(false);
@@ -201,7 +201,7 @@ export function ThinkView() {
         ...(parsedSchema && { response_schema: parsedSchema }),
       });
       setResult(data);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setLoading(false);

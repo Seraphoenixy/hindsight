@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { RefreshCw } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
@@ -40,7 +40,7 @@ export function LlmHealthDialog({
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<Awaited<ReturnType<typeof client.testBankLlm>> | null>(null);
 
-  const run = async () => {
+  const run = useCallback(async () => {
     setTesting(true);
     try {
       setResult(await client.testBankLlm(bankId));
@@ -49,7 +49,7 @@ export function LlmHealthDialog({
     } finally {
       setTesting(false);
     }
-  };
+  }, [bankId]);
 
   // Probe automatically when the dialog opens; reset when it closes.
   useEffect(() => {
@@ -58,7 +58,7 @@ export function LlmHealthDialog({
     } else {
       setResult(null);
     }
-  }, [open, bankId]);
+  }, [open, run]);
 
   const statusLabel: Record<string, string> = {
     connected: t("llmConnected"),

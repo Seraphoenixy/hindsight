@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { client } from "@/lib/api";
+import { invalidateGraphCache } from "@/lib/graph-cache";
 import { useBank } from "@/lib/bank-context";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -132,7 +133,7 @@ export function MemoryDetailModal({
     };
 
     loadMemory();
-  }, [memoryId, currentBank]);
+  }, [memoryId, currentBank, initialTab]);
 
   // Invalidate / restore this fact (world/experience only).
   const handleCurate = async (nextState: "valid" | "invalidated", reason?: string) => {
@@ -143,6 +144,7 @@ export function MemoryDetailModal({
         state: nextState,
         ...(reason ? { reason } : {}),
       });
+      invalidateGraphCache(currentBank);
       const data = await client.getMemory(memory.id, currentBank);
       setMemory(data);
       setAskingReason(false);
@@ -172,6 +174,7 @@ export function MemoryDetailModal({
         // correction must not be re-resolved onto a similar existing one (#3479).
         resolveEntities: false,
       });
+      invalidateGraphCache(currentBank);
       const data = await client.getMemory(memory.id, currentBank);
       setMemory(data);
       setEditingText(false);
@@ -899,6 +902,15 @@ export function MemoryDetailModal({
         <MemoryDetailModal
           memoryId={sourceMemoryModalId}
           onClose={() => setSourceMemoryModalId(null)}
+          onChanged={() => {
+            if (memory && currentBank) {
+              client
+                .getMemory(memory.id, currentBank)
+                .then((data) => setMemory(data))
+                .catch((err) => console.error("Error refreshing memory:", err));
+            }
+            onChanged?.();
+          }}
         />
       )}
 

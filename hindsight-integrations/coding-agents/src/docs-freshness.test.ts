@@ -139,4 +139,65 @@ describe("skill region extraction", () => {
   it("refuses a README with no marked regions at all", () => {
     expect(() => extract("## Configuration\n\nno markers here")).toThrow(/no <!-- skill:begin -->/);
   });
+
+  it("renders padded tables as wrapped field lists without losing escaped pipes or inline code", () => {
+    const description = "retrieves project evidence ".repeat(12).trim();
+    const [out] = extract(
+      [
+        "<!-- skill:begin -->",
+        "### Reference",
+        "",
+        "| field        | default                | meaning |",
+        "| ------------ | ---------------------- | ------- |",
+        `| \`autoInject\` | \`recall \\| pages\` | ${description} |`,
+        "<!-- skill:end -->",
+      ].join("\n")
+    );
+    expect(out).toContain("- `autoInject` — default: `recall | pages`; meaning:");
+    expect(out.replace(/\n\s*/g, " ")).toContain(description);
+    expect(out.split("\n").every((line) => line.length <= 100)).toBe(true);
+    expect(out).not.toMatch(/^\|/m);
+  });
+
+  it("preserves fenced code headings and table examples while shifting document headings", () => {
+    for (const fence of ["```", "~~~"]) {
+      const example = [
+        fence + "markdown",
+        "# Example",
+        "| key | value |",
+        "| --- | --- |",
+        "| a | b |",
+        fence,
+      ].join("\n");
+      const [out] = extract(
+        [
+          "<!-- skill:begin -->",
+          "### Reference",
+          "",
+          example,
+          "",
+          "#### Options",
+          "<!-- skill:end -->",
+        ].join("\n")
+      );
+      expect(out).toContain("## Reference");
+      expect(out).toContain("### Options");
+      expect(out).toContain(example);
+    }
+  });
+
+  it("formats tables in titled regions without source headings", () => {
+    const [out] = extract(
+      [
+        '<!-- skill:begin title="Daemon settings" -->',
+        "| field | env | default | meaning |",
+        "| --- | --- | --- | --- |",
+        "| `apiPort` | `HINDSIGHT_API_PORT` | `9077` | daemon port |",
+        "<!-- skill:end -->",
+      ].join("\n")
+    );
+    expect(out).toBe(
+      "## Daemon settings\n\n- `apiPort` — env: `HINDSIGHT_API_PORT`; default: `9077`; meaning: daemon port"
+    );
+  });
 });

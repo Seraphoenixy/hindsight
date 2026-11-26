@@ -7,7 +7,7 @@ for arms it cannot use, so each stage can be switched off per bank:
     enable_text_search / enable_temporal_retrieval / enable_graph_retrieval /
     enable_reranking
 
-All four default to True, so recall behaviour is unchanged unless a bank opts out.
+Retrieval arms default to True; reranking defaults to False and requires an explicit opt-in.
 Semantic is the one arm with no switch — it is the baseline retrieval.
 """
 
@@ -17,11 +17,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from hindsight_api.config import HindsightConfig
 from hindsight_api.engine import memory_engine as memory_engine_module
 from hindsight_api.engine.memories.base import SemanticBm25Result
-from hindsight_api.engine.search.types import GraphRetrieval
 from hindsight_api.engine.memories.pg import recall as recall_module
 from hindsight_api.engine.search import retrieval as retrieval_module
+from hindsight_api.engine.search.types import GraphRetrieval
 
 _QUERY = "[0.1,0.2,0.3]"
 
@@ -184,9 +185,32 @@ def test_reranking_resolution(requested, enable_reranking, expected):
     assert resolved == expected
 
 
-def test_reranking_defaults_to_enabled_when_unset():
-    """A bank with no override keeps the cross-encoder."""
-    assert memory_engine_module._resolve_reranking({}, "cross_encoder") == "cross_encoder"
+def test_reranking_defaults_to_disabled_when_unset():
+    assert memory_engine_module._resolve_reranking({}, "cross_encoder") == "rrf"
+
+
+@pytest.mark.parametrize("decision_provider", ["none", "typesafe"])
+def test_default_recall_skips_reranking_with_global_decision_model(monkeypatch, decision_provider):
+    monkeypatch.delenv("HINDSIGHT_API_ENABLE_RERANKING", raising=False)
+    monkeypatch.delenv("HINDSIGHT_API_RERANKER_PROVIDER", raising=False)
+    monkeypatch.setenv("HINDSIGHT_API_DECISION_MODEL_PROVIDER", decision_provider)
+    monkeypatch.setenv("HINDSIGHT_API_DECISION_MODEL_API_KEY", "test-decision-key")
+    config = HindsightConfig.from_env()
+    assert config.enable_reranking is False
+    assert config.reranker_provider == "rrf"
+    assert (
+        memory_engine_module._resolve_reranking({"enable_reranking": config.enable_reranking}, "cross_encoder") == "rrf"
+    )
+
+
+def test_reranking_can_be_explicitly_enabled(monkeypatch):
+    monkeypatch.setenv("HINDSIGHT_API_ENABLE_RERANKING", "true")
+    config = HindsightConfig.from_env()
+    assert config.enable_reranking is True
+    assert (
+        memory_engine_module._resolve_reranking({"enable_reranking": config.enable_reranking}, "cross_encoder")
+        == "cross_encoder"
+    )
 
 
 # ── config → pipeline wiring ─────────────────────────────────────────────────
@@ -258,7 +282,11 @@ async def test_bank_override_disables_the_cross_encoder(memory, request_context,
     monkeypatch.setattr(memory._cross_encoder_reranker, "rerank", spy)
 
     await memory.recall_async(bank_id=bank_id, query="anything", request_context=request_context)
-    assert len(rerank_calls) == 1, "a bank with no override still reranks"
+    assert len(rerank_calls) == 0
+
+    await memory._config_resolver.update_bank_config(bank_id, {"enable_reranking": True})
+    await memory.recall_async(bank_id=bank_id, query="anything", request_context=request_context)
+    assert len(rerank_calls) == 1
 
     await memory._config_resolver.update_bank_config(bank_id, {"enable_reranking": False})
     await memory.recall_async(bank_id=bank_id, query="anything", request_context=request_context)

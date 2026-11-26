@@ -49,8 +49,8 @@ const CONFIG_PATH =
 
 /** Daemon-mode defaults. The port matches the old per-agent Claude Code plugin so a machine that
  *  already ran that daemon keeps using the same one. */
-export const DEFAULT_DAEMON_PORT = 9077;
-export const DEFAULT_DAEMON_PROFILE = "coding-agent";
+export const DEFAULT_DAEMON_PORT = 8888;
+export const DEFAULT_DAEMON_PROFILE = "default";
 
 /** Incremental git-sync settings (see core/sync.ts). */
 /** The config file's shape — every field optional; omitted fields take the documented default. */
@@ -65,9 +65,8 @@ export interface RawConfig {
   serverMode?: "cloud" | "self-hosted" | "daemon";
   apiUrl?: string; // Hindsight API base URL (default https://api.hindsight.vectorize.io — Cloud; set to http://localhost:8888 for a local server)
   apiToken?: string; // bearer token (optional)
-  /** Daemon mode: port the local daemon listens on (default 9077).
-   *  NOT 8888 — that is the conventional port for a server you run yourself, and a daemon must
-   *  never squat on it. A healthy server already on this port is adopted rather than restarted. */
+  /** Daemon mode: port the local daemon listens on (default 8888).
+   *  A healthy server already on this port is adopted rather than restarted. */
   apiPort?: number;
   /** Daemon mode: seconds of inactivity before the daemon exits. Unset means it never exits on
    *  its own — `hindsight-embed`'s own default, which every other Hindsight integration also
@@ -77,7 +76,7 @@ export interface RawConfig {
    *  ending one session must not cut memory out from under another. */
   daemonIdleTimeout?: number;
   /** Daemon mode: `hindsight-embed` profile name, i.e. which local database is used (default
-   *  "coding-agent"). Separate profiles keep unrelated setups from sharing memory. */
+   *  "default"). Separate profiles keep unrelated setups from sharing memory. */
   daemonProfile?: string;
   /** Daemon mode: whether a host session may START the daemon when it is down (default true).
    *  Set false to keep memory working against an already-running server while leaving the
@@ -116,42 +115,40 @@ export interface RawConfig {
    *  200 while bursts get 429s means the server is rate-limiting concurrency, not total volume —
    *  lower this rather than raising it. */
   maxParallelRetains?: number;
-  /** Automatic session-reflect timeout (default 20000). The default, with the fallback chain after
-   *  it, fits the 30s prompt-hook timeout the installer registers on hook harnesses; going higher
-   *  there needs that host timeout raised too, or the host kills the hook mid-reflect. */
+  /** @deprecated Automatic session reflect was removed; this field no longer bounds injection.
+   *  It is still read as a lower-bound fallback for `reflectToolTimeoutMs`, so an existing config
+   *  that raised it keeps the explicit `hindsight_reflect` tool's window. */
   reflectTimeoutMs?: number;
-  /** Timeout for the agent-invoked `hindsight_reflect` tool (default 330000). Deliberately its own
-   *  knob and much larger than `reflectTimeoutMs`: that one bounds an automatic hook that must fit
-   *  the host's hook window, whereas this one bounds a call the agent made on purpose and waits on,
-   *  whose `budget: "high"` synthesis on a populated bank can run for minutes. The default sits
-   *  ABOVE the server's own reflect wall timeout (HINDSIGHT_API_REFLECT_WALL_TIMEOUT, 300s) so the
-   *  server decides when to give up, not an arbitrary client deadline (#3590). Unset, it inherits
-   *  an explicitly-raised `reflectTimeoutMs` — a user who raised that meant "let reflect run". */
+  /** Timeout for the agent-invoked `hindsight_reflect` tool (default 330000). This bounds a call
+   *  the agent made on purpose and waits on, whose `budget: "high"` synthesis on a populated bank
+   *  can run for minutes. The default sits ABOVE the server's own reflect wall timeout
+   *  (HINDSIGHT_API_REFLECT_WALL_TIMEOUT, 300s) so the server decides when to give up, not an
+   *  arbitrary client deadline (#3590). Unset, it inherits an explicitly-raised deprecated
+   *  `reflectTimeoutMs`, but a short one never lowers it. */
   reflectToolTimeoutMs?: number;
-  /** Retrieval timeout for autoInject "pages"/"recall" (default 7000), and the shared budget for
-   *  the page-search -> recall fallback after a reflect timeout/5xx. On hook harnesses, the full
-   *  reflect + fallback must fit the host's prompt-hook timeout (30s by default). */
+  /** Retrieval timeout for autoInject "pages"/"recall" (default 7000). On hook harnesses the
+   *  injection must fit the host's prompt-hook timeout (30s by default). */
   injectTimeoutMs?: number;
   /** Reflect budget for the `hindsight_reflect` tool: "low" | "mid" | "high" (default "high").
    *  Drop to "mid"/"low" on a large bank where high-budget synthesis exceeds the server's wall
-   *  timeout. The automatic session-start reflect is NOT affected — it always uses "low" to fit
-   *  its hook window. */
+   *  timeout. Automatic recall never runs reflect. */
   reflectBudget?: "low" | "mid" | "high";
-  /** What to inject on the session's first prompt (default "reflect"):
-   *    "reflect" — one low-budget reflect synthesis (falls back to pages, then recall, on timeout/5xx)
+  /** What to inject on the session's first prompt (default "recall"):
    *    "pages"   — the pages matching the prompt by search (retrieval only, no LLM)
    *    "recall"  — the bank's memories recalled for the prompt (`recallOptions`; no LLM)
-   *    "none"    — nothing; the tool guide routes new goals through pages before optional reflection */
+   *    "none"    — nothing; the tool guide routes new goals through pages/recall
+   *  The former "reflect" mode was removed: automatic injection never runs a sub-LLM. */
   autoInject?: AutoInject;
-  /** @deprecated Use `autoInject`. Still honoured: false = `autoInject: "none"`, true = "reflect";
-   *  ignored when `autoInject` is set. Setting it logs a deprecation warning. */
+  /** @deprecated Use `autoInject`. Still honoured: false = `autoInject: "none"`, true =
+   *  `autoInject: "recall"`; ignored when `autoInject` is set. Setting it logs a deprecation
+   *  warning. */
   autoReflect?: boolean;
   /** Pages ONE search returns (default 3). Applies wherever the bank is searched: the
-   *  `autoInject: "pages"` injection, the reflect fallback, and the agent's
-   *  `hindsight_search_pages` tool — the limit lives on the client so they can't drift. */
+   *  `autoInject: "pages"` injection and the agent's `hindsight_search_pages` tool — the limit
+   *  lives on the client so they can't drift. */
   pageSearchLimit?: number;
-  /** Recall-request overrides, merged key-by-key into the body every recall sends (the
-   *  `autoInject: "recall"` source and the reflect fallback) — `{"types": ["world",
+  /** Recall-request overrides, merged key-by-key into the automatic injection request (the
+   *  `autoInject: "recall"` source) — `{"types": ["world",
    *  "experience"], "max_tokens": 4000}`. Keys are the API's own recall parameters, passed
    *  through unchanged, so a parameter the API gains needs no new setting here; `query` is the
    *  one field a config cannot replace. Defaults to `{"types": ["observation"], "budget": "low",
@@ -341,7 +338,6 @@ export interface Config {
   disabled: boolean;
   retainSessions: boolean;
   maxParallelRetains: number;
-  reflectTimeoutMs: number;
   reflectToolTimeoutMs: number;
   injectTimeoutMs: number;
   reflectBudget: "low" | "mid" | "high";
@@ -502,8 +498,6 @@ function resolveCustomPages(raw: RawConfig["customPages"]): CustomPagesConfig {
   return out;
 }
 
-/** Default timeout for the automatic hook reflect — see RawConfig.reflectTimeoutMs. */
-export const DEFAULT_REFLECT_TIMEOUT_MS = 20_000;
 /** Default timeout for the agent-invoked `hindsight_reflect` tool — see RawConfig.reflectToolTimeoutMs. */
 export const DEFAULT_REFLECT_TOOL_TIMEOUT_MS = 330_000;
 /** Default retrieval budget for automatic injection — see RawConfig.injectTimeoutMs. */
@@ -590,18 +584,27 @@ function resolveDefaultBankConfig(raw: RawConfig["defaultBankConfig"]): Record<s
 }
 
 /** Apply defaults to a raw (file) config. Pure — the single place the defaults live. */
-export type AutoInject = "reflect" | "pages" | "recall" | "none";
-const AUTO_INJECT_MODES: readonly AutoInject[] = ["reflect", "pages", "recall", "none"];
+export type AutoInject = "pages" | "recall" | "none";
+const AUTO_INJECT_MODES: readonly AutoInject[] = ["pages", "recall", "none"];
 
-/** `autoInject` wins; otherwise the deprecated `autoReflect: false` means "none". */
+/** `autoInject` wins; the removed "reflect" mode migrates to "recall". */
 function resolveAutoInject(raw: RawConfig): AutoInject {
+  if ((raw.autoInject as string | undefined) === "reflect") {
+    log.warn(
+      "config",
+      'autoInject: "reflect" was removed — automatic injection never runs a sub-LLM; using "recall"'
+    );
+    return "recall";
+  }
   if (raw.autoReflect !== undefined) {
-    const replacement = raw.autoReflect === false ? "none" : "reflect";
+    const replacement = raw.autoReflect === false ? "none" : "recall";
     log.warn("config", `autoReflect is deprecated — use autoInject: "${replacement}" instead`);
   }
   if (AUTO_INJECT_MODES.includes(raw.autoInject as AutoInject)) return raw.autoInject as AutoInject;
-  return raw.autoReflect === false ? "none" : "reflect";
+  return raw.autoReflect === false ? "none" : "recall";
 }
+
+export const CLOUD_URL = "https://api.hindsight.vectorize.io";
 
 export function resolveConfig(raw: RawConfig = {}): Config {
   const shared = raw.bankMode === "shared";
@@ -615,10 +618,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     // Daemon mode resolves the URL HERE rather than at each call site: every entry point already
     // builds its client from cfg.apiUrl, so collapsing the mode into that one field means the
     // daemon needs no plumbing through eight separate constructors.
-    apiUrl:
-      serverMode === "daemon"
-        ? `http://127.0.0.1:${apiPort}`
-        : (raw.apiUrl ?? "https://api.hindsight.vectorize.io"),
+    apiUrl: serverMode === "daemon" ? `http://127.0.0.1:${apiPort}` : (raw.apiUrl ?? CLOUD_URL),
     apiToken: raw.apiToken || undefined,
     apiPort,
     daemonIdleTimeout: raw.daemonIdleTimeout,
@@ -647,10 +647,9 @@ export function resolveConfig(raw: RawConfig = {}): Config {
       : DEFAULT_RETAIN_EXTRACTION_MODE,
     defaultBankConfig: resolveDefaultBankConfig(raw.defaultBankConfig),
     maxParallelRetains: raw.maxParallelRetains || 10,
-    reflectTimeoutMs: raw.reflectTimeoutMs || DEFAULT_REFLECT_TIMEOUT_MS,
     // Inherit an explicitly-raised reflectTimeoutMs (that is what users reaching for a longer
     // reflect already set), but never let it LOWER the tool below the default — a short window is
-    // set to bound the automatic hook, not to cut off a call the agent is waiting on.
+    // no reason to cut off a call the agent is waiting on.
     reflectToolTimeoutMs:
       raw.reflectToolTimeoutMs ||
       Math.max(raw.reflectTimeoutMs || 0, DEFAULT_REFLECT_TOOL_TIMEOUT_MS),
@@ -946,6 +945,27 @@ export function applyBankConfig(
   resolvedId: string,
   /** The directory the bank was resolved FROM. Supplying it enforces `optInOnly`; every entry
    *  point already has it to hand, having just passed it to bank resolution. */
+  directory?: string,
+  sessionRoot?: string
+): { cfg: Config; bankId: string } {
+  const out = applyOverrides(cfg, resolvedId, directory, sessionRoot);
+  // Cloud refuses every request without a key, so a keyless Cloud config (for example, an incomplete
+  // manual Cloud setup) would ship each session only to be thrown
+  // away. Checked AFTER the overrides: a `paths`/`banks` entry may be what supplies the key.
+  if (!out.cfg.disabled && !out.cfg.apiToken && out.cfg.apiUrl.replace(/\/+$/, "") === CLOUD_URL) {
+    log.warn(
+      "config",
+      "Hindsight Cloud needs an API key and none is set — memory is off. Set apiToken in " +
+        "~/.hindsight/coding-agent.json (or HINDSIGHT_API_TOKEN), or point apiUrl at your own server."
+    );
+    return { cfg: { ...out.cfg, disabled: true }, bankId: out.bankId };
+  }
+  return out;
+}
+
+function applyOverrides(
+  cfg: Config,
+  resolvedId: string,
   directory?: string,
   sessionRoot?: string
 ): { cfg: Config; bankId: string } {

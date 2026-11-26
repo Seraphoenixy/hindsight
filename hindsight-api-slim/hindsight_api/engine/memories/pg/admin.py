@@ -117,8 +117,18 @@ async def count_rows(*, conn: Any, fq_table_explicit: Callable[..., str], schema
     return await conn.fetchval(f"SELECT COUNT(*) FROM {qualified_table}")
 
 
-async def truncate_tables(*, conn: Any, fq_table_explicit: Callable[..., str], schema: str, tables: list[str]) -> None:
-    """``TRUNCATE ... CASCADE`` each table of ``schema``, in the order given."""
+async def lock_tables(*, conn: Any, fq_table_explicit: Callable[..., str], schema: str, tables: list[str]) -> None:
+    qualified = ", ".join(fq_table_explicit(table, schema) for table in tables)
+    await conn.execute(f"LOCK TABLE {qualified} IN ACCESS EXCLUSIVE MODE NOWAIT")
+
+
+async def truncate_tables(
+    *, conn: Any, fq_table_explicit: Callable[..., str], schema: str, tables: list[str], restrict: bool = False
+) -> None:
+    if restrict:
+        qualified = ", ".join(fq_table_explicit(table, schema) for table in tables)
+        await conn.execute(f"TRUNCATE TABLE {qualified} RESTRICT")
+        return
     for table in tables:
         qualified_table = fq_table_explicit(table, schema)
         await conn.execute(f"TRUNCATE TABLE {qualified_table} CASCADE")

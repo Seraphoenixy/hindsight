@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   Dialog,
@@ -193,35 +193,41 @@ export function SchemaBuilderDialog({
   const [switchError, setSwitchError] = useState<string | null>(null);
 
   // Seed the editor from the incoming value each time the dialog opens.
-  useEffect(() => {
-    if (!open) return;
+  const [prevSeed, setPrevSeed] = useState<{ open: boolean; value: string }>({
+    open: false,
+    value: "",
+  });
+  if (open && (!prevSeed.open || prevSeed.value !== value)) {
+    setPrevSeed({ open: true, value });
     setSwitchError(null);
     const text = value.trim();
     if (!text) {
       setMode("visual");
       setFields([emptyField()]);
       setCode("");
-      return;
-    }
-    try {
-      const parsed = JSON.parse(text);
-      const asFields =
-        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-          ? schemaToFields(parsed as Record<string, unknown>)
-          : null;
-      if (asFields !== null) {
-        setFields(asFields.length > 0 ? asFields : [emptyField()]);
-        setMode("visual");
-      } else {
+    } else {
+      try {
+        const parsed = JSON.parse(text);
+        const asFields =
+          typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+            ? schemaToFields(parsed as Record<string, unknown>)
+            : null;
+        if (asFields !== null) {
+          setFields(asFields.length > 0 ? asFields : [emptyField()]);
+          setMode("visual");
+        } else {
+          setMode("code");
+        }
+        setCode(JSON.stringify(parsed, null, 2));
+      } catch {
+        // Not valid JSON — let the user fix it in code mode.
         setMode("code");
+        setCode(text);
       }
-      setCode(JSON.stringify(parsed, null, 2));
-    } catch {
-      // Not valid JSON — let the user fix it in code mode.
-      setMode("code");
-      setCode(text);
     }
-  }, [open, value]);
+  } else if (!open && prevSeed.open) {
+    setPrevSeed({ open: false, value });
+  }
 
   // Validate the current representation; returns a message or null.
   const visualError = (() => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useBank } from "@/lib/bank-context";
 import { client, Webhook, WebhookDelivery, WebhookHttpConfig } from "@/lib/api";
@@ -340,22 +340,27 @@ export function WebhooksView() {
   const [deliveriesCursor, setDeliveriesCursor] = useState<string | null>(null);
   const [loadingMoreDeliveries, setLoadingMoreDeliveries] = useState(false);
 
-  const loadWebhooks = async (page: number = currentPage) => {
-    if (!currentBank) return;
-    setLoading(true);
-    try {
-      const data = await client.listWebhooks(currentBank, {
-        limit: ITEMS_PER_PAGE,
-        offset: (page - 1) * ITEMS_PER_PAGE,
-      });
-      setWebhooks(data.items || []);
-      setTotal(data.total || 0);
-    } catch (error) {
-      console.error("Error loading webhooks:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchWebhooksPage = useCallback(
+    async (page: number) => {
+      if (!currentBank) return;
+      setLoading(true);
+      try {
+        const data = await client.listWebhooks(currentBank, {
+          limit: ITEMS_PER_PAGE,
+          offset: (page - 1) * ITEMS_PER_PAGE,
+        });
+        setWebhooks(data.items || []);
+        setTotal(data.total || 0);
+      } catch (error) {
+        console.error("Error loading webhooks:", error);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [currentBank]
+  );
+
+  const loadWebhooks = (page: number = currentPage) => fetchWebhooksPage(page);
 
   const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
   const offset = (currentPage - 1) * ITEMS_PER_PAGE;
@@ -379,9 +384,9 @@ export function WebhooksView() {
       // just left, and carrying it over lands on an offset the new bank may not
       // reach (page 3 of a 120-webhook bank, then a bank with two).
       setCurrentPage(1);
-      loadWebhooks(1);
+      fetchWebhooksPage(1);
     }
-  }, [currentBank]);
+  }, [currentBank, fetchWebhooksPage]);
 
   const handleCreate = async () => {
     if (!currentBank || !form.url) return;
@@ -400,7 +405,7 @@ export function WebhooksView() {
       // Rows are ordered oldest-first, so the new webhook is on the last page —
       // reloading the current page would close the dialog and appear to do nothing.
       await handlePageChange(Math.ceil((total + 1) / ITEMS_PER_PAGE));
-    } catch (error) {
+    } catch {
       // Error toast shown by API client interceptor
     } finally {
       setCreating(false);
@@ -414,7 +419,7 @@ export function WebhooksView() {
     try {
       await client.deleteWebhook(currentBank, webhookId);
       await reloadAfterMutation();
-    } catch (error) {
+    } catch {
       // Error toast shown by API client interceptor
     } finally {
       setDeletingId(null);

@@ -12,7 +12,6 @@ from openai._models import construct_type
 from openai.types.chat import ChatCompletion
 
 from hindsight_api.engine.llm_wrapper import LLMProvider
-from hindsight_api.engine.providers.litellm_llm import LiteLLMLLM
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM
 from hindsight_api.tracing import register_span_recorder, unregister_span_recorder
 
@@ -50,18 +49,6 @@ def _completion(content: str | None, finish_reason: str = "stop") -> ChatComplet
         "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
     }
     return construct_type(type_=ChatCompletion, value=payload)  # type: ignore[return-value]
-
-
-@pytest.mark.asyncio
-async def test_litellm_traces_the_timed_out_attempt_before_retrying(recorder):
-    llm = LiteLLMLLM(provider="litellm", api_key="unused", base_url="http://localhost:0/v1", model="m")
-    llm._acompletion = AsyncMock(side_effect=TimeoutError())  # type: ignore[method-assign]
-    with pytest.raises(TimeoutError):
-        await llm.call(messages=[{"role": "user", "content": "q"}], scope="reflect", max_retries=1, initial_backoff=0)
-    # Two attempts, both timed out: the first is traced here, the last by the wrapper.
-    (retried,) = recorder.records
-    assert isinstance(retried["error"], TimeoutError)
-    assert retried["scope"] == "reflect"
 
 
 @pytest.mark.asyncio

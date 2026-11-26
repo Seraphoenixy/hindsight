@@ -390,7 +390,7 @@ class WorkerPoller:
         poll_interval_ms: int = 500,
         schema: str | None = None,
         tenant_extension: "TenantExtension | None" = None,
-        max_slots: int = 10,
+        max_slots: int = 3,
         slot_reservations: dict[str, int] | None = None,
         consolidation_bank_priority: dict[str, int] | None = None,
         max_retries: int = 3,

@@ -1,6 +1,6 @@
 # 本地管理排障
 
-当前组件分工见[运行架构](../architecture/runtime.md)，用户安装入口见 [Magpie 插件说明](../../../hindsight-integrations/coding-agents/magpie/README.md)。以下保留已实测的故障原因与处理边界。
+当前组件分工见[运行架构](../architecture/runtime.md)，用户安装入口见 [Magpie 插件说明](../../../hindsight-integrations/magpie/README.md)。以下保留已实测的故障原因与处理边界。
 
 ## Magpie 显示 “This page couldn’t load”
 

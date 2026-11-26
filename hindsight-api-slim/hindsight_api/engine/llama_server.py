@@ -113,6 +113,24 @@ _PRESET_LIST: tuple[GGUFPreset, ...] = (
         dimensions=1024,
         aliases=("Qwen/Qwen3-Embedding-0.6B", "qwen3-embedding-0.6b", "Qwen3-Embedding-0.6B"),
     ),
+    GGUFPreset(
+        name="bge-m3",
+        mode="embedding",
+        filename="bge-m3-Q8_0.gguf",
+        repo_id="gpustack/bge-m3-GGUF",
+        ctx=8192,
+        dimensions=1024,
+        aliases=("BAAI/bge-m3", "bge-m3-q8_0"),
+    ),
+    GGUFPreset(
+        name="qwen3-4b",
+        mode="embedding",
+        filename="Qwen3-Embedding-4B-Q8_0.gguf",
+        repo_id="Qwen/Qwen3-Embedding-4B-GGUF",
+        ctx=8192,
+        dimensions=2560,
+        aliases=("Qwen/Qwen3-Embedding-4B", "qwen3-embedding-4b", "Qwen3-Embedding-4B"),
+    ),
     # Reranker presets
     GGUFPreset(
         name="hindsight-ai/hs-rerank-1",
@@ -172,6 +190,13 @@ async def ensure_gguf_file_async(model_or_path: str) -> tuple[Path, GGUFPreset |
 
     dest = get_gguf_dir() / preset.filename
     if not dest.is_file():
+        no_auto = os.getenv("HINDSIGHT_API_LLAMACPP_NO_AUTO_DOWNLOAD", "").strip().lower() in ("1", "true", "yes", "on")
+        if no_auto:
+            raise FileNotFoundError(
+                f"Local GGUF model '{preset.filename}' is not downloaded yet. "
+                f"Download it from Local Settings or run: "
+                f"python -m hindsight_api.engine.llama_install --download-model {preset.name}"
+            )
         logger.info("[llama-gguf] Downloading %s from %s", preset.filename, preset.download_url())
         await download_file_async(preset.download_url(), dest)
     return dest, preset
@@ -282,9 +307,9 @@ class ManagedLlamaServer:
                 "on",
             ]
             if self.mode == "embedding":
-                cmd.append("--embedding")
+                cmd.extend(["--embedding", "-b", str(ctx), "-ub", str(ctx)])
             elif self.mode == "reranking":
-                cmd.append("--reranking")
+                cmd.extend(["--reranking", "-b", str(ctx), "-ub", str(ctx)])
 
             if preset:
                 if preset.kv_quant:

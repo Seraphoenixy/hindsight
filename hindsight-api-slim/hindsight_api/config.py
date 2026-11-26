@@ -841,6 +841,7 @@ ENV_MCP_ENABLED = "HINDSIGHT_API_MCP_ENABLED"
 ENV_MCP_ENABLED_TOOLS = "HINDSIGHT_API_MCP_ENABLED_TOOLS"
 ENV_MCP_STATELESS = "HINDSIGHT_API_MCP_STATELESS"
 ENV_MCP_INSTRUCTIONS = "HINDSIGHT_API_MCP_INSTRUCTIONS"
+ENV_MCP_SERVER_INSTRUCTIONS = "HINDSIGHT_API_MCP_SERVER_INSTRUCTIONS"
 ENV_MCP_AUTH_TOKEN = "HINDSIGHT_API_MCP_AUTH_TOKEN"
 ENV_ENABLE_BANK_CONFIG_API = "HINDSIGHT_API_ENABLE_BANK_CONFIG_API"
 ENV_ENABLE_BANK_LLM_HEALTH = "HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH"
@@ -849,8 +850,15 @@ ENV_DEFAULT_BANK_TEMPLATE = "HINDSIGHT_API_DEFAULT_BANK_TEMPLATE"
 ENV_GRAPH_RETRIEVER = "HINDSIGHT_API_GRAPH_RETRIEVER"
 ENV_RECALL_MAX_CONCURRENT = "HINDSIGHT_API_RECALL_MAX_CONCURRENT"
 ENV_WORKING_RULES_LIMIT_BYTES = "HINDSIGHT_API_WORKING_RULES_LIMIT_BYTES"
-ENV_WORKING_RULES_PINNED_LIMIT_CHARS = "HINDSIGHT_API_WORKING_RULES_PINNED_LIMIT_CHARS"
 ENV_WORKING_RULES_ENTRY_MAX_BYTES = "HINDSIGHT_API_WORKING_RULES_ENTRY_MAX_BYTES"
+ENV_SYNC_RELAY_URL = "HINDSIGHT_SYNC_RELAY_URL"
+ENV_SYNC_TOKEN = "HINDSIGHT_SYNC_TOKEN"
+ENV_SYNC_STATE_DIR = "HINDSIGHT_SYNC_STATE_DIR"
+ENV_SYNC_AUTO_ENABLED = "HINDSIGHT_SYNC_AUTO_ENABLED"
+ENV_SYNC_INTERVAL_SECONDS = "HINDSIGHT_SYNC_INTERVAL_SECONDS"
+ENV_SYNC_AUTO_RESOLVE = "HINDSIGHT_SYNC_AUTO_RESOLVE"
+ENV_SYNC_BATCH_MAX_ITEMS = "HINDSIGHT_SYNC_BATCH_MAX_ITEMS"
+ENV_SYNC_BATCH_MAX_BYTES = "HINDSIGHT_SYNC_BATCH_MAX_BYTES"
 
 # Admission control. The engine's *_MAX_CONCURRENT caps limit how much runs at once
 # and let an unbounded queue form behind them; these bound how long a request may
@@ -951,6 +959,7 @@ ENV_LLM_DEBUG_DUMP_4XX = "HINDSIGHT_API_LLM_DEBUG_DUMP_4XX"
 ENV_RETAIN_MAX_COMPLETION_TOKENS = "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS"
 ENV_RETAIN_CHUNK_SIZE = "HINDSIGHT_API_RETAIN_CHUNK_SIZE"
 ENV_RETAIN_STRUCTURED_CHUNK_SIZE = "HINDSIGHT_API_RETAIN_STRUCTURED_CHUNK_SIZE"
+ENV_RETAIN_CHUNK_CONTEXT_TOKENS = "HINDSIGHT_API_RETAIN_CHUNK_CONTEXT_TOKENS"
 ENV_RETAIN_EXTRACT_CAUSAL_LINKS = "HINDSIGHT_API_RETAIN_EXTRACT_CAUSAL_LINKS"
 ENV_RETAIN_OPTIONAL_FACT_DIMENSIONS = "HINDSIGHT_API_RETAIN_OPTIONAL_FACT_DIMENSIONS"
 ENV_RETAIN_EXTRACTION_MODE = "HINDSIGHT_API_RETAIN_EXTRACTION_MODE"
@@ -1454,7 +1463,7 @@ DEFAULT_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY = None  # Optional, uses ADC if not set
 DEFAULT_LLM_GEMINI_SAFETY_SETTINGS = None  # None = use Gemini default safety settings
 
 DEFAULT_EMBEDDINGS_PROVIDER = "local"
-DEFAULT_EMBEDDINGS_LOCAL_MODEL = "BAAI/bge-small-en-v1.5"
+DEFAULT_EMBEDDINGS_LOCAL_MODEL = "qwen3-0.6b"
 DEFAULT_EMBEDDINGS_LOCAL_FORCE_CPU = False  # Force CPU mode for local embeddings
 DEFAULT_EMBEDDINGS_LOCAL_TRUST_REMOTE_CODE = False  # Security: disabled by default, required for some models
 DEFAULT_EMBEDDINGS_LOCAL_MAX_CONCURRENT = 4  # Threads that run the local model; each keeps its own native pools (#6110)
@@ -1921,6 +1930,12 @@ DEFAULT_MCP_ENABLED = False
 DEFAULT_MCP_ENABLED_TOOLS: list[str] | None = None  # None = all tools enabled
 DEFAULT_MCP_STATELESS = False  # False = stateful (supports SSE/GET); True = stateless (POST-only)
 DEFAULT_MCP_INSTRUCTIONS = None
+# Text sent to MCP clients as the server instructions of the initialize response, so a
+# connecting agent learns how to use the bank without a hand-pasted prompt. Per bank.
+DEFAULT_MCP_SERVER_INSTRUCTIONS = None
+# Upper bound on mcp_server_instructions. Clients place the text in the model's context on
+# every connection, so it is kept to a size a system prompt can carry.
+MCP_SERVER_INSTRUCTIONS_MAX_CHARS = 4000
 DEFAULT_ENABLE_BANK_CONFIG_API = True
 # Dry-run extraction is a preview tool that makes a real LLM call but stores nothing. Enabled by
 # default; set HINDSIGHT_API_ENABLE_DRY_RUN_EXTRACT=false to remove the endpoint (e.g. to cap
@@ -1933,8 +1948,12 @@ DEFAULT_DEFAULT_BANK_TEMPLATE: dict | None = None  # BankTemplateManifest dict a
 DEFAULT_GRAPH_RETRIEVER = "link_expansion"
 DEFAULT_RECALL_MAX_CONCURRENT = 32  # Max concurrent recall operations per worker
 DEFAULT_WORKING_RULES_LIMIT_BYTES = 14336  # 14 KiB per working-rules scope pool
-DEFAULT_WORKING_RULES_PINNED_LIMIT_CHARS = 3072  # Reserved projection budget for pinned working rules
 DEFAULT_WORKING_RULES_ENTRY_MAX_BYTES = 8192  # 8 KiB max per single working rule
+DEFAULT_SYNC_AUTO_ENABLED = True
+DEFAULT_SYNC_INTERVAL_SECONDS = 15.0
+DEFAULT_SYNC_AUTO_RESOLVE = True
+DEFAULT_SYNC_BATCH_MAX_ITEMS = 100
+DEFAULT_SYNC_BATCH_MAX_BYTES = 4 * 1024 * 1024
 
 # Admission-control defaults. These are PER WORKER PROCESS: with `--workers N` the
 # process budget is N x the value here.
@@ -2039,6 +2058,8 @@ DEFAULT_BANK_STATS_CACHE_MAX_ENTRIES = 1024  # LRU bound across (schema, bank) k
 # Retain settings
 DEFAULT_RETAIN_MAX_COMPLETION_TOKENS = 64000  # Max tokens for fact extraction LLM call
 DEFAULT_RETAIN_CHUNK_SIZE = 3000  # Max chars per chunk for fact extraction
+# Tokens of each neighbouring chunk shown to extraction as read-only context (0 = off, #6645)
+DEFAULT_RETAIN_CHUNK_CONTEXT_TOKENS = 0
 DEFAULT_RETAIN_EXTRACT_CAUSAL_LINKS = True  # Extract causal links between facts
 # Let a fact leave when/where/who/why empty instead of filling them with "N/A" (#4457).
 # Off by default because it is not free: the four fields become `string | null` and the
@@ -2353,7 +2374,7 @@ DEFAULT_WORKER_POLL_INTERVAL_MS = 500  # Poll database every 500ms
 DEFAULT_WORKER_MAX_RETRIES = 3  # Max retries before marking task failed
 DEFAULT_WORKER_TASK_RETRY_BACKOFF_SECONDS = 60  # Seconds between retries on transient task failure
 DEFAULT_WORKER_HTTP_PORT = 8889  # HTTP port for worker metrics/health
-DEFAULT_WORKER_MAX_SLOTS = 10  # Total concurrent tasks per worker
+DEFAULT_WORKER_MAX_SLOTS = 3  # Total concurrent tasks per worker
 # How long shutdown waits for in-flight tasks before cancelling them and handing their
 # rows back to 'pending'. Counted from SIGTERM. Drain + ~5s cancel + ~2s release must fit
 # the platform's grace period; 20s fits Kubernetes' default 30s (#6021).
@@ -2438,7 +2459,7 @@ DEFAULT_RECALL_CHUNKS_MAX_TOKENS = 1000  # Token budget for raw chunks returned 
 DEFAULT_ENABLE_TEXT_SEARCH = True
 DEFAULT_ENABLE_TEMPORAL_RETRIEVAL = True  # Temporal retrieval arm + the date-aware query analysis feeding it
 DEFAULT_ENABLE_GRAPH_RETRIEVAL = True  # Entity/link graph traversal arm
-DEFAULT_ENABLE_RERANKING = True  # Cross-encoder rerank of the fused candidates
+DEFAULT_ENABLE_RERANKING = False  # Recall uses RRF unless reranking is explicitly enabled
 
 # Recall budget mapping
 # "fixed": thinking_budget = recall_budget_fixed_<level> (preserves legacy behavior)
@@ -4075,6 +4096,7 @@ class HindsightConfig:
     retain_max_completion_tokens: int
     retain_chunk_size: int
     retain_structured_chunk_size: int | None
+    retain_chunk_context_tokens: int
     retain_extract_causal_links: bool
     retain_optional_fact_dimensions: bool
     retain_extraction_mode: str
@@ -4393,8 +4415,17 @@ class HindsightConfig:
 
     # Working Rules budgets (static, server-level only).
     working_rules_limit_bytes: int = DEFAULT_WORKING_RULES_LIMIT_BYTES
-    working_rules_pinned_limit_chars: int = DEFAULT_WORKING_RULES_PINNED_LIMIT_CHARS
     working_rules_entry_max_bytes: int = DEFAULT_WORKING_RULES_ENTRY_MAX_BYTES
+
+    # Multi-device object sync configuration.
+    sync_relay_url: str | None = None
+    sync_token: str | None = None
+    sync_state_dir: str | None = None
+    sync_auto_enabled: bool = DEFAULT_SYNC_AUTO_ENABLED
+    sync_interval_seconds: float = DEFAULT_SYNC_INTERVAL_SECONDS
+    sync_auto_resolve: bool = DEFAULT_SYNC_AUTO_RESOLVE
+    sync_batch_max_items: int = DEFAULT_SYNC_BATCH_MAX_ITEMS
+    sync_batch_max_bytes: int = DEFAULT_SYNC_BATCH_MAX_BYTES
 
     # Background maintenance cadences (static, server-level only). Each sweep's
     # discovery is one cross-tenant round-trip that probes every schema holding
@@ -4508,6 +4539,8 @@ class HindsightConfig:
     reflect_kb_search_images: bool = DEFAULT_REFLECT_KB_SEARCH_IMAGES
     reflect_kb_search_max_images: int = DEFAULT_REFLECT_KB_SEARCH_MAX_IMAGES
     reflect_kb_search_budget: str = DEFAULT_REFLECT_KB_SEARCH_BUDGET
+    # Per bank: the instructions an MCP client receives in the initialize response (None = none)
+    mcp_server_instructions: str | None = DEFAULT_MCP_SERVER_INSTRUCTIONS
 
     # Class-level sets for configuration categorization
 
@@ -4601,6 +4634,8 @@ class HindsightConfig:
     _CONFIGURABLE_FIELDS = {
         # MCP tool access control
         "mcp_enabled_tools",
+        # Instructions sent to MCP clients when they connect to the bank
+        "mcp_server_instructions",
         # Audit logging on/off, per bank. The actions allowlist and retention
         # window remain server-level and are deliberately not configurable.
         "audit_log_enabled",
@@ -5915,6 +5950,9 @@ class HindsightConfig:
                 ENV_RETAIN_STRUCTURED_CHUNK_SIZE,
                 os.getenv(ENV_RETAIN_STRUCTURED_CHUNK_SIZE),
             ),
+            retain_chunk_context_tokens=int(
+                os.getenv(ENV_RETAIN_CHUNK_CONTEXT_TOKENS, str(DEFAULT_RETAIN_CHUNK_CONTEXT_TOKENS))
+            ),
             retain_extract_causal_links=os.getenv(
                 ENV_RETAIN_EXTRACT_CAUSAL_LINKS, str(DEFAULT_RETAIN_EXTRACT_CAUSAL_LINKS)
             ).lower()
@@ -6056,6 +6094,7 @@ class HindsightConfig:
             ).lower()
             == "true",
             reflect_kb_search_budget=_parse_reflect_kb_search_budget(os.getenv(ENV_REFLECT_KB_SEARCH_BUDGET)),
+            mcp_server_instructions=os.getenv(ENV_MCP_SERVER_INSTRUCTIONS) or DEFAULT_MCP_SERVER_INSTRUCTIONS,
             reflect_kb_search_max_images=int(
                 os.getenv(ENV_REFLECT_KB_SEARCH_MAX_IMAGES, str(DEFAULT_REFLECT_KB_SEARCH_MAX_IMAGES))
             ),
@@ -6450,12 +6489,17 @@ class HindsightConfig:
             working_rules_limit_bytes=int(
                 os.getenv(ENV_WORKING_RULES_LIMIT_BYTES, str(DEFAULT_WORKING_RULES_LIMIT_BYTES))
             ),
-            working_rules_pinned_limit_chars=int(
-                os.getenv(ENV_WORKING_RULES_PINNED_LIMIT_CHARS, str(DEFAULT_WORKING_RULES_PINNED_LIMIT_CHARS))
-            ),
             working_rules_entry_max_bytes=int(
                 os.getenv(ENV_WORKING_RULES_ENTRY_MAX_BYTES, str(DEFAULT_WORKING_RULES_ENTRY_MAX_BYTES))
             ),
+            sync_relay_url=os.getenv(ENV_SYNC_RELAY_URL) or None,
+            sync_token=os.getenv(ENV_SYNC_TOKEN) or None,
+            sync_state_dir=os.getenv(ENV_SYNC_STATE_DIR) or None,
+            sync_auto_enabled=_parse_boolean_env(ENV_SYNC_AUTO_ENABLED, DEFAULT_SYNC_AUTO_ENABLED),
+            sync_interval_seconds=float(os.getenv(ENV_SYNC_INTERVAL_SECONDS, str(DEFAULT_SYNC_INTERVAL_SECONDS))),
+            sync_auto_resolve=_parse_boolean_env(ENV_SYNC_AUTO_RESOLVE, DEFAULT_SYNC_AUTO_RESOLVE),
+            sync_batch_max_items=int(os.getenv(ENV_SYNC_BATCH_MAX_ITEMS, str(DEFAULT_SYNC_BATCH_MAX_ITEMS))),
+            sync_batch_max_bytes=int(os.getenv(ENV_SYNC_BATCH_MAX_BYTES, str(DEFAULT_SYNC_BATCH_MAX_BYTES))),
         )
         return config
 

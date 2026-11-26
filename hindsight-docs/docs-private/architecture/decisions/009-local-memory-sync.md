@@ -1,0 +1,9 @@
+# ADR-009: Local Multi-Device Memory Synchronization
+
+- **Status**: Accepted (Updated for Protocol v3 Object-Level Sync)
+- **Context**: Hindsight local replicas store independent PostgreSQL databases that must remain readable and writable offline, converge cleanly after reconnecting across devices, propagate deletions reliably, audit true conflicts without data loss, and minimize bandwidth on idle checks.
+- **Decision**:
+  1. **Transactional Change Log (`sync_object_state`, `sync_change_log`)**: Track mutations in the same PostgreSQL transaction as business writes, combining semantic aggregate logging (`mark_sync_tx_managed`) with fallback row triggers (`mark_sync_applying` suppresses remote-apply echoes). Query local pending state via `MAX(seq)` on `sync_change_log`.
+  2. **Protocol v3 Object-Level Relay (`hindsight-sync-server`)**: Replace whole-database ZIP exchanges with ordered causal object logs, content-addressed SHA-256 binary blobs (`/v3/blobs`), paginated baselines (`/v3/baseline`), per-replica cursors (`out_seq`, `in_seq`), and `409 Conflict` fencing against stale v1/v2 clients once v3 is bootstrapped.
+  3. **Disjoint Merge, Tombstones & Pre-Apply Conflict Persistence**: Merge modifications to distinct objects automatically; represent deletes with causal tombstones so offline replays never resurrect deleted items; persist `sync_conflicts` rows with both sides before auto-applying winners, supporting CLI + Control Plane diff, confirm, and optimistic-versioned restore.
+  4. **Lifecycle Auto-Sync & Device Credentials**: Run `SyncScheduler` in the daemon lifespan (immediate check, 15s default cadence, write-commit and window-focus wakeups, shared concurrency lock, deferral during active async ops, and clean shutdown) backed by per-device bearer credentials (`/v3/devices`) with independent rotation and revocation (`403 Forbidden`).

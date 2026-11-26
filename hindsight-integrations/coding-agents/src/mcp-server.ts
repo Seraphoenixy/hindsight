@@ -44,7 +44,7 @@ export function selectTools(
         repoDir: cwd,
         harness,
         pageTrigger: buildPageTrigger(cfg),
-        reflectTimeoutMs: cfg.reflectToolTimeoutMs,
+        reflectToolTimeoutMs: cfg.reflectToolTimeoutMs,
         reflectBudget: cfg.reflectBudget,
         toolGuideExtra: cfg.toolGuideExtra,
         stampFor: () => buildRetainStamp(cfg, { directory: cwd, harness, bankId }),

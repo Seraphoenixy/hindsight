@@ -72,6 +72,10 @@ it("renders live status and submits controls through the sandbox bridge", async 
     "profile",
     "port",
     "daemon",
+    "daemonStatus",
+    "daemonStart",
+    "daemonStop",
+    "daemonRestart",
     "checked",
     "llmStatus",
     "llmHost",
@@ -119,7 +123,7 @@ it("renders live status and submits controls through the sandbox bridge", async 
       options: { get: async () => ({ port: 19100 }), set: setOptions },
     },
   };
-  const script = readFileSync(new URL("../magpie/page/boot.js", import.meta.url), "utf8");
+  const script = readFileSync(new URL("../../magpie/page/boot.js", import.meta.url), "utf8");
   await runInNewContext(script, {
     window,
     location: { hostname: "localhost" },
@@ -150,6 +154,127 @@ it("renders live status and submits controls through the sandbox bridge", async 
       action: "sync-llm",
       id: expect.stringMatching(/^\d{13}-[a-z0-9]{10}$/),
       model: "codearts/glm-5.3-flash",
+    },
+  });
+});
+it("renders and toggles host injection on the standalone injection page", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { runInNewContext } = await import("node:vm");
+  const handlers = new Map<string, () => Promise<void>>();
+  const elements = new Map<
+    string,
+    {
+      textContent: string;
+      disabled: boolean;
+      dataset: Record<string, string>;
+      value: string;
+      innerHTML: string;
+      addEventListener: (event: string, fn: () => Promise<void>) => void;
+    }
+  >();
+  for (const id of [
+    "status",
+    "refresh",
+    "checked",
+    "injectionStatus",
+    "injectionConfigPath",
+    "injectionEnable",
+    "injectionDisable",
+    "hostList",
+    "showAllHosts",
+  ]) {
+    elements.set(id, {
+      textContent: "",
+      disabled: true,
+      dataset: {},
+      value: "",
+      innerHTML: "",
+      addEventListener: (_event, fn) => {
+        handlers.set(id, fn);
+      },
+    });
+  }
+  const setOptions = vi.fn();
+  const window = {
+    hindsightProcessState: {
+      port: 19100,
+      running: false,
+      daemonHealthy: true,
+      profile: "coding-agent",
+      url: "http://127.0.0.1:19100",
+      checkedAt: Date.now(),
+      operation: null,
+      injection: {
+        enabled: true,
+        configPath: "C:\\Users\\test\\.hindsight\\coding-agent.json",
+        hosts: [
+          {
+            name: "antigravity-cli",
+            label: "Antigravity (agy)",
+            detected: true,
+            installed: true,
+            harnessDisabled: false,
+            effectiveEnabled: true,
+          },
+          {
+            name: "claude-code",
+            label: "Claude Code",
+            detected: true,
+            installed: false,
+            harnessDisabled: false,
+            effectiveEnabled: true,
+          },
+        ],
+      },
+    },
+    magpie: {
+      ready: Promise.resolve({}),
+      options: { get: async () => ({ port: 19100 }), set: setOptions },
+    },
+  };
+  const script = readFileSync(new URL("../../magpie/page/boot.js", import.meta.url), "utf8");
+  await runInNewContext(script, {
+    window,
+    location: { hostname: "localhost" },
+    setInterval: vi.fn(),
+    document: {
+      getElementById: (id: string) => elements.get(id),
+      createElement: () => ({ src: "", remove: vi.fn() }),
+      head: { append: (asset: { onload: () => void }) => asset.onload() },
+    },
+  });
+  expect(elements.get("injectionStatus")?.textContent).toBe("已开启");
+  expect(elements.get("injectionStatus")?.dataset.enabled).toBe("true");
+  expect(elements.get("injectionConfigPath")?.textContent).toBe(
+    "C:\\Users\\test\\.hindsight\\coding-agent.json"
+  );
+  expect(elements.get("injectionEnable")?.disabled).toBe(true);
+  expect(elements.get("injectionDisable")?.disabled).toBe(false);
+  expect(elements.get("hostList")?.innerHTML).toContain("Antigravity (agy)");
+  expect(elements.get("hostList")?.innerHTML).toContain('data-host-action="host-uninstall"');
+  expect(elements.get("hostList")?.innerHTML).toContain('data-host-action="host-install"');
+  await handlers.get("injectionDisable")!();
+  expect(setOptions).toHaveBeenCalledWith({
+    port: 19100,
+    processRequest: {
+      action: "injection-disable",
+      id: expect.stringMatching(/^\d{13}-[a-z0-9]{10}$/),
+    },
+  });
+  await handlers.get("hostList")!({
+    target: {
+      closest: () => ({
+        disabled: false,
+        dataset: { hostAction: "host-uninstall", host: "antigravity-cli" },
+      }),
+    },
+  } as never);
+  expect(setOptions).toHaveBeenLastCalledWith({
+    port: 19100,
+    processRequest: {
+      action: "host-uninstall",
+      host: "antigravity-cli",
+      id: expect.stringMatching(/^\d{13}-[a-z0-9]{10}$/),
     },
   });
 });

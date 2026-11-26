@@ -38,7 +38,8 @@ vi.mock("./core/config", async (importOriginal) => {
   // tests; here the cold start would only turn a slow machine into a 30 s timeout.
   return {
     ...actual,
-    loadConfig: () => actual.resolveConfig({ daemonAutoStart: false, ...rawConfig }),
+    loadConfig: () =>
+      actual.resolveConfig({ serverMode: "self-hosted", apiToken: "test-key", ...rawConfig }),
   };
 });
 

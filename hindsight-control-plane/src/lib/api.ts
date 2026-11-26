@@ -15,12 +15,10 @@ import type {
 } from "./memory-organization-types";
 import {
   knowledgeApi,
-  type ActivityBucket,
   type ActivityPeriod,
   type MediaType,
   type DocumentStatus,
   type KnowledgeBank,
-  type KnowledgeDocument,
   type KnowledgeDocumentDetail,
   type KnowledgeSearchRequest,
   type KnowledgeSearchResponse,
@@ -919,6 +917,8 @@ export class ControlPlaneClient {
         updated_at?: string | null;
         status: string;
         error_message: string | null;
+        /** How many times the worker retried this operation after a failure. */
+        retry_count?: number | null;
         /** For a pending operation, a value in the future means the worker is
          *  holding it back until then — a mental-model refresh waiting out
          *  min_refresh_interval_seconds, or an extension deferring the task. */
@@ -1155,15 +1155,6 @@ export class ControlPlaneClient {
     return this.fetchApi<{ status: string }>(
       `/api/pages/nodes/${encodeURIComponent(nodeId)}?bank_id=${encodeURIComponent(bankId)}`,
       { method: "DELETE" }
-    );
-  }
-
-  /**
-   * Export the pages as a portable markdown bundle (markdown files).
-   */
-  async exportPages(bankId: string) {
-    return this.fetchApi<{ files: Array<{ path: string; content: string }> }>(
-      `/api/pages/export?bank_id=${encodeURIComponent(bankId)}`
     );
   }
 
@@ -1464,7 +1455,7 @@ export class ControlPlaneClient {
 
   async previewMemoryOrganization(
     bankId: string,
-    input: { topic: string; instructions: string; tag?: string }
+    input: { instructions: string }
   ): Promise<MemoryOrganizationPreview> {
     return this.fetchApi(bankApi(bankId, "/memory-organization/preview"), {
       method: "POST",
@@ -2918,8 +2909,6 @@ export class ControlPlaneClient {
 
   async listWorkingRules(
     options: {
-      scope?: WorkingRuleScope;
-      project_id?: string;
       include_archived?: boolean;
       q?: string;
       limit?: number;
@@ -2927,8 +2916,6 @@ export class ControlPlaneClient {
     } = {}
   ): Promise<WorkingRulesListResponse> {
     const params = new URLSearchParams();
-    if (options.scope) params.set("scope", options.scope);
-    if (options.project_id) params.set("project_id", options.project_id);
     if (options.include_archived) params.set("include_archived", "true");
     if (options.q) params.set("q", options.q);
     if (options.limit !== undefined) params.set("limit", String(options.limit));
@@ -2941,11 +2928,7 @@ export class ControlPlaneClient {
 
   async createWorkingRule(input: {
     content: string;
-    scope?: WorkingRuleScope;
-    project_id?: string | null;
     importance?: WorkingRuleImportance;
-    pinned?: boolean;
-    branches?: string[];
   }): Promise<WorkingRuleRecord> {
     return this.fetchApi<WorkingRuleRecord>("/api/working-rules", {
       method: "POST",
@@ -2958,20 +2941,13 @@ export class ControlPlaneClient {
     input: {
       content?: string;
       importance?: WorkingRuleImportance;
-      pinned?: boolean;
-      branches?: string[];
-      scope?: WorkingRuleScope;
-      project_id?: string | null;
       is_archived?: boolean;
     }
   ): Promise<WorkingRuleRecord> {
-    return this.fetchApi<WorkingRuleRecord>(
-      `/api/working-rules/${encodeURIComponent(ruleId)}`,
-      {
-        method: "PATCH",
-        body: JSON.stringify(input),
-      }
-    );
+    return this.fetchApi<WorkingRuleRecord>(`/api/working-rules/${encodeURIComponent(ruleId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
   }
 
   async deleteWorkingRule(ruleId: string): Promise<{ status: string }> {
@@ -3001,23 +2977,18 @@ export class ControlPlaneClient {
   }
 
   async exportWorkingRulesMarkdown(
-    options: { scope?: WorkingRuleScope; project_id?: string; include_archived?: boolean } = {}
+    options: { include_archived?: boolean } = {}
   ): Promise<{ markdown: string }> {
     const params = new URLSearchParams();
-    if (options.scope) params.set("scope", options.scope);
-    if (options.project_id) params.set("project_id", options.project_id);
     if (options.include_archived) params.set("include_archived", "true");
     const qs = params.toString();
-    return this.fetchApi<{ markdown: string }>(
-      `/api/working-rules/export${qs ? `?${qs}` : ""}`,
-      { cache: "no-store" as RequestCache }
-    );
+    return this.fetchApi<{ markdown: string }>(`/api/working-rules/export${qs ? `?${qs}` : ""}`, {
+      cache: "no-store" as RequestCache,
+    });
   }
 
   async previewWorkingRulesOrganization(input: {
     instructions?: string;
-    scope?: WorkingRuleScope;
-    project_id?: string;
   }): Promise<WorkingRuleOrganizePreview> {
     return this.fetchApi<WorkingRuleOrganizePreview>("/api/working-rules/organize/preview", {
       method: "POST",
@@ -3033,6 +3004,112 @@ export class ControlPlaneClient {
       method: "POST",
       body: JSON.stringify(input),
     });
+  }
+
+  // ============= OBJECT SYNC & CONFLICTS =============
+
+  async getSyncStatus(): Promise<SyncStatusSnapshot> {
+    return this.fetchApi<SyncStatusSnapshot>("/api/sync/status", {
+      cache: "no-store" as RequestCache,
+    });
+  }
+
+  async triggerSync(
+    input: {
+      prefer?: "local" | "remote";
+      automatic?: boolean;
+    } = {}
+  ): Promise<SyncExchangeResult> {
+    return this.fetchApi<SyncExchangeResult>("/api/sync/trigger", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async listSyncConflicts(
+    options: { limit?: number; offset?: number; unconfirmed_only?: boolean } = {}
+  ): Promise<SyncConflictPage> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.offset !== undefined) params.set("offset", String(options.offset));
+    if (options.unconfirmed_only) params.set("unconfirmed_only", "true");
+    const qs = params.toString();
+    return this.fetchApi<SyncConflictPage>(`/api/sync/conflicts${qs ? `?${qs}` : ""}`, {
+      cache: "no-store" as RequestCache,
+    });
+  }
+
+  async getSyncConflictDetail(conflictId: string): Promise<SyncConflictDetailResponse> {
+    return this.fetchApi<SyncConflictDetailResponse>(
+      `/api/sync/conflicts/${encodeURIComponent(conflictId)}`,
+      { cache: "no-store" as RequestCache }
+    );
+  }
+
+  async confirmSyncConflict(
+    conflictId: string,
+    input: { note?: string | null; by?: string | null } = {}
+  ): Promise<SyncObjectConflictRecord> {
+    return this.fetchApi<SyncObjectConflictRecord>(
+      `/api/sync/conflicts/${encodeURIComponent(conflictId)}/confirm`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      }
+    );
+  }
+
+  async restoreSyncConflict(
+    conflictId: string,
+    input: {
+      side: "local" | "remote";
+      expected_version: number;
+      note?: string | null;
+      by?: string | null;
+    }
+  ): Promise<SyncObjectConflictRecord> {
+    return this.fetchApi<SyncObjectConflictRecord>(
+      `/api/sync/conflicts/${encodeURIComponent(conflictId)}/restore`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      }
+    );
+  }
+
+  async listSyncDevices(adminToken: string): Promise<SyncDevicesResponse> {
+    return this.fetchApi<SyncDevicesResponse>("/api/sync/devices", {
+      cache: "no-store",
+      headers: { "X-Hindsight-Sync-Admin-Token": adminToken },
+    });
+  }
+
+  async registerSyncDevice(
+    input: {
+      name: string;
+      device_id?: string | null;
+    },
+    adminToken: string
+  ): Promise<RelayDeviceProvisioned> {
+    return this.fetchApi<RelayDeviceProvisioned>("/api/sync/devices", {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "X-Hindsight-Sync-Admin-Token": adminToken },
+    });
+  }
+
+  async rotateSyncDevice(deviceId: string, adminToken: string): Promise<RelayDeviceProvisioned> {
+    return this.fetchApi<RelayDeviceProvisioned>(
+      `/api/sync/devices/${encodeURIComponent(deviceId)}/rotate`,
+      { method: "POST", headers: { "X-Hindsight-Sync-Admin-Token": adminToken } }
+    );
+  }
+
+  async revokeSyncDevice(deviceId: string, adminToken: string): Promise<RelayDeviceInfo> {
+    return this.fetchApi<RelayDeviceInfo>(
+      `/api/sync/devices/${encodeURIComponent(deviceId)}/revoke`,
+      { method: "POST", headers: { "X-Hindsight-Sync-Admin-Token": adminToken } }
+    );
   }
 }
 
@@ -3064,18 +3141,13 @@ export interface ConsolidationStrategiesPreview {
 
 // ============= WORKING RULES TYPES =============
 
-export type WorkingRuleScope = "global" | "project";
 export type WorkingRuleImportance = "critical" | "normal" | "low";
 export type WorkingRuleOrganizeAction = "add" | "replace" | "archive" | "remove";
 
 export interface WorkingRuleRecord {
   id: string;
-  scope: WorkingRuleScope;
-  project_id?: string | null;
   content: string;
   importance: WorkingRuleImportance;
-  pinned: boolean;
-  branches: string[];
   is_archived: boolean;
   archived_at?: string | null;
   archive_reason?: string | null;
@@ -3086,8 +3158,6 @@ export interface WorkingRuleRecord {
 export interface WorkingRulesUsage {
   used_bytes: number;
   limit_bytes: number;
-  pinned_chars: number;
-  pinned_limit_chars: number;
   active_count: number;
   archived_count: number;
 }
@@ -3109,9 +3179,6 @@ export interface WorkingRuleOrganizeProposalItem {
   old_text?: string | null;
   content?: string | null;
   importance?: WorkingRuleImportance | null;
-  scope?: WorkingRuleScope;
-  project_id?: string | null;
-  branches?: string[] | null;
 }
 
 export interface WorkingRuleOrganizePreview {
@@ -3137,4 +3204,114 @@ export interface WorkingRulePromotedResult {
   bank_id: string;
   document_id: string;
   unit_ids: string[];
+}
+
+// ============= OBJECT SYNC & CONFLICTS TYPES =============
+
+export interface SyncStatusSnapshot {
+  configured: boolean;
+  auto_enabled: boolean;
+  running: boolean;
+  syncing: boolean;
+  interval_seconds: number;
+  relay_url?: string | null;
+  device_id?: string | null;
+  auth_status: string;
+  out_seq: number;
+  in_seq: number;
+  local_high_water: number;
+  relay_version: number;
+  joined: boolean;
+  last_error?: string | null;
+  last_checked_at?: string | null;
+  last_synced_at?: string | null;
+  last_status?: string | null;
+  last_message?: string | null;
+}
+
+export interface SyncExchangeResult {
+  status: string;
+  message: string;
+  device_id: string;
+  relay_version: number;
+  last_seq: number;
+  out_seq: number;
+  in_seq: number;
+  pushed_count: number;
+  pulled_count: number;
+  conflicts_created: number;
+  upload_bytes: number;
+  download_bytes: number;
+  auth_status: string;
+}
+
+export interface SyncConflictConfirmation {
+  at: string;
+  by: string;
+  note?: string | null;
+}
+
+export interface SyncObjectConflictRecord {
+  id: string;
+  kind: "object";
+  detected_at: string;
+  object_type: string;
+  bank_id: string;
+  object_id: string;
+  resolution: "local" | "remote";
+  automatic: boolean;
+  base_version?: number | null;
+  local_version: number;
+  remote_version: number;
+  local_device_id: string;
+  remote_device_id: string;
+  local_content_hash: string;
+  remote_content_hash: string;
+  local_payload?: Record<string, unknown> | null;
+  remote_payload?: Record<string, unknown> | null;
+  applied_version?: number | null;
+  applied_at?: string | null;
+  confirmation?: SyncConflictConfirmation | null;
+  restored_at?: string | null;
+  restored_by?: string | null;
+  restored_side?: "local" | "remote" | null;
+  restored_version?: number | null;
+}
+
+export interface SyncConflictPage {
+  items: SyncObjectConflictRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface SyncConflictDetailResponse {
+  conflict: SyncObjectConflictRecord;
+  current_object_version: number;
+  current_object_deleted: boolean;
+}
+
+export interface RelayDeviceInfo {
+  device_id: string;
+  name: string;
+  created_at: string;
+  rotated_at?: string | null;
+  revoked_at?: string | null;
+  last_seen_at?: string | null;
+  active: boolean;
+}
+
+export interface RelayDeviceProvisioned {
+  device_id: string;
+  name: string;
+  token: string;
+  created_at?: string | null;
+  rotated_at?: string | null;
+  active: boolean;
+}
+
+export interface SyncDevicesResponse {
+  devices: RelayDeviceInfo[];
+  total: number;
+  current_device_id?: string | null;
 }

@@ -31,7 +31,7 @@ describe("connection modes", () => {
     // Resolving here (rather than at each client construction) is what lets the eight existing
     // call sites stay untouched.
     const cfg = resolveConfig({ serverMode: "daemon", apiUrl: "https://cloud.example" });
-    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
+    expect(cfg.apiUrl).toBe("http://127.0.0.1:8888");
   });
 
   it("uses a custom daemon port", () => {
@@ -43,7 +43,7 @@ describe("connection modes", () => {
   it("defaults to daemon when serverMode is unset", () => {
     const cfg = resolveConfig({});
     expect(cfg.serverMode).toBe("daemon");
-    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
+    expect(cfg.apiUrl).toBe("http://127.0.0.1:8888");
   });
 
   it("self-hosted keeps the configured apiUrl", () => {
@@ -51,10 +51,8 @@ describe("connection modes", () => {
     expect(cfg.apiUrl).toBe("http://localhost:8888");
   });
 
-  // 9077, not hindsight-all's 8888: 8888 is the conventional port for a server the user runs, and
-  // a daemon must never squat on it.
-  it("defaults the daemon port to 9077", () => {
-    expect(resolveConfig({ serverMode: "daemon" }).apiPort).toBe(9077);
+  it("defaults the daemon port to 8888", () => {
+    expect(resolveConfig({ serverMode: "daemon" }).apiPort).toBe(8888);
   });
 });
 
@@ -112,9 +110,9 @@ describe("ensureDaemon", () => {
     const home = mkdtempSync(join(tmpdir(), "hs-daemon-home-"));
     vi.stubEnv("HOME", home);
     vi.stubEnv("USERPROFILE", home);
-    const profiles = join(home, ".hindsight", "profiles");
-    mkdirSync(profiles, { recursive: true });
-    writeFileSync(join(profiles, "coding-agent.env"), "HINDSIGHT_API_LLM_PROVIDER=openai\n");
+    const hindsightDir = join(home, ".hindsight");
+    mkdirSync(hindsightDir, { recursive: true });
+    writeFileSync(join(hindsightDir, "embed"), "HINDSIGHT_API_LLM_PROVIDER=openai\n");
   });
   // Cloud and self-hosted must not so much as probe a local port.
   it("touches nothing outside daemon mode", async () => {
@@ -128,11 +126,28 @@ describe("ensureDaemon", () => {
     expect(spawnFn).not.toHaveBeenCalled();
   });
 
-  // Side effect only: callers proceed either way, so a down daemon fails through the same client
-  // error path as a down Cloud/self-hosted server rather than being skipped.
-  it("resolves without reporting usability", async () => {
+  it("lets a remote API use normal request handling", async () => {
     const cfg = resolveConfig({ serverMode: "self-hosted", apiUrl: "https://cloud.example" });
-    expect(await ensureDaemon(cfg, "claude-code", {})).toBeUndefined();
+    expect(await ensureDaemon(cfg, "claude-code", {})).toBe(true);
+  });
+
+  it("returns on the short health deadline when a local server never answers", async () => {
+    const probe = vi.fn(
+      (_url: string, options: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          options.signal!.addEventListener("abort", () => reject(options.signal!.reason), {
+            once: true,
+          });
+        })
+    );
+    vi.stubGlobal("fetch", probe);
+    const spawnFn = vi.fn();
+    const cfg = resolveConfig({ serverMode: "self-hosted", apiUrl: "http://localhost:9077/" });
+    expect(await ensureDaemon(cfg, "claude-code", { spawnFn })).toBe(false);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe.mock.calls[0][0]).toBe("http://localhost:9077/health");
+    expect(probe.mock.calls[0][1].signal?.aborted).toBe(true);
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 
   it("does not invent a profile when none has been configured", async () => {

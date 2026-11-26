@@ -6,6 +6,7 @@ import { routing } from "@/i18n/routing";
 import { BankProvider } from "@/lib/bank-context";
 import { FeaturesProvider } from "@/lib/features-context";
 import { ThemeProvider } from "@/lib/theme-context";
+import { SyncFocusListener } from "@/components/sync-focus-listener";
 import { Toaster } from "@/components/ui/sonner";
 
 // Inter preloaded server-side so every weight (400/500/600/700) is ready
@@ -73,6 +74,7 @@ export default async function LocaleLayout({
         <ThemeProvider>
           <FeaturesProvider>
             <BankProvider>
+              <SyncFocusListener />
               <NextIntlClientProvider>{children}</NextIntlClientProvider>
             </BankProvider>
           </FeaturesProvider>

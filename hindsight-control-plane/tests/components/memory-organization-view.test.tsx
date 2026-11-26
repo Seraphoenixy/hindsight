@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const state = vi.hoisted(() => ({
-  listTags: vi.fn(),
   previewMemoryOrganization: vi.fn(),
   applyMemoryOrganization: vi.fn(),
 }));
@@ -33,12 +32,6 @@ afterEach(() => {
 
 describe("MemoryOrganizationView", () => {
   it("shows the prompt form and an AI-generated preview", async () => {
-    state.listTags.mockResolvedValue({
-      items: [{ tag: "project:one", count: 3 }],
-      total: 1,
-      limit: 100,
-      offset: 0,
-    });
     state.previewMemoryOrganization.mockResolvedValue({
       preview_id: "preview",
       records: [record],
@@ -62,9 +55,6 @@ describe("MemoryOrganizationView", () => {
     render(<MemoryOrganizationView bankId="engineering" />);
 
     expect(screen.getByText("instructionsTitle")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("topic"), {
-      target: { value: "retry rules" },
-    });
     fireEvent.change(screen.getByLabelText("instructions"), {
       target: { value: "Make conclusions concise." },
     });
@@ -72,7 +62,6 @@ describe("MemoryOrganizationView", () => {
 
     await waitFor(() =>
       expect(state.previewMemoryOrganization).toHaveBeenCalledWith("engineering", {
-        topic: "retry rules",
         instructions: "Make conclusions concise.",
       })
     );

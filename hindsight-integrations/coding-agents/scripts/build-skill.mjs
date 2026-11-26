@@ -67,17 +67,79 @@ export function regions(src) {
 
 function render({ title, lines }) {
   const body = lines.join("\n").trim();
-  const first = /^(#{1,6})\s/m.exec(body);
-  if (!first) {
-    if (!title) throw new Error("a region with no heading must declare title=");
-    return `## ${title}\n\n${body}`;
+  let fence;
+  const isProse = (line) => {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (marker?.[0] === fence[0] && marker.length >= fence.length && line.trim() === marker)
+        fence = undefined;
+      return false;
+    }
+    if (marker) {
+      fence = marker;
+      return false;
+    }
+    return true;
+  };
+  const sourceLines = body.split("\n");
+  const prose = sourceLines.map(isProse);
+  const first = sourceLines.flatMap((line, index) =>
+    prose[index] ? [/^(#{1,6})\s/.exec(line)].filter(Boolean) : []
+  )[0];
+  if (!first && !title) throw new Error("a region with no heading must declare title=");
+  const shift = first ? 2 - first[1].length : 0;
+  const shifted = sourceLines.map((line, index) =>
+    prose[index]
+      ? line.replace(/^(#{1,6})(\s)/, (_, hashes, space) => {
+          const level = Math.min(6, Math.max(1, hashes.length + shift));
+          return "#".repeat(level) + space;
+        })
+      : line
+  );
+  const rendered = [];
+  const cells = (line) =>
+    line
+      .trim()
+      .slice(1, -1)
+      .split(/(?<!\\)\|/)
+      .map((cell) => cell.trim().replace(/\\\|/g, "|"));
+  const wrap = (text) => {
+    const words = text.match(/(?:`[^`]*`|[^\s`])+/g) ?? [];
+    const wrapped = [];
+    let current = "-";
+    for (const word of words) {
+      if (current.length + word.length + 1 > 100 && current.trim() !== "-") {
+        wrapped.push(current);
+        current = `  ${word}`;
+      } else {
+        current += ` ${word}`;
+      }
+    }
+    wrapped.push(current);
+    return wrapped.join("\n");
+  };
+  for (let index = 0; index < shifted.length; index++) {
+    const line = shifted[index];
+    if (
+      prose[index] &&
+      /^\s*\|.*\|\s*$/.test(line) &&
+      /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(shifted[index + 1] ?? "")
+    ) {
+      const headers = cells(line);
+      index += 2;
+      while (index < shifted.length && prose[index] && /^\s*\|.*\|\s*$/.test(shifted[index])) {
+        const values = cells(shifted[index]);
+        const details = values.slice(1).map((value, column) => `${headers[column + 1]}: ${value}`);
+        rendered.push(wrap(`${values[0]} — ${details.join("; ")}`));
+        index++;
+      }
+      index--;
+    } else {
+      rendered.push(line);
+    }
   }
-  const shift = 2 - first[1].length;
-  const shifted = body.replace(/^(#{1,6})(\s)/gm, (_, hashes, space) => {
-    const level = Math.min(6, Math.max(1, hashes.length + shift));
-    return "#".repeat(level) + space;
-  });
-  return title ? `## ${title}\n\n${shifted}` : shifted;
+  const formatted = rendered.join("\n");
+  return title ? `## ${title}\n\n${formatted}` : formatted;
 }
 
 export function build() {

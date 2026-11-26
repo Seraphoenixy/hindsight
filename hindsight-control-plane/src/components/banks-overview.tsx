@@ -4,11 +4,12 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { Trash2, Search, X, Plus } from "lucide-react";
+import { Brain, Database, Plus, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { client } from "@/lib/api";
 import { BankKindSwitch } from "@/components/bank-kind-switch";
+import { MemoryPageHeader, MemoryPageStat } from "@/components/memory-page-header";
 import { useFeatures } from "@/lib/features-context";
 import { useBank, type BankInfo } from "@/lib/bank-context";
 import { bankRoute } from "@/lib/bank-url";
@@ -230,8 +231,12 @@ export function BanksOverview() {
   // A search that matches nothing still shows the table UI, so the query can be edited.
   if (!loading && total === 0 && !search) {
     return (
-      <div className="flex items-center justify-center h-[calc(100dvh-80px)] bg-muted/20">
-        <div className="max-w-md rounded-lg border-2 border-border bg-card p-10 text-center shadow-lg">
+      <div className="flex min-h-[calc(100dvh-80px)] items-center justify-center bg-[radial-gradient(circle_at_50%_35%,rgba(0,116,217,0.09),transparent_42%)] px-4 py-10 dark:bg-[radial-gradient(circle_at_50%_35%,rgba(91,176,255,0.08),transparent_42%)]">
+        <div className="relative w-full max-w-lg overflow-hidden rounded-[24px] border border-border bg-card p-8 text-center shadow-[0_24px_80px_-48px_rgba(0,55,120,0.4)] sm:p-10">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-12 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent"
+          />
           {/* Tumbling Hindsight mascot — loops forever as a friendly greeting. */}
           <Spinner size="xl" variant="jump" className="mx-auto mb-4" />
           <h3 className="mb-3 text-2xl font-bold text-card-foreground">{t("welcomeTitle")}</h3>
@@ -255,31 +260,39 @@ export function BanksOverview() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       {knowledgeBanksEnabled && (
-        <BankKindSwitch
-          value="memory"
-          onChange={(kind) => kind === "knowledge" && router.push("/knowledge-banks")}
-        />
-      )}
-      <div className="mb-6 mt-4 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">{t("title")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t("subtitle")}</p>
+        <div className="mb-4">
+          <BankKindSwitch
+            value="memory"
+            onChange={(kind) => kind === "knowledge" && router.push("/knowledge-banks")}
+          />
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          // The create dialog (with its template import) lives in the header selector;
-          // this asks that component to open it rather than shipping a second copy.
-          onClick={() => window.dispatchEvent(new CustomEvent("hindsight:create-bank"))}
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          {tNavBank("create")}
-        </Button>
-      </div>
+      )}
+      <MemoryPageHeader
+        icon={Brain}
+        title={t("title")}
+        description={t("subtitle")}
+        className="mb-4"
+        actions={
+          <Button
+            variant="gradient"
+            size="sm"
+            // The create dialog (with its template import) lives in the header selector;
+            // this asks that component to open it rather than shipping a second copy.
+            onClick={() => window.dispatchEvent(new CustomEvent("hindsight:create-bank"))}
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            {tNavBank("create")}
+          </Button>
+        }
+      >
+        <div className="flex flex-wrap gap-2">
+          <MemoryPageStat icon={Database} label={t("columnBank")} value={total.toLocaleString()} />
+        </div>
+      </MemoryPageHeader>
 
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-col items-stretch gap-2 rounded-[16px] border border-border bg-card p-3 sm:flex-row sm:items-center sm:gap-3">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -290,7 +303,7 @@ export function BanksOverview() {
           />
         </div>
         {selected.size > 0 && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             <span className="text-sm text-muted-foreground tabular-nums">
               {t("selectedCount", { count: selected.size })}
             </span>
@@ -351,11 +364,13 @@ export function BanksOverview() {
               {banks.map((bank, index) => {
                 const lastActivity = lastActivityOf(bank);
                 const barPct = (bank.fact_count / maxFactCount) * 100;
+                const bankInitial =
+                  (bank.name || bank.bank_id).trim().charAt(0).toUpperCase() || "H";
                 return (
                   <TableRow
                     key={bank.bank_id}
                     onClick={() => openBank(bank.bank_id)}
-                    className="cursor-pointer animate-list-row-enter"
+                    className="group cursor-pointer animate-list-row-enter hover:bg-primary/[0.025]"
                     style={{ animationDelay: `${Math.min(index, 10) * 18}ms` }}
                   >
                     <TableCell onClick={(e) => e.stopPropagation()}>
@@ -365,33 +380,42 @@ export function BanksOverview() {
                         aria-label={t("selectBank", { bank: bank.name || bank.bank_id })}
                       />
                     </TableCell>
-                    <TableCell>
-                      {/* A real link so the row is reachable by keyboard; the
-                          row's own onClick stays as the mouse shortcut. */}
-                      <Link
-                        href={bankRoute(bank.bank_id)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCurrentBank(bank.bank_id);
-                        }}
-                        className="font-medium text-card-foreground hover:underline focus-visible:underline"
-                      >
-                        {bank.name || bank.bank_id}
-                      </Link>
-                      {bank.name && bank.name !== bank.bank_id && (
-                        <div className="truncate text-xs text-muted-foreground">{bank.bank_id}</div>
-                      )}
+                    <TableCell className="py-3.5">
+                      <div className="flex items-center gap-3">
+                        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-[11px] border border-primary/15 bg-primary/[0.08] text-[12px] font-semibold text-primary transition-colors group-hover:border-primary/25 group-hover:bg-primary/[0.12]">
+                          {bankInitial}
+                        </div>
+                        <div className="min-w-0">
+                          {/* A real link so the row is reachable by keyboard; the
+                              row's own onClick stays as the mouse shortcut. */}
+                          <Link
+                            href={bankRoute(bank.bank_id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCurrentBank(bank.bank_id);
+                            }}
+                            className="block truncate text-[13.5px] font-semibold text-card-foreground hover:text-primary hover:underline focus-visible:underline"
+                          >
+                            {bank.name || bank.bank_id}
+                          </Link>
+                          {bank.name && bank.name !== bank.bank_id && (
+                            <div className="mt-0.5 truncate font-mono text-[10.5px] text-muted-foreground/75">
+                              {bank.bank_id}
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </TableCell>
                     <TableCell>
                       {bank.fact_count > 0 ? (
-                        <div className="flex items-center gap-2">
-                          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div className="flex items-center gap-2.5">
+                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
                             <div
-                              className="h-full rounded-full bg-primary/60"
+                              className="h-full rounded-full bg-primary-gradient"
                               style={{ width: `${barPct}%` }}
                             />
                           </div>
-                          <span className="tabular-nums text-xs text-muted-foreground">
+                          <span className="rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums text-foreground/75">
                             {formatCompact(bank.fact_count)}
                           </span>
                         </div>
@@ -401,10 +425,10 @@ export function BanksOverview() {
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="text-[12px] text-muted-foreground">
                       {lastActivity ? formatRelativeTime(lastActivity) : t("never")}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="text-[12px] text-muted-foreground">
                       {bank.created_at ? formatRelativeTime(bank.created_at) : "—"}
                     </TableCell>
                   </TableRow>

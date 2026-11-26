@@ -2,7 +2,7 @@ import js from "@eslint/js";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 
-export default [
+const eslintConfig = [
   js.configs.recommended,
   ...nextVitals,
   ...nextTs,
@@ -30,3 +30,5 @@ export default [
     ignores: [".next*/", "out/", "build/", "standalone/", "coverage/", "next-env.d.ts"],
   },
 ];
+
+export default eslintConfig;

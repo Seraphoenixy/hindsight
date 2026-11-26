@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useMemo, useState } from "react";
+import { useRef, useEffect, useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
 import { useTranslations } from "next-intl";
-import { prepare, layout, prepareWithSegments, layoutWithLines } from "@chenglou/pretext";
+import { prepare, prepareWithSegments, layoutWithLines } from "@chenglou/pretext";
 import type { GraphData, GraphNode, GraphLink } from "./graph-data";
 
 // ============================================================================
@@ -27,6 +27,12 @@ interface PreparedNode {
    * lockstep. Precomputed here so the animation loop stays trig-only.
    */
   phase: number;
+  /**
+   * False when the node's text is its cluster's own label (a knowledge document's hub
+   * node): the cluster label already names it, so an inline label would print it twice.
+   * It still gets the hover card.
+   */
+  inlineLabel: boolean;
 }
 
 /** Ambient-motion preference, shared by every constellation (not per bank). */
@@ -366,6 +372,76 @@ function toolbarBtnStyle(isDark: boolean): CSSProperties {
 // Component
 // ============================================================================
 
+function drawLabel(
+  ctx: CanvasRenderingContext2D,
+  n: PreparedNode,
+  _i: number,
+  sx: number,
+  sy: number,
+  r: number,
+  isHovered: boolean,
+  force: boolean,
+  dark: boolean,
+  zoom: number
+) {
+  if (zoom > 1.5 || isHovered) {
+    // Card mode
+    const cardW = Math.min(220, 80 + zoom * 25);
+    const textW = cardW - 16;
+    const { lines } = layoutWithLines(n.prepared, textW, 15);
+    const maxLines = isHovered
+      ? Math.min(lines.length, 5)
+      : Math.min(lines.length, Math.floor(zoom));
+    const cardH = 8 + maxLines * 15 + 8;
+
+    const cardX = sx - cardW / 2;
+    const cardY = sy + r + 4;
+
+    ctx.fillStyle = isHovered
+      ? dark
+        ? "#1c1c1e"
+        : "#f4f4f5"
+      : dark
+        ? "rgba(9,9,11,0.92)"
+        : "rgba(255,255,255,0.92)";
+    ctx.beginPath();
+    ctx.roundRect(cardX, cardY, cardW, cardH, 6);
+    ctx.fill();
+
+    ctx.strokeStyle = isHovered ? n.color : dark ? "rgba(63,63,70,0.5)" : "rgba(212,212,216,0.6)";
+    ctx.lineWidth = isHovered ? 1.5 : 0.5;
+    ctx.beginPath();
+    ctx.roundRect(cardX, cardY, cardW, cardH, 6);
+    ctx.stroke();
+
+    if (isHovered) {
+      ctx.shadowColor = n.color;
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.roundRect(cardX, cardY, cardW, cardH, 6);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    ctx.font = FONT_SMALL;
+    ctx.fillStyle = isHovered ? (dark ? "#e4e4e7" : "#18181b") : dark ? "#71717a" : "#71717a";
+    ctx.textAlign = "left";
+    for (let j = 0; j < maxLines; j++) {
+      ctx.fillText(lines[j].text, cardX + 8, cardY + 8 + j * 15 + 11);
+    }
+  } else {
+    // Inline label
+    ctx.font = FONT_SMALL;
+    ctx.fillStyle = isHovered ? (dark ? "#e4e4e7" : "#18181b") : dark ? "#52525b" : "#a1a1aa";
+    ctx.globalAlpha = isHovered ? 1 : force ? 0.85 : Math.min(1, (zoom - 0.3) * 2.5);
+    ctx.textAlign = "left";
+    const text = n.node.label || n.node.id.substring(0, 12);
+    const label = text.length > 45 ? text.slice(0, 45) + "..." : text;
+    ctx.fillText(label, sx + r + 5, sy + 4);
+    ctx.globalAlpha = 1;
+  }
+}
+
 export function Constellation({
   data,
   height = 700,
@@ -396,27 +472,32 @@ export function Constellation({
 
   // Ambient motion (drift/pulse/shimmer) on-off, remembered globally — not per
   // bank — so the preference follows the user across every constellation.
-  const [motionEnabled, setMotionEnabled] = useState(true);
+  const motionEnabled = useSyncExternalStore(
+    useCallback((onChange: () => void) => {
+      window.addEventListener("storage", onChange);
+      window.addEventListener("hindsight-motion-change", onChange);
+      return () => {
+        window.removeEventListener("storage", onChange);
+        window.removeEventListener("hindsight-motion-change", onChange);
+      };
+    }, []),
+    () => localStorage.getItem(MOTION_STORAGE_KEY) !== "off",
+    () => true
+  );
   const motionRef = useRef(true);
   // Elapsed "animation seconds". Accumulated only while motion is on, so
   // pausing freezes the field in place and resuming continues without a jump.
   const clockRef = useRef({ seconds: 0, lastFrameMs: 0 });
 
   useEffect(() => {
-    const saved = localStorage.getItem(MOTION_STORAGE_KEY);
-    if (saved === "off") {
-      setMotionEnabled(false);
-      motionRef.current = false;
-    }
-  }, []);
+    motionRef.current = motionEnabled;
+  }, [motionEnabled]);
 
   const toggleMotion = useCallback(() => {
-    setMotionEnabled((prev) => {
-      const next = !prev;
-      motionRef.current = next;
-      localStorage.setItem(MOTION_STORAGE_KEY, next ? "on" : "off");
-      return next;
-    });
+    const next = !motionRef.current;
+    motionRef.current = next;
+    localStorage.setItem(MOTION_STORAGE_KEY, next ? "on" : "off");
+    window.dispatchEvent(new Event("hindsight-motion-change"));
   }, []);
 
   // Interaction state stored in ref for perf (avoid re-renders on every frame)
@@ -603,6 +684,7 @@ export function Constellation({
         heatColor: (centroid || vennActive) && !nodeHeatFn ? color : heat,
         linkCount: lc,
         phase: ((Math.abs(seed) % 1000) / 1000) * Math.PI * 2,
+        inlineLabel: !(ck != null && clusterLabelFn?.(ck) === text),
       };
     });
 
@@ -1080,6 +1162,8 @@ export function Constellation({
         // Hovered node always gets a label (skip deconfliction)
         drawLabel(ctx, n, i, sx, sy, r, true, true, isDark, zoom);
         labelsShown++;
+      } else if (!n.inlineLabel) {
+        // Named by its cluster label already.
       } else if (zoom > 1.5) {
         const cardW = Math.min(200, 80 + zoom * 25);
         const cardH = 50;
@@ -1207,80 +1291,22 @@ export function Constellation({
     ctx.fillText(t("instructions"), 12, 16);
 
     ctx.restore();
-
-    animRef.current = requestAnimationFrame(animate);
-  }, [isDark, preparedNodes, linksWithIndices, linksByNode, clusters, linkTypes, t, hudStatsFn]);
-
-  // ----- Label drawing helper -----
-  function drawLabel(
-    ctx: CanvasRenderingContext2D,
-    n: PreparedNode,
-    _i: number,
-    sx: number,
-    sy: number,
-    r: number,
-    isHovered: boolean,
-    force: boolean,
-    dark: boolean,
-    zoom: number
-  ) {
-    if (zoom > 1.5 || isHovered) {
-      // Card mode
-      const cardW = Math.min(220, 80 + zoom * 25);
-      const textW = cardW - 16;
-      const { lines } = layoutWithLines(n.prepared, textW, 15);
-      const maxLines = isHovered
-        ? Math.min(lines.length, 5)
-        : Math.min(lines.length, Math.floor(zoom));
-      const cardH = 8 + maxLines * 15 + 8;
-
-      const cardX = sx - cardW / 2;
-      const cardY = sy + r + 4;
-
-      ctx.fillStyle = isHovered
-        ? dark
-          ? "#1c1c1e"
-          : "#f4f4f5"
-        : dark
-          ? "rgba(9,9,11,0.92)"
-          : "rgba(255,255,255,0.92)";
-      ctx.beginPath();
-      ctx.roundRect(cardX, cardY, cardW, cardH, 6);
-      ctx.fill();
-
-      ctx.strokeStyle = isHovered ? n.color : dark ? "rgba(63,63,70,0.5)" : "rgba(212,212,216,0.6)";
-      ctx.lineWidth = isHovered ? 1.5 : 0.5;
-      ctx.beginPath();
-      ctx.roundRect(cardX, cardY, cardW, cardH, 6);
-      ctx.stroke();
-
-      if (isHovered) {
-        ctx.shadowColor = n.color;
-        ctx.shadowBlur = 15;
-        ctx.beginPath();
-        ctx.roundRect(cardX, cardY, cardW, cardH, 6);
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-      }
-
-      ctx.font = FONT_SMALL;
-      ctx.fillStyle = isHovered ? (dark ? "#e4e4e7" : "#18181b") : dark ? "#71717a" : "#71717a";
-      ctx.textAlign = "left";
-      for (let j = 0; j < maxLines; j++) {
-        ctx.fillText(lines[j].text, cardX + 8, cardY + 8 + j * 15 + 11);
-      }
-    } else {
-      // Inline label
-      ctx.font = FONT_SMALL;
-      ctx.fillStyle = isHovered ? (dark ? "#e4e4e7" : "#18181b") : dark ? "#52525b" : "#a1a1aa";
-      ctx.globalAlpha = isHovered ? 1 : force ? 0.85 : Math.min(1, (zoom - 0.3) * 2.5);
-      ctx.textAlign = "left";
-      const text = n.node.label || n.node.id.substring(0, 12);
-      const label = text.length > 45 ? text.slice(0, 45) + "..." : text;
-      ctx.fillText(label, sx + r + 5, sy + 4);
-      ctx.globalAlpha = 1;
-    }
-  }
+  }, [
+    isDark,
+    preparedNodes,
+    linksWithIndices,
+    linksByNode,
+    clusters,
+    linkTypes,
+    t,
+    hudStatsFn,
+    compactLabels,
+    heatLegendEndpoints,
+    heatLegendLabel,
+    nodeHeatFn,
+    sizeLegendLabel,
+    nodeGroupsFn,
+  ]);
 
   // ----- Setup & resize -----
   useEffect(() => {
@@ -1317,7 +1343,11 @@ export function Constellation({
       stateRef.current.targetZoom = fitZoom;
     }
 
-    animRef.current = requestAnimationFrame(animate);
+    const tick = () => {
+      animate();
+      animRef.current = requestAnimationFrame(tick);
+    };
+    animRef.current = requestAnimationFrame(tick);
 
     // Events
     const handleResize = () => resize();

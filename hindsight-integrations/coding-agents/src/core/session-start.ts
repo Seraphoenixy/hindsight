@@ -27,7 +27,7 @@ import { maybeAutoUpdate } from "./auto-update";
 import { syncCompanionSkill } from "./skill-sync";
 import { SURVEY_DOC_IDS, startCodebaseSurvey, type SurveyHarness } from "./survey";
 import { applyBankConfig, loadConfig } from "./config";
-import { DAEMON_WAIT_SESSION_START_MS, ensureDaemon } from "./daemon";
+import { ensureDaemon } from "./daemon";
 import type { Config } from "./config";
 import { deriveBankIdOrSkip } from "./bank";
 import { brandWord } from "./brand";
@@ -60,7 +60,6 @@ interface SeedContextClient {
   hasDocuments?(): Promise<boolean>;
   pagesSupported?: boolean;
   getWorkingRulesProjection?(opts?: {
-    branch?: string;
     timeoutMs?: number;
   }): Promise<WorkingRulesProjection | undefined>;
   workingRulesSupported?: boolean;
@@ -392,7 +391,7 @@ export async function buildSessionStartContext(args: {
   }
   const preamble = buildPagesPreamble(pages, {
     engineering: Boolean(cfg.projectScope),
-    reflectOnNewGoals: cfg.autoInject !== "reflect",
+    reflectOnNewGoals: true,
     extra: cfg.toolGuideExtra,
   });
   const workingRules = await fetchWorkingRulesInjection(client, {
@@ -401,7 +400,7 @@ export async function buildSessionStartContext(args: {
   });
   const additionalContext = [preamble, workingRules.block].filter(Boolean).join("\n\n");
   // An empty page roster is NOT an empty bank: a bank with memories and no pages still answers a
-  // reflect (#5209), so only the confirmed-empty probe above defers it.
+  // recall (#5209), so only the confirmed-empty probe above defers it.
   const deferInitialReflect = bankEmpty;
 
   // The banner shows on EVERY session — Hindsight's presence is part of the product, not a
@@ -467,13 +466,6 @@ export async function runSessionStartHook(
     setLogLevel(cfg.logLevel);
     syncCompanionSkill(harness); // keep the installed skill current with the package version
     if (cfg.disabled) return;
-    // …and keep the package itself current. AFTER the disabled check, unlike the skill sync above:
-    // `disabled` means an inert plugin, and a network call plus a background npm install is not
-    // inert. It also keeps the two harness families symmetric — the plugin hosts never construct a
-    // RuntimeCore when disabled (harness/plugin-entry.ts), so they already skip this.
-    // Detached and rate-limited to once a day; the update lands for the NEXT session.
-    void maybeAutoUpdate(cfg);
-
     // Recorded HERE, on the session's first hook, so every later hook of this session resolves the
     // same bank however far the agent navigates (#3563).
     const sessionRoot = sessionRootDir(harness, sessionId, cwd);
@@ -486,10 +478,11 @@ export async function runSessionStartHook(
     // Memory is live HERE — the one point where registering the host's per-repo MCP access is
     // correct: the caller of an opt-out repo must not gain a config file it never asked for.
     const mcpHint = spec.ensureMcpRegistration?.(cwd);
-    // Daemon mode: warm it up now, before the user has typed anything. The start itself is
-    // detached; we wait only briefly, so an already-running daemon is adopted immediately while a
-    // cold one keeps coming up in the background and is picked up by a later turn.
-    await ensureDaemon(cfg, harness, { waitMs: DAEMON_WAIT_SESSION_START_MS });
+    if (!(await ensureDaemon(cfg, harness))) {
+      if (mcpHint) process.stdout.write(JSON.stringify(spec.emit({ systemMessage: mcpHint })));
+      return;
+    }
+    void maybeAutoUpdate(cfg);
     const client = makeClient({
       apiUrl: cfg.apiUrl,
       apiToken: cfg.apiToken,

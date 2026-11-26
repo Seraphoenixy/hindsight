@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { BankSelector } from "@/components/bank-selector";
@@ -24,6 +24,7 @@ import { WebhooksView } from "@/components/webhooks-view";
 import { AuditLogsView } from "@/components/audit-logs-view";
 import { LLMRequestsView } from "@/components/llm-requests-view";
 import { MemoryOrganizationView } from "@/components/memory-organization-view";
+import { MemoryPageHeader } from "@/components/memory-page-header";
 import { FeatureNotEnabled } from "@/components/feature-not-enabled";
 import { useFeatures } from "@/lib/features-context";
 import { useBank } from "@/lib/bank-context";
@@ -63,9 +64,15 @@ import {
   Brain,
   Copy,
   Download,
+  Database,
+  ListChecks,
+  Network,
+  Search,
+  Settings2,
+  Sparkles,
   Trash2,
+  Users,
   MoreVertical,
-  Pencil,
   RotateCcw,
   Activity,
 } from "lucide-react";
@@ -104,7 +111,6 @@ function readLastDataSubTab(): DataSubTab | null {
 }
 
 export default function BankPage() {
-  const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
   const t = useTranslations("bank");
@@ -234,7 +240,7 @@ export default function BankPage() {
       setCurrentBank(null);
       await loadBanks();
       router.push("/");
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setIsDeleting(false);
@@ -251,7 +257,7 @@ export default function BankPage() {
       toast.success(t("observationsCleared"), {
         description: result.message || t("observationsClearedDefault"),
       });
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setIsClearingObservations(false);
@@ -317,7 +323,7 @@ export default function BankPage() {
     setIsConsolidating(true);
     try {
       await client.triggerConsolidation(bankId);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setIsConsolidating(false);
@@ -331,7 +337,7 @@ export default function BankPage() {
     try {
       const result = await client.recoverConsolidation(bankId);
       toast.success(t("recoveredMemories", { count: result.retried_count }));
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setIsRecoveringConsolidation(false);
@@ -363,137 +369,146 @@ export default function BankPage() {
               {/* Bank Configuration Tab */}
               {view === "profile" && (
                 <div>
-                  <div className="flex justify-between items-start mb-6">
-                    <div>
-                      <h1 className="text-3xl font-bold mb-2 text-foreground">
-                        {t("bankConfiguration")}
-                      </h1>
-                      <p className="text-muted-foreground">{t("bankConfigurationDescription")}</p>
-                    </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm">
-                          {t("actions")}
-                          <MoreVertical className="w-4 h-4 ml-2" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-48">
-                        <DropdownMenuItem
-                          onClick={async () => {
-                            if (!bankId) return;
-                            try {
-                              const manifest = await client.exportBankTemplate(bankId);
-                              const json = JSON.stringify(manifest, null, 2);
-                              await navigator.clipboard.writeText(json);
-                              toast.success(t("templateCopied"));
-                            } catch {
-                              toast.error(t("failedToExportTemplate"));
-                            }
-                          }}
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          {t("exportTemplate")}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setCloneTargetId(bankId ? `${bankId}-copy` : "");
-                            setCloneIncludeData(true);
-                            setCloneIncludeBankConfig(true);
-                            setCloneIncludeHistory(false);
-                            setShowCloneDialog(true);
-                          }}
-                          disabled={!cloneEnabled}
-                          title={
-                            !cloneEnabled
-                              ? "Cloning needs the document export and import APIs enabled"
-                              : undefined
-                          }
-                        >
-                          <Copy className="w-4 h-4 mr-2" />
-                          {t("cloneBank")}
-                          {!cloneEnabled && (
-                            <span className="ml-auto text-xs text-muted-foreground">Off</span>
-                          )}
-                        </DropdownMenuItem>
-                        {llmHealthEnabled && (
-                          <DropdownMenuItem onClick={() => setShowLlmHealthDialog(true)}>
-                            <Activity className="w-4 h-4 mr-2" />
-                            {t("health")}
+                  <MemoryPageHeader
+                    icon={Settings2}
+                    eyebrow={undefined}
+                    title={t("bankConfiguration")}
+                    description={t("bankConfigurationDescription")}
+                    className="mb-4"
+                    actions={
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="outline" size="sm">
+                            {t("actions")}
+                            <MoreVertical className="w-4 h-4 ml-2" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-48">
+                          <DropdownMenuItem
+                            onClick={async () => {
+                              if (!bankId) return;
+                              try {
+                                const manifest = await client.exportBankTemplate(bankId);
+                                const json = JSON.stringify(manifest, null, 2);
+                                await navigator.clipboard.writeText(json);
+                                toast.success(t("templateCopied"));
+                              } catch {
+                                toast.error(t("failedToExportTemplate"));
+                              }
+                            }}
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            {t("exportTemplate")}
                           </DropdownMenuItem>
-                        )}
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={handleTriggerConsolidation}
-                          disabled={isConsolidating || !observationsEnabled}
-                          title={
-                            !observationsEnabled ? "Observations feature is not enabled" : undefined
-                          }
-                        >
-                          {isConsolidating ? (
-                            <Spinner size="sm" className="mr-2" />
-                          ) : (
-                            <Brain className="w-4 h-4 mr-2" />
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setCloneTargetId(bankId ? `${bankId}-copy` : "");
+                              setCloneIncludeData(true);
+                              setCloneIncludeBankConfig(true);
+                              setCloneIncludeHistory(false);
+                              setShowCloneDialog(true);
+                            }}
+                            disabled={!cloneEnabled}
+                            title={
+                              !cloneEnabled
+                                ? "Cloning needs the document export and import APIs enabled"
+                                : undefined
+                            }
+                          >
+                            <Copy className="w-4 h-4 mr-2" />
+                            {t("cloneBank")}
+                            {!cloneEnabled && (
+                              <span className="ml-auto text-xs text-muted-foreground">Off</span>
+                            )}
+                          </DropdownMenuItem>
+                          {llmHealthEnabled && (
+                            <DropdownMenuItem onClick={() => setShowLlmHealthDialog(true)}>
+                              <Activity className="w-4 h-4 mr-2" />
+                              {t("health")}
+                            </DropdownMenuItem>
                           )}
-                          {isConsolidating ? t("consolidating") : t("runConsolidation")}
-                          {!observationsEnabled && (
-                            <span className="ml-auto text-xs text-muted-foreground">Off</span>
-                          )}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={handleRecoverConsolidation}
-                          disabled={isRecoveringConsolidation || !observationsEnabled}
-                          title={
-                            !observationsEnabled ? "Observations feature is not enabled" : undefined
-                          }
-                        >
-                          {isRecoveringConsolidation ? (
-                            <Spinner size="sm" className="mr-2" />
-                          ) : (
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={handleTriggerConsolidation}
+                            disabled={isConsolidating || !observationsEnabled}
+                            title={
+                              !observationsEnabled
+                                ? "Observations feature is not enabled"
+                                : undefined
+                            }
+                          >
+                            {isConsolidating ? (
+                              <Spinner size="sm" className="mr-2" />
+                            ) : (
+                              <Brain className="w-4 h-4 mr-2" />
+                            )}
+                            {isConsolidating ? t("consolidating") : t("runConsolidation")}
+                            {!observationsEnabled && (
+                              <span className="ml-auto text-xs text-muted-foreground">Off</span>
+                            )}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={handleRecoverConsolidation}
+                            disabled={isRecoveringConsolidation || !observationsEnabled}
+                            title={
+                              !observationsEnabled
+                                ? "Observations feature is not enabled"
+                                : undefined
+                            }
+                          >
+                            {isRecoveringConsolidation ? (
+                              <Spinner size="sm" className="mr-2" />
+                            ) : (
+                              <RotateCcw className="w-4 h-4 mr-2" />
+                            )}
+                            {isRecoveringConsolidation
+                              ? t("recovering")
+                              : t("recoverConsolidation")}
+                            {!observationsEnabled && (
+                              <span className="ml-auto text-xs text-muted-foreground">Off</span>
+                            )}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => setShowClearObservationsDialog(true)}
+                            disabled={!observationsEnabled}
+                            className="text-amber-600 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-300"
+                            title={
+                              !observationsEnabled
+                                ? "Observations feature is not enabled"
+                                : undefined
+                            }
+                          >
+                            <Trash2 className="w-4 h-4 mr-2" />
+                            {t("clearObservations")}
+                            {!observationsEnabled && (
+                              <span className="ml-auto text-xs text-muted-foreground">Off</span>
+                            )}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => setShowResetConfigDialog(true)}
+                            disabled={!bankConfigEnabled}
+                            className="text-amber-600 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-300"
+                            title={!bankConfigEnabled ? "Bank Config API is disabled" : undefined}
+                          >
                             <RotateCcw className="w-4 h-4 mr-2" />
-                          )}
-                          {isRecoveringConsolidation ? t("recovering") : t("recoverConsolidation")}
-                          {!observationsEnabled && (
-                            <span className="ml-auto text-xs text-muted-foreground">Off</span>
-                          )}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => setShowClearObservationsDialog(true)}
-                          disabled={!observationsEnabled}
-                          className="text-amber-600 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-300"
-                          title={
-                            !observationsEnabled ? "Observations feature is not enabled" : undefined
-                          }
-                        >
-                          <Trash2 className="w-4 h-4 mr-2" />
-                          {t("clearObservations")}
-                          {!observationsEnabled && (
-                            <span className="ml-auto text-xs text-muted-foreground">Off</span>
-                          )}
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={() => setShowResetConfigDialog(true)}
-                          disabled={!bankConfigEnabled}
-                          className="text-amber-600 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-300"
-                          title={!bankConfigEnabled ? "Bank Config API is disabled" : undefined}
-                        >
-                          <RotateCcw className="w-4 h-4 mr-2" />
-                          {t("resetConfiguration")}
-                          {!bankConfigEnabled && (
-                            <span className="ml-auto text-xs text-muted-foreground">Off</span>
-                          )}
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={() => setShowDeleteDialog(true)}
-                          className="text-red-600 dark:text-red-400 focus:text-red-700 dark:focus:text-red-300"
-                        >
-                          <Trash2 className="w-4 h-4 mr-2" />
-                          {t("deleteBank")}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
+                            {t("resetConfiguration")}
+                            {!bankConfigEnabled && (
+                              <span className="ml-auto text-xs text-muted-foreground">Off</span>
+                            )}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => setShowDeleteDialog(true)}
+                            className="text-red-600 dark:text-red-400 focus:text-red-700 dark:focus:text-red-300"
+                          >
+                            <Trash2 className="w-4 h-4 mr-2" />
+                            {t("deleteBank")}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    }
+                  />
 
                   <UnderlineTabs
                     value={bankConfigTab}
@@ -591,8 +606,13 @@ export default function BankPage() {
               {/* Recall Tab */}
               {view === "recall" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("recallAnalyzer")}</h1>
-                  <p className="text-muted-foreground mb-6">{t("recallAnalyzerDescription")}</p>
+                  <MemoryPageHeader
+                    icon={Search}
+                    eyebrow={undefined}
+                    title={t("recallAnalyzer")}
+                    description={t("recallAnalyzerDescription")}
+                    className="mb-5"
+                  />
                   <SearchDebugView />
                 </div>
               )}
@@ -600,18 +620,26 @@ export default function BankPage() {
               {/* Reflect Tab */}
               {view === "reflect" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("reflect")}</h1>
-                  <p className="text-muted-foreground mb-6">{t("reflectDescription")}</p>
+                  <MemoryPageHeader
+                    icon={Sparkles}
+                    eyebrow={undefined}
+                    title={t("reflect")}
+                    description={t("reflectDescription")}
+                    className="mb-5"
+                  />
                   <ThinkView />
                 </div>
               )}
 
               {view === "organize" && bankId && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">
-                    {tMemoryOrganization("title")}
-                  </h1>
-                  <p className="text-muted-foreground mb-6">{tMemoryOrganization("description")}</p>
+                  <MemoryPageHeader
+                    icon={ListChecks}
+                    eyebrow={undefined}
+                    title={tMemoryOrganization("title")}
+                    description={tMemoryOrganization("description")}
+                    className="mb-5"
+                  />
                   <MemoryOrganizationView key={bankId} bankId={bankId} />
                 </div>
               )}
@@ -619,8 +647,13 @@ export default function BankPage() {
               {/* Data/Memories Tab */}
               {view === "data" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("memories")}</h1>
-                  <p className="text-muted-foreground mb-6">{t("memoriesDescription")}</p>
+                  <MemoryPageHeader
+                    icon={Database}
+                    eyebrow={undefined}
+                    title={t("memories")}
+                    description={t("memoriesDescription")}
+                    className="mb-4"
+                  />
 
                   <UnderlineTabs
                     value={subTab}
@@ -697,8 +730,13 @@ export default function BankPage() {
               {/* Entities Tab */}
               {view === "entities" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("entities")}</h1>
-                  <p className="text-muted-foreground mb-6">{t("entitiesDescription")}</p>
+                  <MemoryPageHeader
+                    icon={Users}
+                    eyebrow={undefined}
+                    title={t("entities")}
+                    description={t("entitiesDescription")}
+                    className="mb-5"
+                  />
                   <EntitiesView />
                 </div>
               )}
@@ -706,8 +744,13 @@ export default function BankPage() {
               {/* Pages tab — Pages + Mental Models sub-tabs. */}
               {view === "pages" && (
                 <div>
-                  <h1 className="text-3xl font-bold mb-2 text-foreground">{t("pages")}</h1>
-                  <p className="text-muted-foreground mb-4">{t("pagesDescription")}</p>
+                  <MemoryPageHeader
+                    icon={Network}
+                    eyebrow={undefined}
+                    title={t("pages")}
+                    description={t("pagesDescription")}
+                    className="mb-4"
+                  />
 
                   <UnderlineTabs
                     className="mb-4"

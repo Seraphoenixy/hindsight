@@ -105,7 +105,7 @@ export default defineConfig([
   },
   {
     entry: { index: "src/magpie.ts" },
-    outDir: "magpie/dist",
+    outDir: "../magpie/dist",
     format: ["esm"],
     target: "node18",
     splitting: false,

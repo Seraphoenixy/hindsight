@@ -17,8 +17,9 @@ explains what happens automatically, which tools you have, and how to configure 
   only projects covered by `optInPaths` can initialize their pages.
   Codebase surveys and session write-back are enabled by default.
   Git history and historical session import default to off in shared mode.
-- **Session synthesis**: the first prompt can inject context via `autoInject`. Recall and
-  Reflect default to the current project plus explicitly shared references.
+- **Session injection**: the first prompt injects LLM-free retrieval context via `autoInject`
+  (default `recall`). Recall and page search default to the current project plus explicitly
+  shared references. Automatic injection never runs a sub-LLM.
 - **Cross-project lookup**: pass `all_projects: true` to page search or Reflect when the
   task spans projects. Pass `shared: true` when ingesting a reference intended for every project.
 

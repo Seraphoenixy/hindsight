@@ -7,17 +7,9 @@
  * editor and the settings form stay interchangeable.
  */
 import { localRoute, readJsonBody } from "@/lib/local-route";
-import { getEnvFile, writeEnvFile } from "@/lib/ops";
+import { writeEnvFile } from "@/lib/ops";
 
 export const dynamic = "force-dynamic";
-
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ profile: string }> }
-): Promise<Response> {
-  const { profile } = await params;
-  return localRoute(request, () => getEnvFile(profile));
-}
 
 export async function POST(
   request: Request,

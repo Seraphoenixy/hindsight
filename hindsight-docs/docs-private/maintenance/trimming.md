@@ -15,6 +15,8 @@
 | `hindsight-docs/docs/` | 上游核心文字文档 | 按保留功能同步 |
 | `hindsight-docs/docs-private/` | 个人维护文档 | 独立维护，不由上游覆盖 |
 
+HTTP MCP 属于保留功能：包括多库 `/mcp/`、单记忆库 `/mcp/{bank_id}/`、单知识库 `/mcp/kb/{bank_id}/`、每库初始化说明及知识库搜索重排选项。默认关闭，按需启用；Coding Agents stdio MCP 同时保留。
+
 ## 已裁剪的内容
 
 - 部署与监控：`docker/`、`helm/`、`monitoring/` 及相应辅助脚本。

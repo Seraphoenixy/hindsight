@@ -1,0 +1,22 @@
+[Unit]
+Description=Hindsight memory snapshot sync relay
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=hindsight-sync
+StateDirectoryMode=0700
+Environment=HINDSIGHT_SYNC_DATA_DIR=/var/lib/hindsight-sync
+EnvironmentFile=/etc/hindsight-sync.env
+ExecStart=/opt/hindsight-sync/hindsight-sync-server
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

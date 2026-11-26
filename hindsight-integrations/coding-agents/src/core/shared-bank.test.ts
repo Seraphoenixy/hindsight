@@ -7,12 +7,12 @@ const bank = "工程知识与经验";
 const left = new HindsightClient({
   apiUrl: "http://memory",
   bank,
-  projectScope: { name: "repo", id: "left" },
+  projectScope: { name: "left-repo", id: "left" },
 });
 const right = new HindsightClient({
   apiUrl: "http://memory",
   bank,
-  projectScope: { name: "repo", id: "right" },
+  projectScope: { name: "right-repo", id: "right" },
 });
 
 afterEach(() => vi.unstubAllGlobals());
@@ -111,14 +111,14 @@ describe("shared bank", () => {
     expect(writes[2].items[0].content).toContain("left again");
     expect(writes[2].items[0].content).not.toContain("right only");
     expect(writes.map(({ items }) => items[0].content.split("\n")[0])).toEqual([
-      "PROJECT: repo [left]",
-      "PROJECT: repo [right]",
-      "PROJECT: repo [left]",
+      "PROJECT: left-repo",
+      "PROJECT: right-repo",
+      "PROJECT: left-repo",
     ]);
     expect(writes.map(({ items }) => items[0].metadata)).toEqual([
-      expect.objectContaining({ project: "repo", project_id: "left" }),
-      expect.objectContaining({ project: "repo", project_id: "right" }),
-      expect.objectContaining({ project: "repo", project_id: "left" }),
+      expect.objectContaining({ project: "left-repo", project_id: "left" }),
+      expect.objectContaining({ project: "right-repo", project_id: "right" }),
+      expect.objectContaining({ project: "left-repo", project_id: "left" }),
     ]);
     expect(new Set(writes.map(({ operation_id }) => operation_id)).size).toBe(3);
   });
@@ -159,7 +159,13 @@ describe("shared bank", () => {
     await left.seedPages();
     await right.seedPages();
     await left.seedPages();
+    await new HindsightClient({
+      apiUrl: "http://memory",
+      bank,
+      projectScope: { name: "LEFT-REPO", id: "left" },
+    }).seedPages();
     expect(nodes.map((node) => node.children?.length)).toEqual([3, 3]);
+    expect(nodes.map((node) => node.name)).toEqual(["left-repo", "right-repo"]);
     expect(
       bodies
         .slice(0, 3)

@@ -25,7 +25,7 @@ afterEach(() => {
 describe("loadConfig layering", () => {
   it("missing files yield defaults", () => {
     const cfg = loadConfig({ path: join(root, "nope.json") });
-    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
+    expect(cfg.apiUrl).toBe("http://127.0.0.1:8888");
     expect(cfg.bankId).toBeUndefined();
     expect(cfg.disabled).toBe(false);
   });
@@ -34,7 +34,7 @@ describe("loadConfig layering", () => {
     writeFileSync(globalCfg, "{not json");
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const cfg = loadConfig({ path: globalCfg });
-    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
+    expect(cfg.apiUrl).toBe("http://127.0.0.1:8888");
     expect(err).toHaveBeenCalledOnce();
     err.mockRestore();
   });
@@ -117,7 +117,7 @@ describe("injectTimeoutMs (#4843)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("defaults to 7s independently of the reflect timeouts", () => {
+  it("defaults to 7s independently of the reflect tool timeout", () => {
     expect(resolveConfig({}).injectTimeoutMs).toBe(7000);
     expect(
       resolveConfig({ reflectTimeoutMs: 15000, reflectToolTimeoutMs: 90000 }).injectTimeoutMs
@@ -150,14 +150,13 @@ describe("injectTimeoutMs (#4843)", () => {
 
 /**
  * #3590: the hindsight_reflect tool aborted at a hardcoded 120s. The tool's window is now its own
- * knob, defaulting ABOVE the server's 300s reflect wall timeout — and it inherits an explicitly
- * raised reflectTimeoutMs, because that is the field users reaching for a longer reflect set.
+ * knob, defaulting ABOVE the server's 300s reflect wall timeout. The deprecated `reflectTimeoutMs`
+ * is still read as a lower-bound alias for configurations that raised it for the old hook reflect.
  */
 describe("reflectToolTimeoutMs / reflectBudget", () => {
-  it("defaults above the server's reflect wall timeout, leaving the hook window untouched", () => {
+  it("defaults above the server's reflect wall timeout", () => {
     const cfg = resolveConfig({});
     expect(cfg.reflectToolTimeoutMs).toBe(330000);
-    expect(cfg.reflectTimeoutMs).toBe(20000);
     expect(cfg.reflectBudget).toBe("high");
   });
 
@@ -165,9 +164,8 @@ describe("reflectToolTimeoutMs / reflectBudget", () => {
     expect(resolveConfig({ reflectTimeoutMs: 660000 }).reflectToolTimeoutMs).toBe(660000);
   });
 
-  it("is never LOWERED by a short reflectTimeoutMs — that bounds the hook, not the tool", () => {
+  it("is never LOWERED by a short legacy reflectTimeoutMs", () => {
     const cfg = resolveConfig({ reflectTimeoutMs: 5000 });
-    expect(cfg.reflectTimeoutMs).toBe(5000);
     expect(cfg.reflectToolTimeoutMs).toBe(330000);
   });
 
@@ -302,6 +300,7 @@ describe("defaultBankConfig (#4725)", () => {
 describe("banks.<bankId> overrides (per-repo opt-in/out, applied AFTER bank resolution)", () => {
   it("overrides behavioral fields for the matching bank only; others untouched", () => {
     const cfg = resolveConfig({
+      apiToken: "test-key",
       gitIngest: "message",
       banks: {
         "coding-agent::secret": { disabled: true },
@@ -351,6 +350,7 @@ describe("banks.<id>.bank — rename inside the banks tree", () => {
 
   it("single hop: the rename target's own section is NOT consulted (no chaining)", () => {
     const cfg = resolveConfig({
+      apiToken: "test-key",
       banks: {
         a: { bank: "b" },
         b: { bank: "c", disabled: true }, // must not apply to the a->b hop
@@ -396,14 +396,27 @@ describe("environment fallback", () => {
   });
 
   it("autoInject: explicit mode wins, legacy autoReflect=false maps to none, junk falls back", () => {
-    expect(resolveConfig({}).autoInject).toBe("reflect");
+    expect(resolveConfig({}).autoInject).toBe("recall");
     expect(resolveConfig({ autoInject: "pages" }).autoInject).toBe("pages");
     expect(resolveConfig({ autoInject: "recall", autoReflect: false }).autoInject).toBe("recall");
     expect(resolveConfig({ autoReflect: false }).autoInject).toBe("none");
-    expect(resolveConfig({ autoInject: "bogus" as never }).autoInject).toBe("reflect");
+    expect(resolveConfig({ autoInject: "bogus" as never }).autoInject).toBe("recall");
     const base = resolveConfig({ autoInject: "pages", banks: { b: { autoReflect: false } } });
     expect(applyBankConfig(base, "b").cfg.autoInject).toBe("none");
     expect(applyBankConfig(base, "other").cfg.autoInject).toBe("pages");
+  });
+
+  it("migrates explicit reflect mode before applying the legacy autoReflect switch", () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    for (const autoReflect of [undefined, false, true]) {
+      expect(resolveConfig({ autoInject: "reflect" as never, autoReflect }).autoInject).toBe(
+        "recall"
+      );
+    }
+    expect(warn).toHaveBeenCalledWith("config", expect.stringContaining('using "recall"'));
+    writeJson(globalCfg, { autoInject: "reflect", autoReflect: false });
+    expect(loadConfig({ path: globalCfg }).autoInject).toBe("recall");
+    warn.mockRestore();
   });
 
   it("recallOptions: empty by default, passed through verbatim, non-objects rejected", () => {
@@ -504,7 +517,7 @@ describe("environment fallback", () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
     expect(resolveConfig({ autoInject: "pages" }).autoInject).toBe("pages");
     expect(warn).not.toHaveBeenCalled();
-    expect(resolveConfig({ autoReflect: true }).autoInject).toBe("reflect");
+    expect(resolveConfig({ autoReflect: true }).autoInject).toBe("recall");
     expect(resolveConfig({ autoReflect: false }).autoInject).toBe("none");
     expect(warn).toHaveBeenLastCalledWith(
       "config",
@@ -530,8 +543,8 @@ describe("environment fallback", () => {
     writeJson(globalCfg, {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     process.env.HINDSIGHT_REFLECT_TIMEOUT_MS = "soon";
-    // NaN here would silently break the reflect timeout in a way that is very hard to trace.
-    expect(loadConfig({ path: globalCfg }).reflectTimeoutMs).toBe(20000);
+    // NaN here would silently break the legacy reflect-timeout alias; the tool keeps its default.
+    expect(loadConfig({ path: globalCfg }).reflectToolTimeoutMs).toBe(330000);
   });
 
   it("an empty env var does not mask the file or the default", () => {
@@ -642,5 +655,28 @@ describe("observationScopes", () => {
       "per_tag"
     );
     expect(readEnvConfig({}).observationScopes).toBeUndefined();
+  });
+});
+
+describe("keyless Hindsight Cloud", () => {
+  // Cloud refuses every keyless request; sending them anyway gives the user no memory and costs
+  // both sides for data that is thrown away.
+  it("turns memory off when the Cloud URL has no key", () => {
+    expect(applyBankConfig(resolveConfig({ serverMode: "cloud" }), "b").cfg.disabled).toBe(true);
+  });
+
+  it("stays on with a key, or with any other server", () => {
+    expect(
+      applyBankConfig(resolveConfig({ serverMode: "cloud", apiToken: "k" }), "b").cfg.disabled
+    ).toBe(false);
+    const local = resolveConfig({ serverMode: "self-hosted", apiUrl: "http://localhost:8888" });
+    expect(applyBankConfig(local, "b").cfg.disabled).toBe(false);
+    expect(applyBankConfig(resolveConfig({ serverMode: "daemon" }), "b").cfg.disabled).toBe(false);
+  });
+
+  it("counts a key that only a per-bank section supplies", () => {
+    const cfg = resolveConfig({ serverMode: "cloud", banks: { b: { apiToken: "k" } } });
+    expect(applyBankConfig(cfg, "b").cfg.disabled).toBe(false);
+    expect(applyBankConfig(cfg, "other").cfg.disabled).toBe(true);
   });
 });

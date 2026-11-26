@@ -248,7 +248,10 @@ export function controlPlaneToolSpec(cfg: Config, harness: string): ToolSpec {
         control_plane_running: cp.running,
         control_plane_url: cp.url,
         local_settings_url: cp.localUrl,
-        profile_log: join(homedir(), ".hindsight", "profiles", `${cfg.daemonProfile}.log`),
+        profile_log:
+          cfg.daemonProfile && cfg.daemonProfile !== "default"
+            ? join(homedir(), ".hindsight", "profiles", `${cfg.daemonProfile}.log`)
+            : join(homedir(), ".hindsight", "daemon.log"),
         plugin_log: join(homedir(), ".hindsight", "coding-agents-logs", "plugin.log"),
       };
       return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };

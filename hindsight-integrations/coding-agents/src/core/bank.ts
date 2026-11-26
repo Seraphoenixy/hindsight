@@ -27,8 +27,7 @@
  * hooks skip the session (`deriveBankIdOrSkip`). Guessing there is how a linked worktree ended up
  * with a permanent bank of its own (#3950): a skipped session is recoverable, a scattered one is not.
  */
-import { createHash } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize, sep } from "node:path";
 import { diag } from "./diag";
@@ -203,7 +202,7 @@ export interface ProjectScope {
   name: string;
 }
 
-/** Use the canonical main checkout path as identity, keeping the readable name separate. */
+/** Same-named workspaces share an identity across machines; users own name uniqueness. */
 export function resolveProjectScope(directory: string, sessionRoot?: string): ProjectScope {
   const originalRoot =
     sessionRoot && isWithin(normalize(directory), normalize(sessionRoot)) ? sessionRoot : undefined;
@@ -211,16 +210,12 @@ export function resolveProjectScope(directory: string, sessionRoot?: string): Pr
   if (project.status === "failed")
     throw new BankResolutionError(`git probe failed for ${directory} (${project.reason})`);
   const root = project.status === "resolved" ? project.root : originalRoot || directory;
-  let canonical = normalize(root);
-  try {
-    canonical = realpathSync.native(canonical);
-  } catch {
-    // A directory can disappear between the Git probe and realpath.
-  }
-  if (process.platform === "win32") canonical = canonical.toLowerCase();
+  const name = dirName(root);
   return {
-    id: createHash("sha256").update(canonical).digest("hex").slice(0, 24),
-    name: dirName(root),
+    // Keep the full Unicode name; encoding protects the ':' document-id separator
+    // and tag syntax without merging distinct names or depending on a local path.
+    id: encodeURIComponent(name.normalize("NFC").toLowerCase()),
+    name,
   };
 }
 

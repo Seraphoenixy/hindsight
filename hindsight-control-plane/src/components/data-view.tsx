@@ -7,6 +7,7 @@ import {
   GraphParams,
   cachedGraph,
   fetchGraph,
+  invalidateGraphCache,
   isFresh,
   prefetchGraph,
   sameGraph,
@@ -36,10 +37,12 @@ import {
   RefreshCw,
   CheckCircle,
   Clock,
+  Database,
   List,
   Search,
   Layers,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
@@ -295,7 +298,7 @@ export function DataView({
           Promise.resolve()
         );
       }
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       if (readRef.current === read) {
@@ -594,21 +597,31 @@ export function DataView({
   return (
     <div>
       {loading && !data ? (
-        <div className="text-center py-12">
+        <div className="rounded-[18px] border border-border bg-card px-6 py-16 text-center">
           <Spinner size="lg" variant="jump" className="mx-auto mb-3" />
-          <p className="text-muted-foreground">{t("loadingMemories")}</p>
+          <p className="text-sm text-muted-foreground">{t("loadingMemories")}</p>
         </div>
       ) : data && shouldShowEmptyBankState(data.total_units, appliedFilters) ? (
-        <div className="text-center py-20">
-          <FileText className="w-10 h-10 mx-auto mb-4 text-muted-foreground/50" />
-          <h3 className="text-base font-medium text-foreground mb-1">{t("noMemoriesYet")}</h3>
+        <div className="relative overflow-hidden rounded-[20px] border border-dashed border-border bg-card px-6 py-16 text-center">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,116,217,0.07),transparent_52%)] dark:bg-[radial-gradient(ellipse_at_center,rgba(91,176,255,0.07),transparent_52%)]"
+          />
+          <div className="relative mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl border border-primary/15 bg-primary/10 text-primary">
+            <FileText className="h-5 w-5" />
+          </div>
+          <h3 className="relative mb-1 text-base font-semibold text-foreground">
+            {t("noMemoriesYet")}
+          </h3>
           {!documentId && !chunkId && (
             <>
-              <p className="text-sm text-muted-foreground mb-6">{t("noMemoriesDescription")}</p>
+              <p className="relative mx-auto mb-6 max-w-md text-sm text-muted-foreground">
+                {t("noMemoriesDescription")}
+              </p>
               <Button
                 variant="default"
                 size="sm"
-                className="gap-1.5"
+                className="relative gap-1.5"
                 onClick={() => {
                   const btn = document.querySelector<HTMLButtonElement>("[data-add-document]");
                   btn?.click();
@@ -622,115 +635,108 @@ export function DataView({
         </div>
       ) : data ? (
         <>
-          {/* Always visible filters */}
+          {/* Filters, result count and view mode share one surface, so the
+              memory browser reads as a workspace rather than three loose rows. */}
           {!compactMode && (
-            <div className="mb-4 space-y-2">
-              <div className="flex items-start gap-2">
-                {/* Text search */}
-                <div className="relative max-w-xs flex-1">
-                  {loading ? (
-                    <Spinner
-                      size="sm"
-                      className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+            <div className="mb-5 overflow-hidden rounded-[18px] border border-border bg-card">
+              <div className="flex flex-col gap-3 p-3.5 sm:p-4 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex min-w-0 flex-1 flex-wrap items-start gap-2">
+                  {/* Text search */}
+                  <div className="relative w-full sm:min-w-[220px] sm:max-w-sm sm:flex-1">
+                    {loading ? (
+                      <Spinner
+                        size="sm"
+                        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                      />
+                    ) : (
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    )}
+                    <Input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setSearchQuery(next);
+                        // Emptying the box is the one edit that doesn't need an
+                        // Enter to be unambiguous: re-run the query unfiltered so
+                        // the full list (and its total) comes straight back.
+                        if (next === "" && appliedFilters.q !== "" && currentBank) {
+                          setCurrentPage(1);
+                          const { tags, match } = resolveTagQuery();
+                          loadData(undefined, undefined, tags, match);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          executeSearch();
+                        }
+                      }}
+                      placeholder={t("filterByTextPlaceholder")}
+                      className="h-9 rounded-[10px] pl-9"
                     />
-                  ) : (
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                  {/* Tag input. Setting a tag filter clears any selected scope
+                      so the two filters never fight over the same query. */}
+                  <TagFilterInput
+                    value={tagFilters}
+                    onChange={(next) => {
+                      if (next.length > 0) setSelectedScope(null);
+                      setTagFilters(next);
+                    }}
+                    bankId={currentBank}
+                    className="w-full sm:w-auto sm:min-w-[180px] sm:max-w-sm sm:flex-1"
+                  />
+                  {/* Observation scope filter. Selecting a scope clears the
+                      free-form tag filter (mutually exclusive). */}
+                  {factType === "observation" && scopes.length > 0 && (
+                    <ObservationScopeFilter
+                      scopes={scopes}
+                      value={selectedScope}
+                      onChange={(scope) => {
+                        if (scope !== null) setTagFilters([]);
+                        setSelectedScope(scope);
+                      }}
+                    />
                   )}
-                  <Input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      setSearchQuery(next);
-                      // Emptying the box is the one edit that doesn't need an
-                      // Enter to be unambiguous: re-run the query unfiltered so
-                      // the full list (and its total) comes straight back.
-                      if (next === "" && appliedFilters.q !== "" && currentBank) {
-                        setCurrentPage(1);
-                        const { tags, match } = resolveTagQuery();
-                        loadData(undefined, undefined, tags, match);
-                      }
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        executeSearch();
-                      }
-                    }}
-                    placeholder={t("filterByTextPlaceholder")}
-                    className="pl-8 h-9"
-                  />
                 </div>
-                {/* Tag input. Setting a tag filter clears any selected scope
-                    so the two filters never fight over the same query. */}
-                <TagFilterInput
-                  value={tagFilters}
-                  onChange={(next) => {
-                    if (next.length > 0) setSelectedScope(null);
-                    setTagFilters(next);
-                  }}
-                  bankId={currentBank}
-                />
-                {/* Observation scope filter. Selecting a scope clears the
-                    free-form tag filter (mutually exclusive). */}
-                {factType === "observation" && scopes.length > 0 && (
-                  <ObservationScopeFilter
-                    scopes={scopes}
-                    value={selectedScope}
-                    onChange={(scope) => {
-                      if (scope !== null) setTagFilters([]);
-                      setSelectedScope(scope);
-                    }}
-                  />
-                )}
+                <div className="flex max-w-full shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-border/70 bg-muted/45 p-1">
+                  {[
+                    {
+                      id: "constellation" as ViewMode,
+                      label: t("constellation"),
+                      icon: ScatterChart,
+                    },
+                    { id: "table" as ViewMode, label: t("table"), icon: List },
+                    { id: "timeline" as ViewMode, label: t("timeline"), icon: Calendar },
+                  ].map(({ id, label, icon: Icon }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => chooseViewMode(id)}
+                      className={cn(
+                        "flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-[12px] font-medium transition-all",
+                        viewMode === id
+                          ? "bg-card text-foreground shadow-[0_1px_3px_rgba(15,23,36,0.10)] ring-1 ring-border/70"
+                          : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                      )}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
-
-          {compactMode ? (
-            <div className="flex items-center justify-between mb-2 px-1">
-              <div className="text-xs text-muted-foreground">{data.total_units} memories</div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  if (onExpandToggle) {
-                    onExpandToggle();
-                  } else {
-                    setCompactMode(false);
-                  }
-                }}
-                className="h-6 px-2 text-xs gap-1"
-              >
-                <Settings2 className="w-3 h-3" />
-                Expand
-              </Button>
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                {compact && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      if (onExpandToggle) {
-                        onExpandToggle();
-                      } else {
-                        setCompactMode(true);
-                      }
-                    }}
-                    className="h-7 px-2 text-xs gap-1"
-                  >
-                    <Eye className="w-3 h-3" />
-                    Compact
-                  </Button>
-                )}
-                <div className="text-sm text-muted-foreground">
-                  {filtersActive ? (
-                    t("matchingMemories", { count: filteredTableRows.length })
-                  ) : data.table_rows?.length < data.total_units ? (
-                    <span>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 bg-muted/15 px-3.5 py-2.5 sm:px-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex h-6 items-center gap-1.5 rounded-lg border border-border/70 bg-background/80 px-2 text-[10.5px] font-medium tabular-nums text-muted-foreground">
+                    <Database className="h-3 w-3" />
+                    {filtersActive
+                      ? t("matchingMemories", { count: filteredTableRows.length })
+                      : t("totalMemories", { count: data.total_units })}
+                  </span>
+                  {!filtersActive && data.table_rows?.length < data.total_units && (
+                    <span className="inline-flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
                       {t("showingMemories", {
                         shown: data.table_rows?.length ?? 0,
                         total: data.total_units,
@@ -742,50 +748,47 @@ export function DataView({
                           const { tags, match } = resolveTagQuery();
                           loadData(newLimit, searchQuery || undefined, tags, match);
                         }}
-                        className="ml-2 text-primary hover:underline"
+                        className="font-medium text-primary hover:underline"
                       >
                         {t("loadMore")}
                       </button>
                     </span>
-                  ) : (
-                    t("totalMemories", { count: data.total_units })
                   )}
-                </div>
 
-                {/* Consolidation status for observations */}
-                {factType === "observation" && consolidationStatus && (
-                  <span
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium border ${
-                      consolidationStatus.pending_consolidation === 0
-                        ? "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20"
-                        : "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"
-                    }`}
-                    title={
-                      consolidationStatus.pending_consolidation === 0
-                        ? consolidationStatus.last_consolidated_at
-                          ? t("allConsolidatedWithDate", {
-                              date: new Date(
-                                consolidationStatus.last_consolidated_at
-                              ).toLocaleString(),
+                  {/* Consolidation status for observations */}
+                  {factType === "observation" && consolidationStatus && (
+                    <span
+                      className={cn(
+                        "inline-flex h-6 items-center gap-1 rounded-lg border px-2 text-[10.5px] font-medium",
+                        consolidationStatus.pending_consolidation === 0
+                          ? "border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-700 dark:text-emerald-300"
+                          : "border-amber-500/20 bg-amber-500/[0.07] text-amber-700 dark:text-amber-300"
+                      )}
+                      title={
+                        consolidationStatus.pending_consolidation === 0
+                          ? consolidationStatus.last_consolidated_at
+                            ? t("allConsolidatedWithDate", {
+                                date: new Date(
+                                  consolidationStatus.last_consolidated_at
+                                ).toLocaleString(),
+                              })
+                            : t("allConsolidated")
+                          : t("pendingConsolidation", {
+                              count: consolidationStatus.pending_consolidation,
                             })
-                          : t("allConsolidated")
-                        : t("pendingConsolidation", {
-                            count: consolidationStatus.pending_consolidation,
-                          })
-                    }
-                  >
-                    {consolidationStatus.pending_consolidation === 0 ? (
-                      <>
-                        <CheckCircle className="w-3 h-3" />
-                        {t("inSync")}
-                      </>
-                    ) : (
-                      <>
-                        <Clock className="w-3 h-3" />
-                        {t("pendingCount", { count: consolidationStatus.pending_consolidation })}
-                        <button
-                          onClick={() =>
-                            (() => {
+                      }
+                    >
+                      {consolidationStatus.pending_consolidation === 0 ? (
+                        <>
+                          <CheckCircle className="h-3 w-3" />
+                          {t("inSync")}
+                        </>
+                      ) : (
+                        <>
+                          <Clock className="h-3 w-3" />
+                          {t("pendingCount", { count: consolidationStatus.pending_consolidation })}
+                          <button
+                            onClick={() => {
                               const { tags, match } = resolveTagQuery();
                               loadData(
                                 fetchLimit,
@@ -795,54 +798,61 @@ export function DataView({
                                 false,
                                 true
                               );
-                            })()
-                          }
-                          disabled={loading}
-                          className="ml-0.5 opacity-70 hover:opacity-100 disabled:opacity-40 transition-opacity"
-                          title={t("refreshMemories")}
-                        >
-                          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
-                        </button>
-                      </>
-                    )}
-                  </span>
+                            }}
+                            disabled={loading}
+                            className="ml-0.5 opacity-70 transition-opacity hover:opacity-100 disabled:opacity-40"
+                            title={t("refreshMemories")}
+                          >
+                            <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  )}
+                </div>
+                {compact && (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        if (onExpandToggle) {
+                          onExpandToggle();
+                        } else {
+                          setCompactMode(true);
+                        }
+                      }}
+                      className="h-6 gap-1 px-2 text-[10.5px]"
+                    >
+                      <Eye className="h-3 w-3" />
+                      Compact
+                    </Button>
+                  </div>
                 )}
               </div>
-              <div className="flex max-w-full items-center gap-2 overflow-x-auto bg-muted rounded-lg p-1">
-                <button
-                  onClick={() => chooseViewMode("constellation")}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5 ${
-                    viewMode === "constellation"
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <ScatterChart className="w-4 h-4" />
-                  {t("constellation")}
-                </button>
-                <button
-                  onClick={() => chooseViewMode("table")}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5 ${
-                    viewMode === "table"
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <List className="w-4 h-4" />
-                  {t("table")}
-                </button>
-                <button
-                  onClick={() => chooseViewMode("timeline")}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5 ${
-                    viewMode === "timeline"
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <Calendar className="w-4 h-4" />
-                  {t("timeline")}
-                </button>
+            </div>
+          )}
+
+          {compactMode && (
+            <div className="mb-3 flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2">
+              <div className="text-[11px] text-muted-foreground">
+                {t("totalMemories", { count: data.total_units })}
               </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (onExpandToggle) {
+                    onExpandToggle();
+                  } else {
+                    setCompactMode(false);
+                  }
+                }}
+                className="h-6 gap-1 px-2 text-xs"
+              >
+                <Settings2 className="h-3 w-3" />
+                Expand
+              </Button>
             </div>
           )}
 
@@ -851,7 +861,7 @@ export function DataView({
               {/* Constellation controls — moved out of the old side panel to sit
                   inline above the graph, next to the view toggle / filters. */}
               {!compactMode && (
-                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-[14px] border border-border/70 bg-card px-3.5 py-2.5">
                   {factType === "observation" && (
                     <div className="flex items-center gap-2">
                       <Layers className="w-3.5 h-3.5 text-muted-foreground" />
@@ -894,7 +904,7 @@ export function DataView({
                       <button
                         key={type}
                         type="button"
-                        className="flex items-center gap-1.5"
+                        className="flex items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:bg-muted/70"
                         onClick={() => toggleLinkType(type)}
                       >
                         <span
@@ -915,89 +925,116 @@ export function DataView({
                 </div>
               )}
 
-              <div className="border border-border rounded-lg overflow-hidden">
-                <Constellation
-                  key={compactMode ? "compact" : "full"}
-                  data={graph2DData}
-                  height={compactMode ? 300 : 700}
-                  onNodeClick={handleGraphNodeClick}
-                  nodeColorFn={nodeColorFn}
-                  linkColorFn={linkColorFn}
-                  nodeSizeFn={factType === "observation" ? observationNodeSizeFn : undefined}
-                  sizeLegendLabel={factType === "observation" ? t("sourceFactsLabel") : undefined}
-                  clusterKeyFn={
-                    factType === "observation" && groupByScope ? scopeClusterKeyFn : undefined
-                  }
-                  clusterColorFn={
-                    factType === "observation" && groupByScope ? scopeClusterColorFn : undefined
-                  }
-                  clusterLabelFn={
-                    factType === "observation" && groupByScope ? scopeClusterLabelFn : undefined
-                  }
-                  // When grouping by scope, color encodes scope (not recency), so
-                  // suppress the recency heat to avoid a misleading legend.
-                  nodeHeatFn={
-                    !(factType === "observation" && groupByScope) && recencyLookup
-                      ? recencyHeatFn
-                      : undefined
-                  }
-                  heatLegendLabel={
-                    !(factType === "observation" && groupByScope) && recencyLookup
-                      ? t("recencyLabel", { basis: RECENCY_BASIS_LABEL[recencyBasis] })
-                      : undefined
-                  }
-                  heatLegendEndpoints={
-                    !(factType === "observation" && groupByScope) && recencyLookup
-                      ? [
-                          new Date(recencyLookup.minT).toISOString().slice(0, 10),
-                          new Date(recencyLookup.maxT).toISOString().slice(0, 10),
-                        ]
-                      : undefined
-                  }
-                />
+              <div className="overflow-hidden rounded-[18px] border border-border bg-card">
+                <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_0_3px_rgba(0,116,217,0.10)]" />
+                    <h2 className="text-[12.5px] font-semibold text-foreground">
+                      {t("constellation")}
+                    </h2>
+                  </div>
+                  <span className="rounded-md border border-border/70 bg-background/70 px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                    {data.total_units.toLocaleString()}
+                  </span>
+                </div>
+                <div className="p-2">
+                  <Constellation
+                    key={compactMode ? "compact" : "full"}
+                    data={graph2DData}
+                    height={compactMode ? 300 : 700}
+                    onNodeClick={handleGraphNodeClick}
+                    nodeColorFn={nodeColorFn}
+                    linkColorFn={linkColorFn}
+                    nodeSizeFn={factType === "observation" ? observationNodeSizeFn : undefined}
+                    sizeLegendLabel={factType === "observation" ? t("sourceFactsLabel") : undefined}
+                    clusterKeyFn={
+                      factType === "observation" && groupByScope ? scopeClusterKeyFn : undefined
+                    }
+                    clusterColorFn={
+                      factType === "observation" && groupByScope ? scopeClusterColorFn : undefined
+                    }
+                    clusterLabelFn={
+                      factType === "observation" && groupByScope ? scopeClusterLabelFn : undefined
+                    }
+                    // When grouping by scope, color encodes scope (not recency), so
+                    // suppress the recency heat to avoid a misleading legend.
+                    nodeHeatFn={
+                      !(factType === "observation" && groupByScope) && recencyLookup
+                        ? recencyHeatFn
+                        : undefined
+                    }
+                    heatLegendLabel={
+                      !(factType === "observation" && groupByScope) && recencyLookup
+                        ? t("recencyLabel", { basis: RECENCY_BASIS_LABEL[recencyBasis] })
+                        : undefined
+                    }
+                    heatLegendEndpoints={
+                      !(factType === "observation" && groupByScope) && recencyLookup
+                        ? [
+                            new Date(recencyLookup.minT).toISOString().slice(0, 10),
+                            new Date(recencyLookup.maxT).toISOString().slice(0, 10),
+                          ]
+                        : undefined
+                    }
+                  />
+                </div>
               </div>
             </div>
           )}
 
           {!compactMode && viewMode === "table" && (
             <div>
-              {factType !== "observation" && (
-                <div className="flex items-center gap-2 mb-3">
-                  <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
-                    <button
-                      onClick={() => {
-                        setShowInvalidated(false);
-                        setCurrentPage(1);
-                      }}
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                        !showInvalidated
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {t("filterActive")}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowInvalidated(true);
-                        setCurrentPage(1);
-                      }}
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                        showInvalidated
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {t("filterInvalidated")}
-                    </button>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-border bg-card px-3 py-2.5">
+                {factType !== "observation" ? (
+                  <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-muted/45 p-1">
+                    {[
+                      {
+                        invalidated: false,
+                        label: t("filterActive"),
+                      },
+                      {
+                        invalidated: true,
+                        label: t("filterInvalidated"),
+                      },
+                    ].map((option) => (
+                      <button
+                        key={String(option.invalidated)}
+                        type="button"
+                        onClick={() => {
+                          setShowInvalidated(option.invalidated);
+                          setCurrentPage(1);
+                        }}
+                        className={cn(
+                          "rounded-md px-3 py-1.5 text-[11.5px] font-medium transition-all",
+                          showInvalidated === option.invalidated
+                            ? "bg-card text-foreground shadow-[0_1px_2px_rgba(15,23,36,0.10)] ring-1 ring-border/70"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
                   </div>
-                  {showInvalidated && (
-                    <span className="text-xs text-muted-foreground">{t("invalidatedHint")}</span>
+                ) : (
+                  <span className="inline-flex items-center gap-2 px-1 text-[11.5px] font-medium text-muted-foreground">
+                    <Database className="h-3.5 w-3.5" />
+                    {t("columnObservation")}
+                  </span>
+                )}
+                <div className="flex min-w-0 items-center gap-2">
+                  {showInvalidated ? (
+                    <span className="truncate text-[10.5px] text-muted-foreground">
+                      {t("invalidatedHint")}
+                    </span>
+                  ) : (
+                    <span className="rounded-md border border-border/70 bg-background/70 px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                      {filteredTableRows.length.toLocaleString()}
+                    </span>
                   )}
                 </div>
-              )}
+              </div>
               <div className="w-full">
-                <div className="pb-4">
+                <div className="pb-1">
                   {filteredTableRows.length > 0 ? (
                     (() => {
                       const totalPages = Math.ceil(filteredTableRows.length / itemsPerPage);
@@ -1007,7 +1044,7 @@ export function DataView({
 
                       return (
                         <>
-                          <Table className="table-fixed">
+                          <Table className="table-fixed [&_thead]:bg-muted/25">
                             <TableHeader>
                               <TableRow>
                                 <TableHead
@@ -1055,19 +1092,19 @@ export function DataView({
                                   <TableRow
                                     key={row.id || idx}
                                     onClick={() => setModalMemoryId(row.id)}
-                                    className="cursor-pointer hover:bg-muted/50"
+                                    className="group cursor-pointer hover:bg-primary/[0.025]"
                                   >
-                                    <TableCell className="py-2">
-                                      <div className="line-clamp-2 text-sm leading-snug text-foreground">
+                                    <TableCell className="py-3">
+                                      <div className="line-clamp-2 text-[12.5px] leading-relaxed text-foreground">
                                         {row.text}
                                       </div>
                                       {row.context && factType !== "observation" && (
-                                        <div className="text-xs text-muted-foreground mt-0.5 truncate">
+                                        <div className="mt-1 truncate text-[10.5px] text-muted-foreground/80">
                                           {row.context}
                                         </div>
                                       )}
                                     </TableCell>
-                                    <TableCell className="py-2">
+                                    <TableCell className="py-3">
                                       {row.entities ? (
                                         <div className="flex gap-1 flex-wrap">
                                           {row.entities
@@ -1086,7 +1123,7 @@ export function DataView({
                                         <span className="text-xs text-muted-foreground">-</span>
                                       )}
                                     </TableCell>
-                                    <TableCell className="py-2">
+                                    <TableCell className="py-3">
                                       {row.tags && row.tags.length > 0 ? (
                                         <div className="flex gap-1 flex-wrap">
                                           {(row.tags as string[])
@@ -1105,16 +1142,18 @@ export function DataView({
                                       )}
                                     </TableCell>
                                     {factType === "observation" && (
-                                      <TableCell className="text-xs py-2 text-foreground">
-                                        {row.proof_count ?? 1}
+                                      <TableCell className="py-3">
+                                        <span className="inline-flex min-w-6 justify-center rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums text-foreground/75">
+                                          {row.proof_count ?? 1}
+                                        </span>
                                       </TableCell>
                                     )}
-                                    <TableCell className="text-xs py-2 text-foreground">
+                                    <TableCell className="py-3 text-[11px] text-foreground/80">
                                       {occurredDisplay || (
                                         <span className="text-muted-foreground">-</span>
                                       )}
                                     </TableCell>
-                                    <TableCell className="text-xs py-2 text-foreground">
+                                    <TableCell className="py-3 text-[11px] text-foreground/80">
                                       {mentionedDisplay || (
                                         <span className="text-muted-foreground">-</span>
                                       )}
@@ -1127,8 +1166,8 @@ export function DataView({
 
                           {/* Pagination Controls */}
                           {totalPages > 1 && (
-                            <div className="flex items-center justify-between mt-3 pt-3 border-t">
-                              <div className="text-xs text-muted-foreground">
+                            <div className="mt-3 flex items-center justify-between rounded-xl border border-border/70 bg-card px-3 py-2">
+                              <div className="text-[10.5px] tabular-nums text-muted-foreground">
                                 {startIndex + 1}-{Math.min(endIndex, filteredTableRows.length)} of{" "}
                                 {filteredTableRows.length}
                               </div>
@@ -1151,7 +1190,7 @@ export function DataView({
                                 >
                                   <ChevronLeft className="h-3 w-3" />
                                 </Button>
-                                <span className="text-xs px-2">
+                                <span className="px-2 font-mono text-[10.5px] tabular-nums text-muted-foreground">
                                   {currentPage} / {totalPages}
                                 </span>
                                 <Button
@@ -1179,8 +1218,13 @@ export function DataView({
                       );
                     })()
                   ) : (
-                    <div className="text-center py-12 text-muted-foreground">
-                      {filtersActive ? t("noMemoriesMatchFilter") : t("noMemoriesFound")}
+                    <div className="rounded-[16px] border border-dashed border-border bg-card px-6 py-14 text-center">
+                      <div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-xl border border-border bg-muted/40 text-muted-foreground">
+                        <Search className="h-4 w-4" />
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {filtersActive ? t("noMemoriesMatchFilter") : t("noMemoriesFound")}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1198,11 +1242,11 @@ export function DataView({
           )}
         </>
       ) : (
-        <div className="flex items-center justify-center py-20">
-          <div className="text-center">
-            <ScatterChart className="w-10 h-10 mx-auto mb-3 text-muted-foreground/50" />
-            <div className="text-sm text-muted-foreground">{t("noDataAvailable")}</div>
+        <div className="rounded-[18px] border border-dashed border-border bg-card px-6 py-16 text-center">
+          <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-2xl border border-border bg-muted/40">
+            <ScatterChart className="h-5 w-5 text-muted-foreground/60" />
           </div>
+          <div className="text-sm text-muted-foreground">{t("noDataAvailable")}</div>
         </div>
       )}
 
@@ -1211,7 +1255,10 @@ export function DataView({
         memoryId={modalMemoryId}
         onClose={() => setModalMemoryId(null)}
         onChanged={() => {
+          invalidateGraphCache(currentBank || undefined);
           if (showInvalidated) loadInvalidated();
+          const { tags, match } = resolveTagQuery();
+          loadData(fetchLimit, appliedFilters.q || undefined, tags, match, false, true);
         }}
       />
     </div>
@@ -1225,9 +1272,7 @@ export function DataView({
 type Granularity = "year" | "month" | "week" | "day";
 
 export function TimelineView({
-  data,
   filteredRows,
-  bankId,
   onMemoryClick,
 }: {
   data: any;
@@ -1331,7 +1376,7 @@ export function TimelineView({
         items,
         date,
       }));
-  }, [sortedItems, granularity]);
+  }, [sortedItems, granularity, locale, newestFirst]);
 
   // Get date range info
   const dateRange = useMemo(() => {
@@ -1367,10 +1412,12 @@ export function TimelineView({
 
   if (sortedItems.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12">
-        <Calendar className="w-12 h-12 text-muted-foreground mb-3" />
-        <div className="text-base font-medium text-foreground mb-1">{t("noTimelineData")}</div>
-        <div className="text-xs text-muted-foreground text-center max-w-md">
+      <div className="flex flex-col items-center justify-center rounded-[18px] border border-dashed border-border bg-card px-6 py-16 text-center">
+        <div className="mb-3 grid h-11 w-11 place-items-center rounded-2xl border border-border bg-muted/40">
+          <Calendar className="h-5 w-5 text-muted-foreground/60" />
+        </div>
+        <div className="mb-1 text-sm font-semibold text-foreground">{t("noTimelineData")}</div>
+        <div className="max-w-md text-xs leading-relaxed text-muted-foreground">
           {t("noTimelineDataDescription")}
           {itemsWithoutDates.length > 0 && (
             <span className="block mt-1">
@@ -1401,15 +1448,15 @@ export function TimelineView({
   };
 
   return (
-    <div className="px-4">
+    <div className="rounded-[18px] border border-border bg-card p-4 sm:p-5">
       {/* Timeline */}
       <div>
         {/* Controls */}
-        <div className="flex items-center justify-between mb-3 gap-4">
-          <div className="text-xs text-muted-foreground">
+        <div className="mb-4 flex flex-col gap-3 border-b border-border/60 pb-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-[11px] leading-relaxed text-muted-foreground">
             <span>{t("timelineMemoriesCount", { count: sortedItems.length })}</span>
             {dateRange && (
-              <span className="ml-1.5 text-foreground">
+              <span className="ml-1.5 text-foreground/75">
                 ({dateRange.first.toLocaleDateString(locale, { month: "short", year: "numeric" })} →{" "}
                 {dateRange.last.toLocaleDateString(locale, { month: "short", year: "numeric" })})
               </span>
@@ -1418,7 +1465,7 @@ export function TimelineView({
               ` ${t("timelineWithoutDates", { count: itemsWithoutDates.length })}`}
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-3">
             {/* Sort order */}
             <Button
               variant="secondary"
@@ -1439,18 +1486,18 @@ export function TimelineView({
             </Button>
 
             {/* Zoom controls */}
-            <div className="flex items-center border border-border rounded mr-2">
+            <div className="flex items-center rounded-lg border border-border/70 bg-muted/35 p-1">
               <Button
                 variant="secondary"
                 size="sm"
                 onClick={zoomOut}
                 disabled={granularity === "year"}
-                className="h-7 w-7 p-0"
+                className="h-7 w-7 rounded-md p-0"
                 title={t("zoomOut")}
               >
                 <ZoomOut className="h-3 w-3" />
               </Button>
-              <span className="text-[10px] px-2 min-w-[50px] text-center border-x border-border text-foreground">
+              <span className="min-w-[50px] px-2 text-center text-[10px] text-foreground">
                 {granularityLabels[granularity]}
               </span>
               <Button
@@ -1458,7 +1505,7 @@ export function TimelineView({
                 size="sm"
                 onClick={zoomIn}
                 disabled={granularity === "day"}
-                className="h-7 w-7 p-0"
+                className="h-7 w-7 rounded-md p-0"
                 title={t("zoomIn")}
               >
                 <ZoomIn className="h-3 w-3" />
@@ -1466,13 +1513,13 @@ export function TimelineView({
             </div>
 
             {/* Navigation controls */}
-            <div className="flex items-center border border-border rounded">
+            <div className="flex items-center rounded-lg border border-border/70 bg-muted/35 p-1">
               <Button
                 variant="secondary"
                 size="sm"
                 onClick={() => scrollToGroup(0)}
                 disabled={timelineGroups.length <= 1}
-                className="h-7 w-7 p-0"
+                className="h-7 w-7 rounded-md p-0"
                 title={t("first")}
               >
                 <ChevronsLeft className="h-3 w-3" />
@@ -1482,12 +1529,12 @@ export function TimelineView({
                 size="sm"
                 onClick={() => scrollToGroup(currentIndex - 1)}
                 disabled={currentIndex === 0}
-                className="h-7 w-7 p-0"
+                className="h-7 w-7 rounded-md p-0"
                 title={t("previous")}
               >
                 <ChevronLeft className="h-3 w-3" />
               </Button>
-              <span className="text-[10px] px-2 min-w-[60px] text-center border-x border-border text-foreground">
+              <span className="min-w-[60px] px-2 text-center font-mono text-[10px] tabular-nums text-foreground">
                 {currentIndex + 1} / {timelineGroups.length}
               </span>
               <Button
@@ -1495,7 +1542,7 @@ export function TimelineView({
                 size="sm"
                 onClick={() => scrollToGroup(currentIndex + 1)}
                 disabled={currentIndex >= timelineGroups.length - 1}
-                className="h-7 w-7 p-0"
+                className="h-7 w-7 rounded-md p-0"
                 title={t("next")}
               >
                 <ChevronRight className="h-3 w-3" />
@@ -1505,7 +1552,7 @@ export function TimelineView({
                 size="sm"
                 onClick={() => scrollToGroup(timelineGroups.length - 1)}
                 disabled={timelineGroups.length <= 1}
-                className="h-7 w-7 p-0"
+                className="h-7 w-7 rounded-md p-0"
                 title={t("last")}
               >
                 <ChevronsRight className="h-3 w-3" />
@@ -1541,11 +1588,11 @@ export function TimelineView({
                   <div
                     key={item.id || idx}
                     onClick={() => onMemoryClick(item.id)}
-                    className={`flex items-start cursor-pointer group ${"hover:opacity-80"}`}
+                    className="group flex cursor-pointer items-start"
                   >
                     {/* Date & Time */}
-                    <div className="w-[60px] text-right pr-3 pt-1 flex-shrink-0">
-                      <div className="text-[10px] text-muted-foreground">
+                    <div className="w-[60px] shrink-0 pr-3 pt-2 text-right">
+                      <div className="text-[10px] tabular-nums text-muted-foreground">
                         {formatDateTime(item.occurred_start).date}
                       </div>
                       <div className="text-[9px] text-muted-foreground/70">
@@ -1554,17 +1601,13 @@ export function TimelineView({
                     </div>
 
                     {/* Connector dot */}
-                    <div className="flex-shrink-0 pt-2">
-                      <div
-                        className={`w-1.5 h-1.5 rounded-full z-10 ${"bg-muted-foreground/50 group-hover:bg-primary"}`}
-                      />
+                    <div className="shrink-0 pt-3">
+                      <div className="z-10 h-1.5 w-1.5 rounded-full bg-muted-foreground/40 transition-colors group-hover:bg-primary" />
                     </div>
 
                     {/* Card */}
-                    <div
-                      className={`ml-3 flex-1 p-2 rounded border transition-colors ${"bg-card border-border hover:border-primary/50"}`}
-                    >
-                      <p className="text-xs text-foreground line-clamp-2 leading-relaxed">
+                    <div className="ml-3 flex-1 rounded-xl border border-border/70 bg-background/45 p-2.5 transition-colors group-hover:border-primary/25 group-hover:bg-card">
+                      <p className="line-clamp-2 text-[12px] leading-relaxed text-foreground">
                         {item.text}
                       </p>
                       {item.context && (

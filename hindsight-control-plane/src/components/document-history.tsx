@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { ChevronDown, ChevronRight, History } from "lucide-react";
 import { client, type DocumentEvent, type DocumentEventKind } from "@/lib/api";
@@ -65,16 +65,19 @@ export function DocumentHistory({ bankId, documentId }: { bankId: string; docume
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
 
-  const load = async (offset: number) => {
-    const data = await client.getDocumentHistory(documentId, bankId, offset, PAGE);
-    setEvents((prev) => [...(offset ? (prev ?? []) : []), ...data.items]);
-    setTotal(data.total);
-    setOpsLoaded(offset + PAGE);
-  };
+  const load = useCallback(
+    async (offset: number) => {
+      const data = await client.getDocumentHistory(documentId, bankId, offset, PAGE);
+      setEvents((prev) => [...(offset ? (prev ?? []) : []), ...data.items]);
+      setTotal(data.total);
+      setOpsLoaded(offset + PAGE);
+    },
+    [bankId, documentId]
+  );
 
   useEffect(() => {
     load(0).catch(() => setError(true));
-  }, [bankId, documentId]);
+  }, [load]);
 
   const loadOlder = async () => {
     setLoadingMore(true);

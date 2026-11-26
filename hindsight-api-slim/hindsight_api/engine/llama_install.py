@@ -306,10 +306,35 @@ async def resolve_assets(
     return picked
 
 
+def _write_download_progress(
+    progress_path: Path,
+    *,
+    status: str,
+    downloaded_bytes: int,
+    total_bytes: int | None,
+    error: str | None = None,
+) -> None:
+    payload = {
+        "status": status,
+        "downloaded_bytes": downloaded_bytes,
+        "total_bytes": total_bytes,
+        "error": error,
+        "pid": os.getpid(),
+        "updated_at": time.time(),  # noqa: TID251
+    }
+    try:
+        tmp = progress_path.with_suffix(".progress.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(progress_path)
+    except OSError:
+        pass
+
+
 async def download_file_async(url: str, dest_path: Path, resume: bool = True, max_attempts: int = 40) -> Path:
     """Stream-download a file with HTTP Range resume and automatic retry."""
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = Path(f"{dest_path}.part")
+    progress_path = Path(f"{dest_path}.progress.json")
     total: int | None = None
     attempt = 0
 
@@ -321,7 +346,11 @@ async def download_file_async(url: str, dest_path: Path, resume: bool = True, ma
                 break
             attempt += 1
             if attempt > max_attempts:
-                raise RuntimeError(f"Download failed after {max_attempts} attempts: {dest_path.name}")
+                msg = f"Download failed after {max_attempts} attempts: {dest_path.name}"
+                _write_download_progress(
+                    progress_path, status="error", downloaded_bytes=have, total_bytes=total, error=msg
+                )
+                raise RuntimeError(msg)
 
             headers = (
                 {"Range": f"bytes={have}-", "User-Agent": "hindsight-llama-install"}
@@ -344,18 +373,38 @@ async def download_file_async(url: str, dest_path: Path, resume: bool = True, ma
 
                     done = have
                     next_mark = (have // _PROGRESS_STEP + 1) * _PROGRESS_STEP
+                    last_progress_write = 0.0
+                    _write_download_progress(
+                        progress_path, status="downloading", downloaded_bytes=done, total_bytes=total
+                    )
                     with open(tmp_path, mode) as f:
                         async for chunk in resp.content.iter_chunked(1024 * 1024):
                             if not chunk:
                                 continue
                             f.write(chunk)
                             done += len(chunk)
+                            now = time.monotonic()
+                            if now - last_progress_write >= 0.5:
+                                _write_download_progress(
+                                    progress_path,
+                                    status="downloading",
+                                    downloaded_bytes=done,
+                                    total_bytes=total,
+                                )
+                                last_progress_write = now
                             if done >= next_mark:
                                 pct = f" ({done * 100 // total}%)" if total else ""
                                 _log(f"  downloaded {done / 1048576:.0f}MB{pct}")
                                 next_mark += _PROGRESS_STEP
             except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as exc:
                 got = tmp_path.stat().st_size if tmp_path.exists() else 0
+                _write_download_progress(
+                    progress_path,
+                    status="downloading",
+                    downloaded_bytes=got,
+                    total_bytes=total,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
                 _log(f"  interrupted at {got / 1048576:.0f}MB (attempt {attempt}): {type(exc).__name__}, retrying")
                 await asyncio.sleep(3)
                 continue
@@ -364,6 +413,7 @@ async def download_file_async(url: str, dest_path: Path, resume: bool = True, ma
                 break
 
     shutil.move(str(tmp_path), str(dest_path))
+    progress_path.unlink(missing_ok=True)
     return dest_path
 
 

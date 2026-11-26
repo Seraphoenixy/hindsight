@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   Dialog,
@@ -31,12 +31,19 @@ export function InvalidateMemoryDialog({
   const t = useTranslations("memoryDetailPanel");
   const [reason, setReason] = useState("");
 
-  useEffect(() => {
-    if (!open) setReason("");
-  }, [open]);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) setReason("");
+    onOpenChange(nextOpen);
+  };
+
+  const handleConfirm = () => {
+    const trimmed = reason.trim() || undefined;
+    setReason("");
+    onConfirm(trimmed);
+  };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{t("curationInvalidateTitle")}</DialogTitle>
@@ -52,19 +59,15 @@ export function InvalidateMemoryDialog({
             placeholder={t("curationReasonPlaceholder")}
             autoFocus
             onKeyDown={(e) => {
-              if (e.key === "Enter") onConfirm(reason.trim() || undefined);
+              if (e.key === "Enter") handleConfirm();
             }}
           />
         </div>
         <DialogFooter>
-          <Button variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>
+          <Button variant="ghost" disabled={busy} onClick={() => handleOpenChange(false)}>
             {t("curationCancel")}
           </Button>
-          <Button
-            variant="destructive"
-            disabled={busy}
-            onClick={() => onConfirm(reason.trim() || undefined)}
-          >
+          <Button variant="destructive" disabled={busy} onClick={handleConfirm}>
             {t("curationInvalidate")}
           </Button>
         </DialogFooter>

@@ -252,7 +252,7 @@ class TestProfileManager:
         profiles = profile_manager.list_profiles()
         assert len(profiles) == 1
         assert profiles[0].name == ""
-        assert profiles[0].port == 9077
+        assert profiles[0].port == 8888
 
         # Create named profiles
         profile_manager.create_profile("profile1", {"KEY": "value"})
@@ -292,7 +292,7 @@ class TestProfileManager:
         assert paths.config == temp_hindsight_dir / "embed"
         assert paths.lock == temp_hindsight_dir / "daemon.lock"
         assert paths.log == temp_hindsight_dir / "daemon.log"
-        assert paths.port == 9077
+        assert paths.port == 8888
 
     def test_resolve_profile_paths_named(self, profile_manager, temp_hindsight_dir):
         """Test resolving paths for named profile."""

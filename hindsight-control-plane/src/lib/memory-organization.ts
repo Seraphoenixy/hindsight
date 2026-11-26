@@ -155,40 +155,29 @@ export function parseOrganizationSuggestions(suggestions: string[]): ParsedSugge
 }
 
 export function validateOrganizationInput(body: unknown): {
-  topic: string;
   instructions: string;
-  tag?: string;
 } {
   if (!isObject(body)) throw new MemoryOrganizationError("A JSON request body is required.", 400);
-  const topic = text(body.topic).trim();
   const instructions = text(body.instructions).trim();
-  const tag = text(body.tag).trim();
-  if (!topic || topic.length > 2000)
-    throw new MemoryOrganizationError("Topic must contain 1 to 2000 characters.", 400);
   if (!instructions || instructions.length > 4000)
     throw new MemoryOrganizationError("Instructions must contain 1 to 4000 characters.", 400);
-  if (tag.length > 500)
-    throw new MemoryOrganizationError("Project tag must be at most 500 characters.", 400);
-  return { topic, instructions, ...(tag ? { tag } : {}) };
+  return { instructions };
 }
 
 export async function previewMemoryOrganization(input: {
   bankId: string;
-  topic: string;
   instructions: string;
-  tag?: string;
 }): Promise<MemoryOrganizationPreview> {
   const recalled = await dataplaneJson<{ results?: unknown[] }>(
     dataplaneBankUrl(input.bankId, "/memories/recall"),
     {
       method: "POST",
       body: JSON.stringify({
-        query: input.topic,
+        query: input.instructions,
         types: ["world", "experience"],
         budget: "high",
         max_tokens: 12_000,
         include: { entities: null },
-        ...(input.tag ? { tags: [input.tag], tags_match: "all_strict" } : {}),
       }),
     }
   );

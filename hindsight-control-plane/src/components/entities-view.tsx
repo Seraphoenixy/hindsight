@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { client } from "@/lib/api";
 import { useBank } from "@/lib/bank-context";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   ChevronLeft,
@@ -13,6 +14,7 @@ import {
   List,
   ScatterChart,
   Users,
+  X,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -50,11 +52,11 @@ const ITEMS_PER_PAGE = 50;
 
 export function EntitiesView() {
   const t = useTranslations("entitiesView");
+  const tCommon = useTranslations("common");
   const { currentBank } = useBank();
   const [entities, setEntities] = useState<Entity[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<EntityDetail | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
   // Per-entity timeline: every memory linked to the entity (reverse lookup via
   // the entity_id filter). We intentionally do NOT filter to observations —
   // entity links live on the source world/experience facts (which carry the
@@ -88,60 +90,63 @@ export function EntitiesView() {
   const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
   const offset = (currentPage - 1) * ITEMS_PER_PAGE;
 
-  const loadEntities = async (page: number = 1) => {
-    if (!currentBank) return;
+  const loadEntities = useCallback(
+    async (page: number = 1) => {
+      if (!currentBank) return;
 
-    setLoading(true);
-    try {
-      const pageOffset = (page - 1) * ITEMS_PER_PAGE;
-      const result = await client.listEntities({
-        bank_id: currentBank,
-        limit: ITEMS_PER_PAGE,
-        offset: pageOffset,
-        ...tagFilter,
-      });
-      setEntities(result.items || []);
-      setTotal(result.total || 0);
-    } catch (error) {
-      // Error toast is shown automatically by the API client interceptor
-    } finally {
-      setLoading(false);
-    }
-  };
+      setLoading(true);
+      try {
+        const pageOffset = (page - 1) * ITEMS_PER_PAGE;
+        const result = await client.listEntities({
+          bank_id: currentBank,
+          limit: ITEMS_PER_PAGE,
+          offset: pageOffset,
+          ...tagFilter,
+        });
+        setEntities(result.items || []);
+        setTotal(result.total || 0);
+      } catch {
+        // Error toast is shown automatically by the API client interceptor
+      } finally {
+        setLoading(false);
+      }
+    },
+    [currentBank, tagFilter]
+  );
 
-  const loadEntityDetail = async (entityId: string) => {
-    if (!currentBank) return;
+  const loadEntityDetail = useCallback(
+    async (entityId: string) => {
+      if (!currentBank) return;
 
-    setLoadingDetail(true);
-    setEntityMemories([]);
-    setLoadingMemories(true);
-    try {
-      const result: any = await client.getEntity(entityId, currentBank, tagFilter);
-      setSelectedEntity(result);
-    } catch (error) {
-      // Error toast is shown automatically by the API client interceptor
-    } finally {
-      setLoadingDetail(false);
-    }
-
-    // Reverse lookup: every memory linked to this entity, rendered as a timeline.
-    // Independent of the detail fetch above.
-    try {
-      // Same tag filter as the entity, so the timeline matches its mention count.
-      const memories = await client.listMemories(currentBank, {
-        entityId,
-        tags: tagFilter.tags,
-        tagsMatch: tagFilter.tags_match,
-        limit: 500,
-      });
-      setEntityMemories(memories.items || []);
-    } catch (error) {
-      // Error toast is shown automatically by the API client interceptor
       setEntityMemories([]);
-    } finally {
-      setLoadingMemories(false);
-    }
-  };
+      setLoadingMemories(true);
+      try {
+        const result: any = await client.getEntity(entityId, currentBank, tagFilter);
+        setSelectedEntity(result);
+      } catch {
+        // Error toast is shown automatically by the API client interceptor
+      }
+
+      // Reverse lookup: every memory linked to this entity, rendered as a timeline.
+      // Independent of the detail fetch above.
+      try {
+        // Same tag filter as the entity, so the timeline matches its mention count.
+        const memories = await client.listMemories(currentBank, {
+          entityId,
+          tags: tagFilter.tags,
+          tagsMatch: tagFilter.tags_match,
+          limit: 500,
+        });
+        setEntityMemories(memories.items || []);
+      } catch {
+        // Error toast is shown automatically by the API client interceptor
+        setEntityMemories([]);
+      } finally {
+        setLoadingMemories(false);
+      }
+    },
+    [currentBank, tagFilter]
+  );
 
   // Handle page change
   const handlePageChange = (newPage: number) => {
@@ -160,7 +165,7 @@ export function EntitiesView() {
         ...tagFilter,
       });
       setGraphData(result);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setGraphLoading(false);
@@ -176,7 +181,7 @@ export function EntitiesView() {
       setSelectedEntity(null);
       setGraphData(null);
     }
-  }, [currentBank, tagFilter]);
+  }, [currentBank, tagFilter, loadEntities]);
 
   useEffect(() => {
     if (viewMode === "relations" && currentBank && !graphData && !graphLoading) {
@@ -256,7 +261,7 @@ export function EntitiesView() {
     (node: GraphNode) => {
       loadEntityDetail(node.id);
     },
-    [currentBank]
+    [loadEntityDetail]
   );
 
   const formatDate = (dateStr?: string) => {
@@ -267,38 +272,35 @@ export function EntitiesView() {
   return (
     <div>
       {/* Tag filter + view mode toggle (same segmented control as memories page) */}
-      <div className="mb-4 flex items-center justify-between gap-4">
+      <div className="mb-4 flex flex-col gap-3 rounded-[16px] border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
         <TagFilterInput
           value={selectedTags}
           onChange={setSelectedTags}
           bankId={currentBank}
           matchMode={tagsMatch}
           onMatchModeChange={setTagsMatch}
-          className="flex-1 max-w-[480px]"
+          className="w-full max-w-[520px] flex-1"
         />
-        <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
-          <button
-            onClick={() => setViewMode("relations")}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5 ${
-              viewMode === "relations"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <ScatterChart className="w-4 h-4" />
-            {t("viewRelations")}
-          </button>
-          <button
-            onClick={() => setViewMode("list")}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5 ${
-              viewMode === "list"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <List className="w-4 h-4" />
-            {t("viewList")}
-          </button>
+        <div className="flex max-w-full shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-border/70 bg-muted/45 p-1">
+          {[
+            { id: "relations" as ViewMode, label: t("viewRelations"), icon: ScatterChart },
+            { id: "list" as ViewMode, label: t("viewList"), icon: List },
+          ].map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setViewMode(id)}
+              className={cn(
+                "flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-[12px] font-medium transition-all",
+                viewMode === id
+                  ? "bg-card text-foreground shadow-[0_1px_3px_rgba(15,23,36,0.10)] ring-1 ring-border/70"
+                  : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -331,12 +333,13 @@ export function EntitiesView() {
               compactLabels
             />
           ) : (
-            <div className="flex items-center justify-center py-20">
-              <div className="text-center">
-                <div className="text-sm text-muted-foreground">{t("noCooccurrences")}</div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  {t("noCooccurrencesDescription")}
-                </div>
+            <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
+              <div className="mb-3 grid h-11 w-11 place-items-center rounded-2xl border border-border bg-muted/40">
+                <Users className="h-5 w-5 text-muted-foreground/60" />
+              </div>
+              <div className="text-sm font-medium text-foreground">{t("noCooccurrences")}</div>
+              <div className="mt-1 max-w-md text-xs text-muted-foreground">
+                {t("noCooccurrencesDescription")}
               </div>
             </div>
           )}
@@ -355,11 +358,19 @@ export function EntitiesView() {
             </div>
           ) : entities.length > 0 ? (
             <>
-              <div className="mb-4 text-sm text-muted-foreground">
-                {t("entityCount", { count: total })}
+              <div className="mb-3 flex items-center justify-between gap-3 rounded-[14px] border border-border bg-card px-3.5 py-2.5">
+                <div className="text-[11px] text-muted-foreground">
+                  {t("entityCount", { count: total })}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />
+                  <span className="font-mono text-[10px] tabular-nums text-muted-foreground/70">
+                    {currentPage} / {Math.max(1, totalPages)}
+                  </span>
+                </div>
               </div>
               <div className="overflow-x-auto">
-                <Table>
+                <Table className="[&_thead]:bg-muted/25">
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t("colName")}</TableHead>
@@ -373,20 +384,29 @@ export function EntitiesView() {
                       <TableRow
                         key={entity.id}
                         onClick={() => loadEntityDetail(entity.id)}
-                        className={`cursor-pointer hover:bg-muted/50 ${
+                        className={`group cursor-pointer hover:bg-primary/[0.025] ${
                           selectedEntity?.id === entity.id ? "bg-primary/10" : ""
                         }`}
                       >
-                        <TableCell className="font-medium text-card-foreground">
-                          {entity.canonical_name}
+                        <TableCell className="py-3.5">
+                          <div className="flex items-center gap-3">
+                            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[10px] border border-primary/15 bg-primary/[0.07] text-[11px] font-semibold text-primary">
+                              {entity.canonical_name.trim().charAt(0).toUpperCase() || "?"}
+                            </span>
+                            <span className="font-medium text-card-foreground">
+                              {entity.canonical_name}
+                            </span>
+                          </div>
                         </TableCell>
-                        <TableCell className="text-card-foreground">
-                          {entity.mention_count}
+                        <TableCell>
+                          <span className="inline-flex min-w-7 justify-center rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums text-foreground/75">
+                            {entity.mention_count}
+                          </span>
                         </TableCell>
-                        <TableCell className="text-card-foreground">
+                        <TableCell className="text-[11px] text-muted-foreground">
                           {formatDate(entity.first_seen)}
                         </TableCell>
-                        <TableCell className="text-card-foreground">
+                        <TableCell className="text-[11px] text-muted-foreground">
                           {formatDate(entity.last_seen)}
                         </TableCell>
                       </TableRow>
@@ -397,8 +417,8 @@ export function EntitiesView() {
 
               {/* Pagination Controls */}
               {totalPages > 1 && (
-                <div className="flex items-center justify-between mt-3 pt-3 border-t">
-                  <div className="text-xs text-muted-foreground">
+                <div className="mt-3 flex items-center justify-between rounded-xl border border-border/70 bg-card px-3 py-2">
+                  <div className="text-[10.5px] tabular-nums text-muted-foreground">
                     {offset + 1}-{Math.min(offset + ITEMS_PER_PAGE, total)} of {total}
                   </div>
                   <div className="flex items-center gap-1">
@@ -420,7 +440,7 @@ export function EntitiesView() {
                     >
                       <ChevronLeft className="h-3 w-3" />
                     </Button>
-                    <span className="text-xs px-2">
+                    <span className="px-2 font-mono text-[10.5px] tabular-nums text-muted-foreground">
                       {currentPage} / {totalPages}
                     </span>
                     <Button
@@ -446,14 +466,12 @@ export function EntitiesView() {
               )}
             </>
           ) : (
-            <div className="flex items-center justify-center py-20">
-              <div className="text-center">
-                <Users className="w-10 h-10 mx-auto mb-3 text-muted-foreground/50" />
-                <div className="text-sm text-muted-foreground">{t("noEntitiesFound")}</div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  {t("noEntitiesDescription")}
-                </div>
+            <div className="rounded-[18px] border border-dashed border-border bg-card px-6 py-16 text-center">
+              <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-2xl border border-border bg-muted/40">
+                <Users className="h-5 w-5 text-muted-foreground/60" />
               </div>
+              <div className="text-sm font-medium text-foreground">{t("noEntitiesFound")}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{t("noEntitiesDescription")}</div>
             </div>
           )}
         </div>
@@ -461,42 +479,55 @@ export function EntitiesView() {
 
       {/* Entity Detail Panel - Fixed overlay */}
       {selectedEntity && (
-        <div className="fixed right-0 top-0 h-dvh w-[620px] max-w-[95vw] bg-card border-l-2 border-primary shadow-2xl z-50 overflow-y-auto animate-in slide-in-from-right duration-300 ease-out">
-          <div className="p-5">
-            {/* Header */}
-            <div className="flex justify-between items-center mb-6 pb-4 border-b border-border">
-              <div>
-                <h3 className="text-xl font-bold text-card-foreground">
-                  {selectedEntity.canonical_name}
-                </h3>
-                <p className="text-sm text-muted-foreground mt-1">{t("entityDetails")}</p>
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-slate-950/25 backdrop-blur-[1px]"
+            onClick={() => {
+              setSelectedEntity(null);
+              setEntityMemories([]);
+            }}
+            aria-hidden
+          />
+          <aside className="fixed right-0 top-0 z-50 h-dvh w-[620px] max-w-[95vw] overflow-y-auto border-l border-border bg-background shadow-[-24px_0_80px_-36px_rgba(0,20,60,0.35)]">
+            <div className="sticky top-0 z-10 border-b border-border bg-card/95 px-5 py-4 backdrop-blur-xl">
+              <div className="flex items-start gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-primary/15 bg-primary/10 text-sm font-semibold text-primary">
+                  {selectedEntity.canonical_name.trim().charAt(0).toUpperCase() || "?"}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-lg font-semibold tracking-[-0.02em] text-card-foreground">
+                    {selectedEntity.canonical_name}
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">{t("entityDetails")}</p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedEntity(null);
+                    setEntityMemories([]);
+                  }}
+                  className="h-8 w-8 shrink-0 p-0 text-muted-foreground"
+                  aria-label={tCommon("close")}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setSelectedEntity(null);
-                  setEntityMemories([]);
-                }}
-                className="h-8 w-8 p-0"
-              >
-                <span className="text-lg">x</span>
-              </Button>
             </div>
 
-            <div className="space-y-5">
+            <div className="space-y-5 p-5">
               {/* Entity Info */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 bg-muted/50 rounded-lg">
-                  <div className="text-xs font-bold text-muted-foreground uppercase mb-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <div className="mb-2 text-[9.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                     {t("mentionsLabel")}
                   </div>
-                  <div className="text-lg font-semibold text-card-foreground">
+                  <div className="font-mono text-xl font-semibold tabular-nums text-card-foreground">
                     {selectedEntity.mention_count}
                   </div>
                 </div>
-                <div className="p-4 bg-muted/50 rounded-lg">
-                  <div className="text-xs font-bold text-muted-foreground uppercase mb-2">
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <div className="mb-2 text-[9.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                     {t("firstSeenLabel")}
                   </div>
                   <div className="text-sm font-medium text-card-foreground">
@@ -506,18 +537,18 @@ export function EntitiesView() {
               </div>
 
               {/* ID */}
-              <div className="p-4 bg-muted/50 rounded-lg">
-                <div className="text-xs font-bold text-muted-foreground uppercase mb-2">
+              <div className="rounded-xl border border-border bg-card p-4">
+                <div className="mb-2 text-[9.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                   {t("entityIdLabel")}
                 </div>
-                <code className="text-xs font-mono break-all text-muted-foreground">
+                <code className="break-all font-mono text-[10.5px] text-muted-foreground">
                   {selectedEntity.id}
                 </code>
               </div>
 
               {/* Timeline — every memory linked to this entity */}
               <div>
-                <div className="text-xs font-bold text-muted-foreground uppercase mb-3">
+                <div className="mb-3 text-[9.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                   {t("linkedMemoriesLabel")}
                 </div>
                 {loadingMemories ? (
@@ -528,7 +559,7 @@ export function EntitiesView() {
                     </div>
                   </div>
                 ) : entityMemories.length > 0 ? (
-                  <div className="-mx-4">
+                  <div>
                     <TimelineView
                       data={null}
                       filteredRows={entityMemories}
@@ -543,12 +574,20 @@ export function EntitiesView() {
                 )}
               </div>
             </div>
-          </div>
-        </div>
+          </aside>
+        </>
       )}
 
       {/* Memory detail modal, opened by clicking a timeline item */}
-      <MemoryDetailModal memoryId={selectedMemoryId} onClose={() => setSelectedMemoryId(null)} />
+      <MemoryDetailModal
+        memoryId={selectedMemoryId}
+        onClose={() => setSelectedMemoryId(null)}
+        onChanged={() => {
+          if (selectedEntity?.id) {
+            loadEntityDetail(selectedEntity.id);
+          }
+        }}
+      />
     </div>
   );
 }

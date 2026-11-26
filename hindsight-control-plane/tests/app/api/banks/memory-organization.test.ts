@@ -80,7 +80,6 @@ describe("memory organization routes", () => {
 
     const response = await previewOrganization(
       request("/memory-organization/preview", {
-        topic: "retry operation IDs",
         instructions: "Make the rule concise.",
       }) as never,
       context()

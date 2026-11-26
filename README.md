@@ -117,6 +117,10 @@ helm install hindsight oci://ghcr.io/vectorize-io/charts/hindsight \
 
 All options, including Windows and air-gapped setups, are covered in the [installation guide](https://hindsight.vectorize.io/developer/installation).
 
+#### Independent local replicas
+
+Use the [Linux sync relay](hindsight-docs/docs-private/maintenance/linux-sync.md) to synchronize separate local PostgreSQL memory libraries across devices.
+
 ### 2. Connect a client
 
 ```bash

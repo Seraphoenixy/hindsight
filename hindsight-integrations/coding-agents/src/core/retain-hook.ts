@@ -16,7 +16,7 @@
 import { deriveBankIdOrSkip } from "./bank";
 import { retainLiveSession } from "./chat";
 import { applyBankConfig, loadConfig } from "./config";
-import { DAEMON_WAIT_RETAIN_MS, ensureDaemon } from "./daemon";
+import { ensureDaemon } from "./daemon";
 import { diag, readHookEvent } from "./diag";
 import { describeError, log, setLogLevel } from "./log";
 import type { ClientOpts } from "./hindsight";
@@ -257,13 +257,7 @@ export async function runRetainHook(
   let client: RetainClient | undefined;
   if (!cfg.retainSessions) {
     diag(spec.harness, "retain_disabled", { bank: bankId, session: sessionId });
-  } else {
-    // Last chance to get the daemon up: this is the write path, and a session whose daemon never
-    // started would otherwise lose its whole conversation. The Stop hook has the longest budget of
-    // any hook and nothing is waiting on its result, so it can afford the longer wait.
-    // Deliberately NOT gated on the result — retain proceeds either way, so an unreachable daemon
-    // produces the same `retain_failed` diagnostic as an unreachable Cloud/self-hosted server.
-    await ensureDaemon(cfg, spec.harness, { waitMs: DAEMON_WAIT_RETAIN_MS });
+  } else if (await ensureDaemon(cfg, spec.harness)) {
     client = makeClient({
       apiUrl: cfg.apiUrl,
       apiToken: cfg.apiToken,
@@ -272,6 +266,8 @@ export async function runRetainHook(
       maxParallelRetains: cfg.maxParallelRetains,
       observationScopes: cfg.observationScopes,
     });
+  } else {
+    diag(spec.harness, "retain_skipped_unavailable", { bank: bankId, session: sessionId });
   }
 
   await buildRetain({

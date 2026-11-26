@@ -8,7 +8,7 @@
  * ports form save without restating (and possibly clobbering) them.
  */
 import { localRoute, readJsonBody } from "@/lib/local-route";
-import { getProfileConfig, saveConfig, type SaveConfigRequest } from "@/lib/ops";
+import { saveConfig, type SaveConfigRequest } from "@/lib/ops";
 
 export const dynamic = "force-dynamic";
 
@@ -22,14 +22,6 @@ const STRING_FIELDS = [
   "api_version",
   "cp_version",
 ] as const;
-
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ profile: string }> }
-): Promise<Response> {
-  const { profile } = await params;
-  return localRoute(request, () => getProfileConfig(profile));
-}
 
 export async function POST(
   request: Request,

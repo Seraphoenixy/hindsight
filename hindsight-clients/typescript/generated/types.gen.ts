@@ -727,6 +727,12 @@ export type BankTemplateConfig = {
    */
   mcp_enabled_tools?: Array<string> | null;
   /**
+   * Mcp Server Instructions
+   *
+   * Instructions sent to MCP clients in the initialize response when they connect to this bank
+   */
+  mcp_server_instructions?: string | null;
+  /**
    * Knowledge Banks
    *
    * Knowledge banks whose passages this bank's reflect reads
@@ -1459,6 +1465,26 @@ export type ClearMemoryObservationsResponse = {
 };
 
 /**
+ * ConfirmConflictRequest
+ *
+ * Request body to confirm review of an object conflict.
+ */
+export type ConfirmConflictRequest = {
+  /**
+   * Note
+   *
+   * Optional audit review note
+   */
+  note?: string | null;
+  /**
+   * By
+   *
+   * Reviewer name override
+   */
+  by?: string | null;
+};
+
+/**
  * ConsolidationRequest
  *
  * Request model for consolidation trigger endpoint.
@@ -1996,35 +2022,11 @@ export type CreateWorkingRuleRequest = {
    */
   content: string;
   /**
-   * Scope
-   *
-   * 'global' or 'project'
-   */
-  scope?: "global" | "project";
-  /**
-   * Project Id
-   *
-   * Project identifier when scope='project'
-   */
-  project_id?: string | null;
-  /**
    * Importance
    *
    * 'critical', 'normal', or 'low'
    */
   importance?: "critical" | "normal" | "low";
-  /**
-   * Pinned
-   *
-   * Pin rule so it is reserved in projections and protected from eviction
-   */
-  pinned?: boolean;
-  /**
-   * Branches
-   *
-   * Optional Git branch allowlist; empty means all branches
-   */
-  branches?: Array<string>;
 };
 
 /**
@@ -2539,7 +2541,7 @@ export type DryRunExtractRequest = {
   /**
    * Agent Name
    *
-   * Deprecated: describe the speaker in `context` instead. Narrator override (memory owner) primed in the prompt; still honored for backwards compatibility.
+   * Deprecated and ignored: real retain never primes a narrator, so neither does the dry run. Describe the speaker in `context` instead. Still accepted so old callers don't fail.
    *
    * @deprecated
    */
@@ -6193,35 +6195,11 @@ export type MutateWorkingRuleRequest = {
    */
   old_text?: string | null;
   /**
-   * Scope
-   *
-   * 'global' or 'project'
-   */
-  scope?: "global" | "project";
-  /**
-   * Project Id
-   *
-   * Project identifier when scope='project'
-   */
-  project_id?: string | null;
-  /**
    * Importance
    *
    * Importance level; replace keeps existing higher importance by default
    */
   importance?: "critical" | "normal" | "low" | null;
-  /**
-   * Pinned
-   *
-   * Optional pin override
-   */
-  pinned?: boolean | null;
-  /**
-   * Branches
-   *
-   * Optional Git branch list; omit on replace to preserve existing branches, pass [] to clear
-   */
-  branches?: Array<string> | null;
   /**
    * Preserve Importance
    *
@@ -7815,6 +7793,94 @@ export type RefreshMentalModelRequest = {
 };
 
 /**
+ * RegisterDeviceRequest
+ *
+ * Request body to register a named device credential on the relay.
+ */
+export type RegisterDeviceRequest = {
+  /**
+   * Name
+   *
+   * Human-readable device label
+   */
+  name: string;
+  /**
+   * Device Id
+   *
+   * Optional explicit device identifier
+   */
+  device_id?: string | null;
+};
+
+/**
+ * RelayDeviceInfo
+ *
+ * Relay device entry returned by the relay device registry.
+ */
+export type RelayDeviceInfo = {
+  /**
+   * Device Id
+   */
+  device_id: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Created At
+   */
+  created_at: string;
+  /**
+   * Rotated At
+   */
+  rotated_at?: string | null;
+  /**
+   * Revoked At
+   */
+  revoked_at?: string | null;
+  /**
+   * Last Seen At
+   */
+  last_seen_at?: string | null;
+  /**
+   * Active
+   */
+  active?: boolean;
+};
+
+/**
+ * RelayDeviceProvisioned
+ *
+ * Newly issued or rotated device credential (token is returned once).
+ */
+export type RelayDeviceProvisioned = {
+  /**
+   * Device Id
+   */
+  device_id: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Token
+   */
+  token: string;
+  /**
+   * Created At
+   */
+  created_at?: string | null;
+  /**
+   * Rotated At
+   */
+  rotated_at?: string | null;
+  /**
+   * Active
+   */
+  active?: boolean;
+};
+
+/**
  * ReprocessDocumentResponse
  *
  * Response model for reprocess document endpoint.
@@ -7853,6 +7919,38 @@ export type RerankOptions = {
    * Drop a result that repeats a better-ranked one, so the same fact comes back once. Costs one more decision-model request after the ranking one. When omitted, uses the bank/global recall_decision_model_dedup config (false unless configured).
    */
   dedup?: boolean | null;
+};
+
+/**
+ * RestoreConflictRequest
+ *
+ * Request body to restore one side of a conflict with optimistic version checking.
+ */
+export type RestoreConflictRequest = {
+  /**
+   * Side
+   *
+   * Conflict side to apply: 'local' or 'remote'
+   */
+  side: "local" | "remote";
+  /**
+   * Expected Version
+   *
+   * Current local sync version; prevents overwriting newer edits
+   */
+  expected_version: number;
+  /**
+   * Note
+   *
+   * Optional audit note
+   */
+  note?: string | null;
+  /**
+   * By
+   *
+   * Reviewer name override
+   */
+  by?: string | null;
 };
 
 /**
@@ -8102,6 +8200,348 @@ export type StrategyScopePreview = {
 };
 
 /**
+ * SyncConflictConfirmation
+ *
+ * Audit confirmation metadata for a resolved object conflict.
+ */
+export type SyncConflictConfirmation = {
+  /**
+   * At
+   */
+  at: string;
+  /**
+   * By
+   */
+  by: string;
+  /**
+   * Note
+   */
+  note?: string | null;
+};
+
+/**
+ * SyncConflictDetailResponse
+ *
+ * Full conflict record enriched with current local object version for safe restore.
+ */
+export type SyncConflictDetailResponse = {
+  conflict: SyncObjectConflictRecord;
+  /**
+   * Current Object Version
+   */
+  current_object_version?: number;
+  /**
+   * Current Object Deleted
+   */
+  current_object_deleted?: boolean;
+};
+
+/**
+ * SyncConflictPage
+ *
+ * Paginated list of object sync conflict records.
+ */
+export type SyncConflictPage = {
+  /**
+   * Items
+   */
+  items: Array<SyncObjectConflictRecord>;
+  /**
+   * Total
+   */
+  total: number;
+  /**
+   * Limit
+   */
+  limit: number;
+  /**
+   * Offset
+   */
+  offset: number;
+};
+
+/**
+ * SyncDevicesResponse
+ *
+ * List of devices registered with the configured sync relay.
+ */
+export type SyncDevicesResponse = {
+  /**
+   * Devices
+   */
+  devices: Array<RelayDeviceInfo>;
+  /**
+   * Total
+   */
+  total: number;
+  /**
+   * Current Device Id
+   */
+  current_device_id?: string | null;
+};
+
+/**
+ * SyncExchangeResult
+ *
+ * Outcome summary returned by one v3 sync cycle or status check.
+ */
+export type SyncExchangeResult = {
+  /**
+   * Status
+   */
+  status: "idle" | "synced" | "deferred" | "needs_prefer" | "auth_error" | "error";
+  /**
+   * Message
+   */
+  message: string;
+  /**
+   * Device Id
+   */
+  device_id?: string;
+  /**
+   * Relay Version
+   */
+  relay_version?: number;
+  /**
+   * Last Seq
+   */
+  last_seq?: number;
+  /**
+   * Out Seq
+   */
+  out_seq?: number;
+  /**
+   * In Seq
+   */
+  in_seq?: number;
+  /**
+   * Pushed Count
+   */
+  pushed_count?: number;
+  /**
+   * Pulled Count
+   */
+  pulled_count?: number;
+  /**
+   * Conflicts Created
+   */
+  conflicts_created?: number;
+  /**
+   * Upload Bytes
+   */
+  upload_bytes?: number;
+  /**
+   * Download Bytes
+   */
+  download_bytes?: number;
+  /**
+   * Blobs Uploaded
+   */
+  blobs_uploaded?: number;
+  /**
+   * Blobs Downloaded
+   */
+  blobs_downloaded?: number;
+  /**
+   * Local Objects Scanned
+   */
+  local_objects_scanned?: number;
+  /**
+   * Db Writes
+   */
+  db_writes?: number;
+  /**
+   * Auth Status
+   */
+  auth_status?: string;
+};
+
+/**
+ * SyncObjectConflictRecord
+ *
+ * Per-object sync conflict audit record persisted before applying auto-resolution.
+ */
+export type SyncObjectConflictRecord = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Kind
+   */
+  kind?: "object";
+  /**
+   * Detected At
+   */
+  detected_at: string;
+  /**
+   * Object Type
+   */
+  object_type: string;
+  /**
+   * Bank Id
+   */
+  bank_id?: string;
+  /**
+   * Object Id
+   */
+  object_id: string;
+  /**
+   * Resolution
+   */
+  resolution: "local" | "remote";
+  /**
+   * Automatic
+   */
+  automatic: boolean;
+  /**
+   * Base Version
+   */
+  base_version?: number | null;
+  /**
+   * Local Version
+   */
+  local_version: number;
+  /**
+   * Remote Version
+   */
+  remote_version: number;
+  /**
+   * Local Device Id
+   */
+  local_device_id?: string;
+  /**
+   * Remote Device Id
+   */
+  remote_device_id?: string;
+  /**
+   * Local Content Hash
+   */
+  local_content_hash?: string;
+  /**
+   * Remote Content Hash
+   */
+  remote_content_hash?: string;
+  /**
+   * Local Payload
+   */
+  local_payload?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Remote Payload
+   */
+  remote_payload?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Applied Version
+   */
+  applied_version?: number | null;
+  /**
+   * Applied At
+   */
+  applied_at?: string | null;
+  confirmation?: SyncConflictConfirmation | null;
+  /**
+   * Restored At
+   */
+  restored_at?: string | null;
+  /**
+   * Restored By
+   */
+  restored_by?: string | null;
+  /**
+   * Restored Side
+   */
+  restored_side?: "local" | "remote" | null;
+  /**
+   * Restored Version
+   */
+  restored_version?: number | null;
+};
+
+/**
+ * SyncStatusSnapshot
+ *
+ * Current synchronization state exposed to CLI and Control Plane.
+ */
+export type SyncStatusSnapshot = {
+  /**
+   * Configured
+   */
+  configured: boolean;
+  /**
+   * Auto Enabled
+   */
+  auto_enabled: boolean;
+  /**
+   * Running
+   */
+  running: boolean;
+  /**
+   * Syncing
+   */
+  syncing: boolean;
+  /**
+   * Interval Seconds
+   */
+  interval_seconds: number;
+  /**
+   * Relay Url
+   */
+  relay_url?: string | null;
+  /**
+   * Device Id
+   */
+  device_id?: string | null;
+  /**
+   * Auth Status
+   */
+  auth_status?: string;
+  /**
+   * Out Seq
+   */
+  out_seq?: number;
+  /**
+   * In Seq
+   */
+  in_seq?: number;
+  /**
+   * Local High Water
+   */
+  local_high_water?: number;
+  /**
+   * Relay Version
+   */
+  relay_version?: number;
+  /**
+   * Joined
+   */
+  joined?: boolean;
+  /**
+   * Last Error
+   */
+  last_error?: string | null;
+  /**
+   * Last Checked At
+   */
+  last_checked_at?: string | null;
+  /**
+   * Last Synced At
+   */
+  last_synced_at?: string | null;
+  /**
+   * Last Status
+   */
+  last_status?: string | null;
+  /**
+   * Last Message
+   */
+  last_message?: string | null;
+};
+
+/**
  * TagGroupAnd
  *
  * Compound AND group: all child filters must match.
@@ -8316,6 +8756,26 @@ export type ToolCallsIncludeOptions = {
    * Include tool outputs in the trace. Set to false to only include inputs (smaller payload).
    */
   output?: boolean;
+};
+
+/**
+ * TriggerSyncRequest
+ *
+ * Request body for triggering a manual or window-focus sync check.
+ */
+export type TriggerSyncRequest = {
+  /**
+   * Prefer
+   *
+   * Explicit winner when joining unjoined libraries
+   */
+  prefer?: "local" | "remote" | null;
+  /**
+   * Automatic
+   *
+   * True for event-triggered background checks such as window focus
+   */
+  automatic?: boolean;
 };
 
 /**
@@ -8609,22 +9069,6 @@ export type UpdateWorkingRuleRequest = {
    * Importance
    */
   importance?: "critical" | "normal" | "low" | null;
-  /**
-   * Pinned
-   */
-  pinned?: boolean | null;
-  /**
-   * Branches
-   */
-  branches?: Array<string> | null;
-  /**
-   * Scope
-   */
-  scope?: "global" | "project" | null;
-  /**
-   * Project Id
-   */
-  project_id?: string | null;
   /**
    * Is Archived
    */
@@ -8983,18 +9427,6 @@ export type WorkingRuleOrganizePreviewRequest = {
    * Optional reviewer instructions
    */
   instructions?: string;
-  /**
-   * Scope
-   *
-   * Optional scope filter
-   */
-  scope?: "global" | "project" | null;
-  /**
-   * Project Id
-   *
-   * Optional project identifier
-   */
-  project_id?: string | null;
 };
 
 /**
@@ -9031,18 +9463,6 @@ export type WorkingRuleOrganizeProposalItem = {
    * Importance
    */
   importance?: "critical" | "normal" | "low" | null;
-  /**
-   * Scope
-   */
-  scope?: "global" | "project";
-  /**
-   * Project Id
-   */
-  project_id?: string | null;
-  /**
-   * Branches
-   */
-  branches?: Array<string> | null;
 };
 
 /**
@@ -9059,14 +9479,6 @@ export type WorkingRuleProjectionEntry = {
    * Importance
    */
   importance: "critical" | "normal" | "low";
-  /**
-   * Pinned
-   */
-  pinned?: boolean;
-  /**
-   * Scope
-   */
-  scope: "global" | "project";
 };
 
 /**
@@ -9104,14 +9516,6 @@ export type WorkingRuleRecord = {
    */
   id: string;
   /**
-   * Scope
-   */
-  scope: "global" | "project";
-  /**
-   * Project Id
-   */
-  project_id?: string | null;
-  /**
    * Content
    */
   content: string;
@@ -9119,14 +9523,6 @@ export type WorkingRuleRecord = {
    * Importance
    */
   importance?: "critical" | "normal" | "low";
-  /**
-   * Pinned
-   */
-  pinned?: boolean;
-  /**
-   * Branches
-   */
-  branches?: Array<string>;
   /**
    * Is Archived
    */
@@ -9181,7 +9577,7 @@ export type WorkingRulesListResult = {
 /**
  * WorkingRulesProjection
  *
- * Branch- and project-filtered Working Rules projection for agent context.
+ * Working Rules projection for agent context.
  */
 export type WorkingRulesProjection = {
   /**
@@ -9203,7 +9599,7 @@ export type WorkingRulesProjection = {
   /**
    * Minimum Characters
    */
-  minimum_characters: number;
+  minimum_characters?: number;
   /**
    * Truncated
    */
@@ -9213,7 +9609,7 @@ export type WorkingRulesProjection = {
 /**
  * WorkingRulesUsage
  *
- * UTF-8 byte and pinned character usage for an active Working Rules pool.
+ * UTF-8 byte usage for an active Working Rules pool.
  */
 export type WorkingRulesUsage = {
   /**
@@ -9224,14 +9620,6 @@ export type WorkingRulesUsage = {
    * Limit Bytes
    */
   limit_bytes: number;
-  /**
-   * Pinned Chars
-   */
-  pinned_chars: number;
-  /**
-   * Pinned Limit Chars
-   */
-  pinned_limit_chars: number;
   /**
    * Active Count
    */
@@ -10217,14 +10605,6 @@ export type ListWorkingRulesData = {
   path?: never;
   query?: {
     /**
-     * Scope
-     */
-    scope?: "global" | "project" | null;
-    /**
-     * Project Id
-     */
-    project_id?: string | null;
-    /**
      * Include Archived
      */
     include_archived?: boolean;
@@ -10307,14 +10687,6 @@ export type GetWorkingRulesProjectionData = {
   path?: never;
   query?: {
     /**
-     * Project Id
-     */
-    project_id?: string | null;
-    /**
-     * Branch
-     */
-    branch?: string | null;
-    /**
      * Max Chars
      */
     max_chars?: number | null;
@@ -10352,14 +10724,6 @@ export type ExportWorkingRulesData = {
   };
   path?: never;
   query?: {
-    /**
-     * Scope
-     */
-    scope?: "global" | "project" | null;
-    /**
-     * Project Id
-     */
-    project_id?: string | null;
     /**
      * Include Archived
      */
@@ -10668,6 +11032,374 @@ export type PromoteWorkingRuleResponses = {
 
 export type PromoteWorkingRuleResponse =
   PromoteWorkingRuleResponses[keyof PromoteWorkingRuleResponses];
+
+export type GetSyncStatusV1DefaultSyncStatusGetData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/sync/status";
+};
+
+export type GetSyncStatusV1DefaultSyncStatusGetErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetSyncStatusV1DefaultSyncStatusGetError =
+  GetSyncStatusV1DefaultSyncStatusGetErrors[keyof GetSyncStatusV1DefaultSyncStatusGetErrors];
+
+export type GetSyncStatusV1DefaultSyncStatusGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: SyncStatusSnapshot;
+};
+
+export type GetSyncStatusV1DefaultSyncStatusGetResponse =
+  GetSyncStatusV1DefaultSyncStatusGetResponses[keyof GetSyncStatusV1DefaultSyncStatusGetResponses];
+
+export type TriggerSyncV1DefaultSyncTriggerPostData = {
+  body: TriggerSyncRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/sync/trigger";
+};
+
+export type TriggerSyncV1DefaultSyncTriggerPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type TriggerSyncV1DefaultSyncTriggerPostError =
+  TriggerSyncV1DefaultSyncTriggerPostErrors[keyof TriggerSyncV1DefaultSyncTriggerPostErrors];
+
+export type TriggerSyncV1DefaultSyncTriggerPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: SyncExchangeResult;
+};
+
+export type TriggerSyncV1DefaultSyncTriggerPostResponse =
+  TriggerSyncV1DefaultSyncTriggerPostResponses[keyof TriggerSyncV1DefaultSyncTriggerPostResponses];
+
+export type ListConflictsV1DefaultSyncConflictsGetData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: {
+    /**
+     * Limit
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Unconfirmed Only
+     */
+    unconfirmed_only?: boolean;
+  };
+  url: "/v1/default/sync/conflicts";
+};
+
+export type ListConflictsV1DefaultSyncConflictsGetErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListConflictsV1DefaultSyncConflictsGetError =
+  ListConflictsV1DefaultSyncConflictsGetErrors[keyof ListConflictsV1DefaultSyncConflictsGetErrors];
+
+export type ListConflictsV1DefaultSyncConflictsGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: SyncConflictPage;
+};
+
+export type ListConflictsV1DefaultSyncConflictsGetResponse =
+  ListConflictsV1DefaultSyncConflictsGetResponses[keyof ListConflictsV1DefaultSyncConflictsGetResponses];
+
+export type GetConflictDetailV1DefaultSyncConflictsConflictIdGetData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Conflict Id
+     */
+    conflict_id: string;
+  };
+  query?: never;
+  url: "/v1/default/sync/conflicts/{conflict_id}";
+};
+
+export type GetConflictDetailV1DefaultSyncConflictsConflictIdGetErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetConflictDetailV1DefaultSyncConflictsConflictIdGetError =
+  GetConflictDetailV1DefaultSyncConflictsConflictIdGetErrors[keyof GetConflictDetailV1DefaultSyncConflictsConflictIdGetErrors];
+
+export type GetConflictDetailV1DefaultSyncConflictsConflictIdGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: SyncConflictDetailResponse;
+};
+
+export type GetConflictDetailV1DefaultSyncConflictsConflictIdGetResponse =
+  GetConflictDetailV1DefaultSyncConflictsConflictIdGetResponses[keyof GetConflictDetailV1DefaultSyncConflictsConflictIdGetResponses];
+
+export type ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostData = {
+  body: ConfirmConflictRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Conflict Id
+     */
+    conflict_id: string;
+  };
+  query?: never;
+  url: "/v1/default/sync/conflicts/{conflict_id}/confirm";
+};
+
+export type ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostError =
+  ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostErrors[keyof ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostErrors];
+
+export type ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: SyncObjectConflictRecord;
+};
+
+export type ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostResponse =
+  ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostResponses[keyof ConfirmConflictV1DefaultSyncConflictsConflictIdConfirmPostResponses];
+
+export type RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostData = {
+  body: RestoreConflictRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Conflict Id
+     */
+    conflict_id: string;
+  };
+  query?: never;
+  url: "/v1/default/sync/conflicts/{conflict_id}/restore";
+};
+
+export type RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostError =
+  RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostErrors[keyof RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostErrors];
+
+export type RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostResponses = {
+  /**
+   * Successful Response
+   */
+  200: SyncObjectConflictRecord;
+};
+
+export type RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostResponse =
+  RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostResponses[keyof RestoreConflictV1DefaultSyncConflictsConflictIdRestorePostResponses];
+
+export type ListDevicesV1DefaultSyncDevicesGetData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/sync/devices";
+};
+
+export type ListDevicesV1DefaultSyncDevicesGetErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListDevicesV1DefaultSyncDevicesGetError =
+  ListDevicesV1DefaultSyncDevicesGetErrors[keyof ListDevicesV1DefaultSyncDevicesGetErrors];
+
+export type ListDevicesV1DefaultSyncDevicesGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: SyncDevicesResponse;
+};
+
+export type ListDevicesV1DefaultSyncDevicesGetResponse =
+  ListDevicesV1DefaultSyncDevicesGetResponses[keyof ListDevicesV1DefaultSyncDevicesGetResponses];
+
+export type RegisterDeviceV1DefaultSyncDevicesPostData = {
+  body: RegisterDeviceRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/sync/devices";
+};
+
+export type RegisterDeviceV1DefaultSyncDevicesPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RegisterDeviceV1DefaultSyncDevicesPostError =
+  RegisterDeviceV1DefaultSyncDevicesPostErrors[keyof RegisterDeviceV1DefaultSyncDevicesPostErrors];
+
+export type RegisterDeviceV1DefaultSyncDevicesPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: RelayDeviceProvisioned;
+};
+
+export type RegisterDeviceV1DefaultSyncDevicesPostResponse =
+  RegisterDeviceV1DefaultSyncDevicesPostResponses[keyof RegisterDeviceV1DefaultSyncDevicesPostResponses];
+
+export type RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Device Id
+     */
+    device_id: string;
+  };
+  query?: never;
+  url: "/v1/default/sync/devices/{device_id}/rotate";
+};
+
+export type RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostError =
+  RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostErrors[keyof RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostErrors];
+
+export type RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostResponses = {
+  /**
+   * Successful Response
+   */
+  200: RelayDeviceProvisioned;
+};
+
+export type RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostResponse =
+  RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostResponses[keyof RotateDeviceV1DefaultSyncDevicesDeviceIdRotatePostResponses];
+
+export type RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Device Id
+     */
+    device_id: string;
+  };
+  query?: never;
+  url: "/v1/default/sync/devices/{device_id}/revoke";
+};
+
+export type RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostError =
+  RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostErrors[keyof RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostErrors];
+
+export type RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostResponses = {
+  /**
+   * Successful Response
+   */
+  200: RelayDeviceInfo;
+};
+
+export type RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostResponse =
+  RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostResponses[keyof RevokeDeviceV1DefaultSyncDevicesDeviceIdRevokePostResponses];
 
 export type HealthEndpointHealthGetData = {
   body?: never;

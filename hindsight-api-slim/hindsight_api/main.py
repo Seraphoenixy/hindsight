@@ -11,7 +11,6 @@ Stop with Ctrl+C.
 """
 
 import argparse
-import asyncio
 import atexit
 import dataclasses
 import errno
@@ -96,9 +95,7 @@ def _cleanup():
     global _memory
     if _memory is not None and _memory._pg0 is not None:
         try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(_memory._pg0.stop())
-            loop.close()
+            _memory._pg0.stop_sync()
             print("\npg0 stopped.")
         except Exception as e:
             print(f"\nError stopping pg0: {e}")

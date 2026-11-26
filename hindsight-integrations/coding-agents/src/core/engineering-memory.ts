@@ -104,7 +104,6 @@ export async function saveEngineeringMemory(
       [
         ...(input.stamp?.tags ?? []),
         `source:${sourceTag}`,
-        "engineering:record",
         ...new Set([`knowledge:${candidate.kind}`, `knowledge:${pageTag}`]),
         ...(input.harness ? [`harness:${input.harness}`] : []),
       ],
@@ -166,7 +165,10 @@ export async function retainEngineeringConversation(
   const render = (messages: TransportTurn[]) =>
     messages
       .filter((turn) => turn.role === "assistant" || turn.role === "user")
-      .map((turn) => `${turn.role}: ${turn.content}`)
+      .map(
+        (turn) =>
+          `${turn.timestamp ? `[source_time=${turn.timestamp}] ` : ""}${turn.role}: ${turn.content}`
+      )
       .join("\n");
   const newExchange = render(turns.slice(start)).slice(-16_000);
   if (!newExchange || !turns.slice(start).some((turn) => turn.role === "assistant")) return;
@@ -183,7 +185,6 @@ export async function retainEngineeringConversation(
       ...(stamp?.tags ?? []),
       ...(client.projectTag ? [client.projectTag] : []),
       "source:chat",
-      "engineering:record",
       ...(harness ? [`harness:${harness}`] : []),
     ]),
   ];

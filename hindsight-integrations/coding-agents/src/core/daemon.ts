@@ -15,9 +15,8 @@
  *
  * TIMING IS THE CONSTRAINT. A cold start pays for a uvx download plus model load and can take tens
  * of seconds, while the prompt hook has to return in time to not stall the user's turn. Only two
- * points therefore ensure a daemon: SessionStart, before the user has typed anything, and the Stop
- * hook, which has the longest budget and nothing waiting on its result. The prompt path does
- * nothing here at all.
+ * points can request a detached start: SessionStart and Stop. Foreground hooks make one short
+ * health probe and skip memory when it is unavailable. The prompt path only probes.
  *
  * EVERY HARNESS NEEDS BOTH POINTS, not just the fresh-process hook ones. The persistent-plugin
  * hosts (opencode, Kilo, Cline, Prime Agent, dsh) run no hook binaries, so they reach these through
@@ -25,12 +24,6 @@
  * is what #3524 reported — dsh in daemon mode never started a daemon, so every `hindsight_*` call
  * failed with ECONNREFUSED until the user ran `daemon-start.js` by hand. `daemon.test.ts` now fails
  * if a harness entrypoint builds a client without reaching one of the two.
- *
- * A daemon that is down is NOT special-cased anywhere downstream. Once the URL is resolved, every
- * mode uses the identical client and the identical error handling: an unreachable local daemon
- * surfaces as the same connection failure (and the same `retain_failed` diagnostic) as an
- * unreachable Cloud or self-hosted server. Skipping work because a local port was closed would have
- * made daemon mode behave differently from the other two for no benefit.
  *
  * There is no stop. One daemon serves every agent and repo on the machine, so ending one session
  * must not cut memory out from under another. Nothing retires it either: the server's idle timeout
@@ -47,17 +40,14 @@ import { diag } from "./diag";
 import { log } from "./log";
 import { nodeBinary } from "./util";
 
-/**
- * How long each hook is willing to block waiting for a cold daemon. Both sit well inside the
- * corresponding hook timeouts declared in harness/hook-lifecycle.ts (SessionStart 30s, Stop 60s),
- * because overrunning those gets the hook killed by the host.
- */
-export const DAEMON_WAIT_SESSION_START_MS = 12_000;
+/** Only background write-back in persistent plugin hosts can wait on a cold start. */
 export const DAEMON_WAIT_RETAIN_MS = 40_000;
+const HOOK_HEALTH_TIMEOUT_MS = 500;
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/** Where `hindsight-embed` keeps a profile's `.env`. The unnamed default is `~/.hindsight/embed`. */
+/** Where `hindsight-embed` keeps a profile's `.env`. The default profile is `~/.hindsight/embed`. */
 export function daemonProfileEnvPath(profile: string): string {
-  return profile
+  return profile && profile !== "default"
     ? join(homedir(), ".hindsight", "profiles", `${profile}.env`)
     : join(homedir(), ".hindsight", "embed");
 }
@@ -107,14 +97,22 @@ function noteAutoStartDeclined(
 /** Probe a base URL's /health. Never throws — an unreachable server is just "not running". */
 export async function isServerHealthy(baseUrl: string, timeoutMs = 2_000): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/health`, {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/health`, {
       headers: { "User-Agent": USER_AGENT },
       signal: AbortSignal.timeout(timeoutMs),
     });
+    await res.body?.cancel();
     return res.ok;
   } catch {
     return false;
   }
+}
+
+/** Keep optional memory work off the foreground path when a local API is unavailable. */
+export async function isHookServerReady(cfg: Config): Promise<boolean> {
+  const url = URL.canParse(cfg.apiUrl) ? new URL(cfg.apiUrl) : undefined;
+  if (cfg.serverMode !== "daemon" && !LOOPBACK_HOSTS.has(url?.hostname ?? "")) return true;
+  return isServerHealthy(cfg.apiUrl, HOOK_HEALTH_TIMEOUT_MS);
 }
 
 /**
@@ -284,19 +282,19 @@ export function startDaemonDetached(
  * Module-global, and deliberately without a lock: Node runs one thread, and the check-then-set
  * below contains no `await`, so two callers cannot interleave between the `get` and the `set`.
  */
-const coldStarts = new Map<string, Promise<void>>();
+const coldStarts = new Map<string, Promise<boolean>>();
 
 /**
  * Await `p` for at most `ms`. The timer is cleared on the way out: a follower that gives up early
  * must not leave an abandoned `setTimeout` holding the hook process open behind it.
  */
-async function waitBounded(p: Promise<void>, ms: number): Promise<void> {
+async function waitBounded(p: Promise<boolean>, ms: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
+    return await Promise.race([
       p,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, Math.max(ms, 0));
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), Math.max(ms, 0));
       }),
     ]);
   } finally {
@@ -305,11 +303,8 @@ async function waitBounded(p: Promise<void>, ms: number): Promise<void> {
 }
 
 /**
- * Make sure a daemon is serving `cfg.apiUrl`. A no-op in every other mode.
- *
- * Side effect only — callers proceed regardless of whether it came up, so that a request against a
- * down daemon fails through exactly the same path as a request against a down Cloud or self-hosted
- * server. Never throws: memory is best-effort and must not break the agent.
+ * Check whether memory can proceed, optionally requesting a detached start in daemon mode.
+ * Remote APIs use the memory client's normal request handling.
  *
  * `waitMs` bounds how long the caller is willing to block for a cold start — always well under the
  * calling hook's own timeout, so a slow start costs memory for one turn rather than a killed hook.
@@ -320,18 +315,17 @@ export async function ensureDaemon(
   cfg: Config,
   harness: string,
   opts: { waitMs?: number; spawnFn?: typeof realSpawn } = {}
-): Promise<void> {
-  if (cfg.serverMode !== "daemon") return;
-  if (await isServerHealthy(cfg.apiUrl)) return;
+): Promise<boolean> {
+  if (await isHookServerReady(cfg)) return true;
+  if (cfg.serverMode !== "daemon") return false;
   if (!cfg.daemonAutoStart) {
     noteAutoStartDeclined(cfg, harness, "disabled");
-    return;
+    return false;
   }
   if (!daemonProfileProvisioned(cfg)) {
     noteAutoStartDeclined(cfg, harness, "unprovisioned");
-    return;
+    return false;
   }
-  if (!preflightDaemon(cfg, harness)) return;
 
   const waitMs = opts.waitMs ?? 0;
   const running = coldStarts.get(cfg.apiUrl);
@@ -343,23 +337,19 @@ export async function ensureDaemon(
     // attempt set in motion, so joining never leaves a caller with less patience than it would
     // have had on its own.
     const startedAt = Date.now();
-    // Awaited for its side effect only: a follower does not inherit the attempt's failure.
-    await waitBounded(
-      running.catch(() => undefined),
-      waitMs
-    );
+    if (waitMs <= 0) return false;
+    if (await waitBounded(running, waitMs)) return true;
     const remaining = waitMs - (Date.now() - startedAt);
-    if (remaining > 0) await waitForHealth(cfg.apiUrl, remaining);
-    return;
+    return remaining > 0 && (await waitForHealth(cfg.apiUrl, remaining));
   }
 
   const attempt = (async () => {
     startDaemonDetached(cfg, harness, opts.spawnFn);
-    await waitForHealth(cfg.apiUrl, waitMs);
+    return waitForHealth(cfg.apiUrl, waitMs);
   })();
   coldStarts.set(cfg.apiUrl, attempt);
   try {
-    await attempt;
+    return await attempt;
   } finally {
     // Only the owner clears the entry, so a follower can never drop a newer attempt's guard.
     if (coldStarts.get(cfg.apiUrl) === attempt) coldStarts.delete(cfg.apiUrl);

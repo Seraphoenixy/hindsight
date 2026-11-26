@@ -7,6 +7,7 @@ import {
   GRAPH_FRESH_MS,
   cachedGraph,
   fetchGraph,
+  invalidateGraphCache,
   isFresh,
   prefetchGraph,
   sameGraph,
@@ -80,5 +81,33 @@ describe("graph cache", () => {
     expect(sameGraph(g("x"), g("y"))).toBe(false);
     expect(sameGraph(g("x"), g("x", 3))).toBe(false);
     expect(sameGraph(null, g("x"))).toBe(false);
+  });
+
+  it("invalidates cached entries for a single bank without affecting others", () => {
+    const a = params();
+    const b = params();
+    storeGraph(a, { n: 1 });
+    storeGraph({ ...a, type: "experience" }, { n: 2 });
+    storeGraph(b, { n: 3 });
+
+    invalidateGraphCache(a.bank_id);
+
+    expect(cachedGraph(a)).toBeUndefined();
+    expect(cachedGraph({ ...a, type: "experience" })).toBeUndefined();
+    expect(cachedGraph(b)?.data).toEqual({ n: 3 });
+
+    invalidateGraphCache();
+    expect(cachedGraph(b)).toBeUndefined();
+  });
+
+  it("drops an in-flight prefetch when the bank cache is invalidated", async () => {
+    let resolve!: (v: unknown) => void;
+    getGraph.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    const p = params();
+    const warming = prefetchGraph(p);
+    invalidateGraphCache(p.bank_id);
+    resolve({ n: 99 });
+    await warming;
+    expect(cachedGraph(p)).toBeUndefined();
   });
 });

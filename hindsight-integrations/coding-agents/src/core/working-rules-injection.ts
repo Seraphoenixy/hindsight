@@ -1,4 +1,3 @@
-import { gitBranch } from "./git";
 import type { WorkingRulesProjection } from "./hindsight";
 
 export const WORKING_RULES_TAG = "hindsight_working_rules";
@@ -30,20 +29,17 @@ export function buildWorkingRulesInjection(
 export async function fetchWorkingRulesInjection(
   client: {
     getWorkingRulesProjection?(opts?: {
-      branch?: string;
       timeoutMs?: number;
     }): Promise<WorkingRulesProjection | undefined>;
     workingRulesSupported?: boolean;
   },
-  opts: { cwd?: string; timeoutMs?: number; previousRevision?: string } = {}
+  opts: { timeoutMs?: number; previousRevision?: string } = {}
 ): Promise<{ projection?: WorkingRulesProjection; block: string }> {
   if (!client.getWorkingRulesProjection || client.workingRulesSupported === false) {
     return { block: "" };
   }
-  const branch = opts.cwd ? gitBranch(opts.cwd) : undefined;
   try {
     const projection = await client.getWorkingRulesProjection({
-      branch,
       timeoutMs: opts.timeoutMs ?? 2_000,
     });
     if (!projection) return { block: "" };

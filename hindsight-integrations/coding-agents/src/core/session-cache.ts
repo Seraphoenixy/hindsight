@@ -10,13 +10,14 @@ import type { UsageCursorStore } from "./usage";
  * bank state. */
 export interface SessionCache {
   turns?: number;
-  reflectAnswer?: string; // present (even "") = reflect already resolved this session
-  /** How many times auto-inject has been ATTEMPTED this session — every source, not just reflect.
-   *  A failure leaves `reflectAnswer` unset so a later turn can retry; this bounds that retry (see
-   *  HOOK_INJECT_ATTEMPTS). Named for reflect like `reflectAnswer` above, whose name also predates
-   *  the other two sources. */
+  /** Present (even "") = the once-per-session injection is resolved. The field name predates the
+   *  recall/pages sources and is kept for cache compatibility. */
+  reflectAnswer?: string;
+  /** How many times auto-inject has been ATTEMPTED this session. A failure leaves `reflectAnswer`
+   *  unset so a later turn can retry; this bounds that retry (see HOOK_INJECT_ATTEMPTS). The name
+   *  predates the recall/pages sources and is kept for cache compatibility. */
   reflectAttempts?: number;
-  /** SessionStart saw a new/empty bank; consume this on prompt one, then allow reflect. */
+  /** SessionStart saw a new/empty bank; consume this on prompt one, then allow injection. */
   deferInitialReflect?: boolean;
   pages?: { atTurn: number; list: PageRef[] };
   /** Last injected Working Rules projection revision; prompts re-inject only on revision changes. */

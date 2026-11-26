@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_DAEMON_PORT } from "./config";
 import { detectLegacyClaudePlugin, readLegacyEndpoint } from "./legacy";
 
 const homes: string[] = [];
@@ -62,7 +63,7 @@ describe("readLegacyEndpoint", () => {
 
   it("carries a non-default daemon port, since in daemon mode the port is the endpoint", () => {
     expect(readLegacyEndpoint(homeWith({ apiPort: 9100 }))?.apiPort).toBe(9100);
-    expect(readLegacyEndpoint(homeWith({ apiPort: 9077 }))?.apiPort).toBeUndefined();
+    expect(readLegacyEndpoint(homeWith({ apiPort: DEFAULT_DAEMON_PORT }))?.apiPort).toBeUndefined();
   });
 
   // A config we cannot parse is not a decision we can honour — fall through to the normal flow

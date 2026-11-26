@@ -124,6 +124,9 @@ describe("buildPageTools", () => {
       state: "valid",
       document_id: "engineering-exchange:abc",
       metadata: { project: "one" },
+      mentioned_at: "2026-11-26T08:00:00Z",
+      occurred_start: "2026-11-25T10:00:00Z",
+      occurred_end: "2026-11-25T10:00:00Z",
     };
     const client = stubClient({
       engineeringRecords: vi.fn(async (_query: string, _limit: number) => [record]),
@@ -383,7 +386,7 @@ describe("buildPageTools", () => {
   it("hindsight_reflect passes the configured timeout and budget through to the client", async () => {
     const client = stubClient({ reflect: vi.fn(async () => "answer") });
     const tool = findTool(
-      buildPageTools(client, "repo-a", { reflectTimeoutMs: 660_000, reflectBudget: "mid" }),
+      buildPageTools(client, "repo-a", { reflectToolTimeoutMs: 660_000, reflectBudget: "mid" }),
       "hindsight_reflect"
     );
     await tool.handler({ query: "why?" });
@@ -639,7 +642,6 @@ describe("buildPageTools", () => {
     const all = await reader.handler({ view: "all", include_archived: true });
     expect(all.isError).toBeFalsy();
     expect(client.listWorkingRules).toHaveBeenCalledWith({
-      scope: undefined,
       includeArchived: true,
       q: undefined,
     });
@@ -651,10 +653,7 @@ describe("buildPageTools", () => {
     const added = await manager.handler({
       action: "add",
       content: "Use bun for scripts.",
-      scope: "global",
       importance: "critical",
-      pinned: true,
-      branches: ["main"],
     });
     expect(added.isError).toBeFalsy();
     expect(client.mutateWorkingRules).toHaveBeenCalledWith({
@@ -662,16 +661,10 @@ describe("buildPageTools", () => {
       content: "Use bun for scripts.",
       old_text: undefined,
       importance: "critical",
-      scope: "global",
-      pinned: true,
-      branches: ["main"],
     });
 
     const unsupported = findTool(
-      buildPageTools(
-        stubClient({ mutateWorkingRules: vi.fn(async () => undefined) }),
-        "repo-a"
-      ),
+      buildPageTools(stubClient({ mutateWorkingRules: vi.fn(async () => undefined) }), "repo-a"),
       "hindsight_manage_working_rules"
     );
     const errRes = await unsupported.handler({ action: "add", content: "x" });

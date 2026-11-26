@@ -78,7 +78,7 @@ export default function KnowledgeBankPage() {
   }, [bankId]);
 
   useEffect(() => {
-    loadBank();
+    void Promise.resolve().then(loadBank);
   }, [loadBank]);
 
   const go = (query: string) => router.push(knowledgeBankRoute(bankId, query));

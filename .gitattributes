@@ -1,2 +1,3 @@
 # Vite imports this executable module in tests; its shebang must end with LF.
 hindsight-integrations/coding-agents/scripts/build-skill.mjs text eol=lf
+scripts/linux-sync/*.sh text eol=lf

@@ -71,3 +71,16 @@ export async function readJsonBody(request: Request): Promise<Record<string, unk
   }
   return parsed as Record<string, unknown>;
 }
+
+/** Normalize an optional env-var map from a JSON request body. */
+export function normalizeOptionalValues(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("values must be an object of env-var name -> string");
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    out[k] = v === null || v === undefined ? "" : String(v);
+  }
+  return out;
+}

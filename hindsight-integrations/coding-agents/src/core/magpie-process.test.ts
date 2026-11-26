@@ -10,8 +10,10 @@ import {
   stopControlPlane,
 } from "./control-plane";
 import { isServerHealthy } from "./daemon";
+import { runEmbedOps } from "./embed-ops";
 import { openManagementPage } from "./management-browser";
 import { inspectMagpieLlm, syncMagpieLlm } from "./magpie-llm";
+import { inspectHosts, runHostInstaller } from "./magpie-hosts";
 
 const state = vi.hoisted(() => ({ home: "", running: false }));
 vi.mock("node:os", async (original) => ({
@@ -24,10 +26,15 @@ vi.mock("./control-plane", () => ({
   isControlPlaneHealthy: vi.fn(),
 }));
 vi.mock("./daemon", () => ({ isServerHealthy: vi.fn() }));
+vi.mock("./embed-ops", () => ({ runEmbedOps: vi.fn() }));
 vi.mock("./management-browser", () => ({ openManagementPage: vi.fn() }));
 vi.mock("./magpie-llm", () => ({
   inspectMagpieLlm: vi.fn(),
   syncMagpieLlm: vi.fn(),
+}));
+vi.mock("./magpie-hosts", async (original) => ({
+  ...(await original<typeof import("./magpie-hosts")>()),
+  runHostInstaller: vi.fn(),
 }));
 const cfg = resolveConfig({ daemonProfile: "coding-agent" });
 let file: string;
@@ -38,6 +45,7 @@ beforeEach(() => {
   file = join(state.home, "runtime-state.js");
   vi.mocked(isControlPlaneHealthy).mockImplementation(async () => state.running);
   vi.mocked(isServerHealthy).mockResolvedValue(true);
+  vi.mocked(runEmbedOps).mockResolvedValue({ ok: true });
   vi.mocked(inspectMagpieLlm).mockResolvedValue({
     status: "synced",
     mode: "follow",
@@ -165,4 +173,119 @@ it("applies a page-selected LLM model without touching the UI lifecycle", async 
     phase: "done",
     message: "已同步 Magpie 的模型，并重启记忆服务",
   });
+});
+it.each(["daemon-start", "daemon-stop", "daemon-restart"] as const)(
+  "controls the memory daemon with %s without touching the UI lifecycle",
+  async (action) => {
+    await executeProcessRequest(cfg, 19100, request(action), file);
+    expect(runEmbedOps).toHaveBeenCalledWith(cfg, [action, "--profile", "coding-agent"]);
+    expect(ensureControlPlaneStarted).not.toHaveBeenCalled();
+    expect(stopControlPlane).not.toHaveBeenCalled();
+    expect((await publishProcessState(cfg, 19100, file, request(action))).operation).toMatchObject({
+      phase: "done",
+    });
+  }
+);
+it("reports memory daemon errors from ops", async () => {
+  vi.mocked(runEmbedOps).mockResolvedValue({ ok: false, message_zh: "启动失败" });
+  await executeProcessRequest(cfg, 19100, request("daemon-start"), file);
+  expect(
+    (await publishProcessState(cfg, 19100, file, request("daemon-start"))).operation
+  ).toMatchObject({
+    phase: "failed",
+    message: "启动失败",
+  });
+});
+it("toggles global host injection in coding-agent.json while preserving existing fields", async () => {
+  const prevConfigEnv = process.env.HINDSIGHT_CONFIG;
+  delete process.env.HINDSIGHT_CONFIG;
+  try {
+    const cfgDir = join(state.home, ".hindsight");
+    const cfgFile = join(cfgDir, "coding-agent.json");
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(cfgFile, JSON.stringify({ serverMode: "daemon", apiPort: 9077 }));
+
+    expect((await publishProcessState(cfg, 19100, file)).injection).toMatchObject({
+      enabled: true,
+      configPath: cfgFile,
+    });
+    expect(
+      (await publishProcessState(cfg, 19100, file)).injection.hosts.some(
+        (h) => h.name === "antigravity-cli"
+      )
+    ).toBe(true);
+
+    const disableReq = { id: "1795380000001-abcdefghij", action: "injection-disable" as const };
+    await executeProcessRequest(cfg, 19100, disableReq, file);
+    expect(JSON.parse(readFileSync(cfgFile, "utf8"))).toEqual({
+      serverMode: "daemon",
+      apiPort: 9077,
+      disabled: true,
+    });
+    expect(await publishProcessState(cfg, 19100, file, disableReq)).toMatchObject({
+      injection: { enabled: false, configPath: cfgFile },
+      operation: { phase: "done", message: "已暂停宿主注入" },
+    });
+
+    const enableReq = { id: "1795380000002-abcdefghij", action: "injection-enable" as const };
+    await executeProcessRequest(cfg, 19100, enableReq, file);
+    expect(JSON.parse(readFileSync(cfgFile, "utf8"))).toEqual({
+      serverMode: "daemon",
+      apiPort: 9077,
+      disabled: false,
+    });
+    expect(await publishProcessState(cfg, 19100, file, enableReq)).toMatchObject({
+      injection: { enabled: true, configPath: cfgFile },
+      operation: { phase: "done", message: "已开启宿主注入" },
+    });
+
+    const hostDisableReq = {
+      id: "1795380000003-abcdefghij",
+      action: "host-disable" as const,
+      host: "antigravity-cli",
+    };
+    await executeProcessRequest(cfg, 19100, hostDisableReq, file);
+    expect(JSON.parse(readFileSync(cfgFile, "utf8"))).toEqual({
+      serverMode: "daemon",
+      apiPort: 9077,
+      disabled: false,
+      harnesses: { "antigravity-cli": { disabled: true } },
+    });
+
+    const hostUninstallReq = {
+      id: "1795380000004-abcdefghij",
+      action: "host-uninstall" as const,
+      host: "antigravity-cli",
+    };
+    await executeProcessRequest(cfg, 19100, hostUninstallReq, file);
+    expect(runHostInstaller).toHaveBeenCalledWith("uninstall", "antigravity-cli");
+
+    const hostInstallReq = {
+      id: "1795380000005-abcdefghij",
+      action: "host-install" as const,
+      host: "claude-code",
+    };
+    vi.mocked(runHostInstaller).mockResolvedValueOnce({
+      warnings: [
+        "codex: add `hooks = true` under your existing [features] section in ~/.codex/config.toml",
+      ],
+    });
+    await executeProcessRequest(cfg, 19100, hostInstallReq, file);
+    expect(runHostInstaller).toHaveBeenCalledWith("install", "claude-code");
+    expect(
+      (await publishProcessState(cfg, 19100, file, hostInstallReq)).operation?.message
+    ).toContain("add `hooks = true`");
+
+    await expect(
+      executeProcessRequest(
+        cfg,
+        19100,
+        { id: "1795380000006-abcdefghij", action: "host-uninstall", host: "unknown-host" },
+        file
+      )
+    ).rejects.toThrow("Invalid host");
+  } finally {
+    if (prevConfigEnv === undefined) delete process.env.HINDSIGHT_CONFIG;
+    else process.env.HINDSIGHT_CONFIG = prevConfigEnv;
+  }
 });

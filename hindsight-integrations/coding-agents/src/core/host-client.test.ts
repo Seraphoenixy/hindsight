@@ -68,7 +68,7 @@ describe("resolveHostMemory", () => {
     expect(resolveHostMemory("dsh", repo).client.project).toBeUndefined();
   });
 
-  it("shares one bank by default while keeping same-name repos and worktrees distinct", async () => {
+  it("shares one bank and workspace-name project identity by default while keeping path config distinct", async () => {
     const left = join(root, "left", "repo");
     const right = join(root, "right", "repo");
     const worktree = join(root, "linked");
@@ -100,7 +100,8 @@ describe("resolveHostMemory", () => {
     expect([a, b, linked].map(({ cfg }) => cfg.disabled)).toEqual([false, false, false]);
     expect(a.bankId).toBe("工程知识与经验");
     expect(b.bankId).toBe(a.bankId);
-    expect(b.client.projectTag).not.toBe(a.client.projectTag);
+    expect(b.client.projectTag).toBe(a.client.projectTag);
+    expect(a.client.projectTag).toBe("project:repo");
     expect(linked.client.projectTag).toBe(a.client.projectTag);
     expect(a.cfg.gitIngest).toBe("message");
     expect(linked.cfg.gitIngest).toBe("message");

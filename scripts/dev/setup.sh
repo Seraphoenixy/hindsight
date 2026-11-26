@@ -118,23 +118,6 @@ ensure_node() {
     SUMMARY+=("node: installed ($(node --version))")
 }
 
-ensure_rust() {
-    step "Rust + cargo (for hindsight-cli)"
-    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-    export PATH="$HOME/.cargo/bin:$PATH"
-    if have cargo; then
-        ok "already installed ($(cargo --version))"
-        SUMMARY+=("cargo: present")
-        return
-    fi
-    info "installing via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-    . "$HOME/.cargo/env"
-    have cargo || { warn "cargo not on PATH after install — open a new shell and re-run"; exit 1; }
-    ok "installed ($(cargo --version))"
-    SUMMARY+=("cargo: installed")
-}
-
 # ---------------------------------------------------------------------------
 # Repo bootstrap
 # ---------------------------------------------------------------------------
@@ -153,7 +136,9 @@ ensure_env_file() {
 
 setup_git_hooks() {
     step "Git hooks"
-    if [ "$(git config --get core.hooksPath || true)" = "$ROOT_DIR/.githooks" ]; then
+    local hooks_path
+    hooks_path="$(git config --get core.hooksPath || true)"
+    if [ "$hooks_path" = ".githooks" ] || [ "$hooks_path" = "$ROOT_DIR/.githooks" ]; then
         ok "hooks already configured"
         return
     fi
@@ -295,18 +280,6 @@ build_ts_client() {
     SUMMARY+=("ts-client: built")
 }
 
-build_cli() {
-    step "Build Hindsight CLI (cargo release)"
-    # Building also vendors every crate into ~/.cargo, priming the offline cache.
-    if [ "$FORCE" = false ] && [ -x "$ROOT_DIR/hindsight-cli/target/release/hindsight" ]; then
-        ok "release binary present — skipping (use --force to rebuild)"
-        return
-    fi
-    ( cd "$ROOT_DIR/hindsight-cli" && cargo build --release )
-    ok "CLI built (hindsight-cli/target/release/hindsight)"
-    SUMMARY+=("cli: built")
-}
-
 build_docs() {
     step "Build documentation site (Docusaurus)"
     INCLUDE_CURRENT_VERSION=true npm run build -w hindsight-docs
@@ -325,7 +298,6 @@ printf '\033[1mHindsight dev setup\033[0m  (root: %s)\n' "$ROOT_DIR"
 
 ensure_uv
 ensure_node
-ensure_rust
 ensure_env_file
 setup_git_hooks
 
@@ -339,7 +311,6 @@ if [ "$SKIP_BUILD" = false ]; then
     # deploy artifact and is intentionally NOT built here. Local dev runs it via
     # `npm run dev` (Turbopack, compiles on demand, no network needed offline).
     build_ts_client
-    build_cli
     [ "$WITH_DOCS" = true ] && build_docs
 fi
 

@@ -1,0 +1,76 @@
+name: Linux sync server
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'hindsight-sync-server/**'
+      - 'scripts/linux-sync/**'
+      - 'hindsight-api-slim/hindsight_api/admin/**'
+      - 'hindsight-api-slim/hindsight_api/engine/**'
+      - 'hindsight-api-slim/hindsight_api/api/**'
+      - 'hindsight-api-slim/hindsight_api/alembic/**'
+      - '.github/workflows/linux-sync.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: hindsight-sync-server/go.mod
+          cache: false
+      - name: Test relay protocol
+        working-directory: hindsight-sync-server
+        run: go test -race ./...
+      - name: Build standalone packages
+        run: |
+          bash scripts/linux-sync/build.sh amd64
+          bash scripts/linux-sync/build.sh arm64
+      - uses: astral-sh/setup-uv@v7
+      - name: Install client test dependencies
+        run: uv sync --frozen --package hindsight-api-slim --no-dev --extra embedded-db
+      - name: Test the unpacked Linux binary with two PostgreSQL clients
+        env:
+          HINDSIGHT_API_LLM_PROVIDER: mock
+          HINDSIGHT_SYNC_TEST_DATABASE: pg0://hindsight-sync-ci:55479
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf dist/hindsight-sync-server-linux-x64.tar.gz
+          binary="$RUNNER_TEMP/hindsight-sync-server-linux-x64/hindsight-sync-server"
+          export HINDSIGHT_SYNC_TOKEN="$(openssl rand -hex 32)"
+          relay_url="http://127.0.0.1:9078"
+          start_relay() {
+            env -i PATH=/no-system-tools \
+              HINDSIGHT_SYNC_TOKEN="$HINDSIGHT_SYNC_TOKEN" \
+              HINDSIGHT_SYNC_DATA_DIR="$RUNNER_TEMP/sync-data" "$binary" &
+            relay_pid=$!
+            for attempt in $(seq 1 30); do
+              if curl --silent --fail "$relay_url/health"; then
+                return
+              fi
+              sleep 1
+            done
+            return 1
+          }
+          stop_relay() {
+            kill "$relay_pid" 2>/dev/null || true
+            wait "$relay_pid" 2>/dev/null || true
+          }
+          trap stop_relay EXIT
+          start_relay
+          .venv/bin/python scripts/linux-sync/test-sync.py "$relay_url"
+          stop_relay
+          start_relay
+          curl --silent --fail -H "Authorization: Bearer $HINDSIGHT_SYNC_TOKEN" "$relay_url/v3/status" |
+            .venv/bin/python -c 'import json, sys; status = json.load(sys.stdin); assert status["initialized"] and status["last_seq"] > 0'
+      - uses: actions/upload-artifact@v6
+        with:
+          name: hindsight-sync-server-linux
+          path: dist/hindsight-sync-server-linux-*.tar.gz
+          if-no-files-found: error

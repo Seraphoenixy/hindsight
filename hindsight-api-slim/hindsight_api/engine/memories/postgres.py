@@ -65,6 +65,7 @@ from .pg import counts, curation, documents, engine_curation, graph, reads, writ
 from .pg import expand as pg_expand
 from .pg import links as pg_links
 from .pg import retain as pg_retain
+from .pg import sync_objects as pg_sync_objects
 from .pg import transfer as pg_transfer
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -1797,10 +1798,14 @@ class PostgresMemories(MemoriesExtension):
             conn=conn, fq_table_explicit=fq_store_table_explicit, schema=schema, table=table
         )
 
-    async def admin_truncate_tables(self, *, conn, schema: str, tables: list[str]) -> None:
-        """TRUNCATE ... CASCADE each table of ``schema`` in order (restore)."""
+    async def admin_lock_tables(self, *, conn, schema: str, tables: list[str]) -> None:
+        """Take exclusive locks before rechecking a replica for local changes."""
+        await pg_admin.lock_tables(conn=conn, fq_table_explicit=fq_store_table_explicit, schema=schema, tables=tables)
+
+    async def admin_truncate_tables(self, *, conn, schema: str, tables: list[str], restrict: bool = False) -> None:
+        """Truncate tables for restore."""
         await pg_admin.truncate_tables(
-            conn=conn, fq_table_explicit=fq_store_table_explicit, schema=schema, tables=tables
+            conn=conn, fq_table_explicit=fq_store_table_explicit, schema=schema, tables=tables, restrict=restrict
         )
 
     async def admin_move_bank_id(
@@ -1852,6 +1857,177 @@ class PostgresMemories(MemoriesExtension):
         """Re-tokenize the bank's observation keyword index from its text (repair-bank); how many."""
         return await pg_admin.rebuild_observation_search_vectors(
             conn=conn, fq_table_explicit=fq_store_table_explicit, schema=schema, bank_id=bank_id, dry_run=dry_run
+        )
+
+    # ------------------------------------------------------------------ object-level sync
+
+    async def sync_list_document_keys(self, *, conn, schema: str, bank_id: str | None = None) -> list[dict[str, str]]:
+        """List ``(bank_id, object_id)`` keys for all live documents in ``schema``."""
+        return await pg_sync_objects.list_sync_document_keys(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            bank_id=bank_id,
+        )
+
+    async def sync_list_standalone_unit_keys(
+        self, *, conn, schema: str, bank_id: str | None = None
+    ) -> list[dict[str, str]]:
+        """List ``(bank_id, object_id)`` keys for standalone non-observation memory units."""
+        return await pg_sync_objects.list_sync_standalone_unit_keys(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            bank_id=bank_id,
+        )
+
+    async def sync_list_observation_keys(
+        self, *, conn, schema: str, bank_id: str | None = None
+    ) -> list[dict[str, str]]:
+        """List ``(bank_id, object_id)`` keys for observation units."""
+        return await pg_sync_objects.list_sync_observation_keys(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            bank_id=bank_id,
+        )
+
+    async def sync_export_document(self, *, conn, schema: str, bank_id: str, document_id: str) -> dict[str, Any] | None:
+        """Export one document aggregate (document, chunks, attachments, facts) for sync."""
+        from ..schema import fq_table_explicit
+
+        return await pg_sync_objects.export_document_payload(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+            document_id=document_id,
+        )
+
+    async def sync_apply_document(
+        self, *, conn, schema: str, bank_id: str, document_id: str, payload: dict[str, Any]
+    ) -> None:
+        """Atomically apply one synced document aggregate into ``schema``."""
+        from ..schema import fq_table_explicit
+
+        await pg_sync_objects.apply_document_payload(
+            conn=conn,
+            ops=PostgreSQLOps(),
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+            document_id=document_id,
+            payload=payload,
+        )
+
+    async def sync_delete_document(self, *, conn, schema: str, bank_id: str, document_id: str) -> None:
+        """Delete one synced document aggregate from ``schema``."""
+        from ..schema import fq_table_explicit
+
+        await pg_sync_objects.delete_document_payload(
+            conn=conn,
+            ops=PostgreSQLOps(),
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+            document_id=document_id,
+        )
+
+    async def sync_export_memory_unit(self, *, conn, schema: str, bank_id: str, unit_id: str) -> dict[str, Any] | None:
+        """Export one standalone memory unit for sync."""
+        return await pg_sync_objects.export_standalone_unit_payload(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            bank_id=bank_id,
+            unit_id=unit_id,
+        )
+
+    async def sync_apply_memory_unit(
+        self, *, conn, schema: str, bank_id: str, unit_id: str, payload: dict[str, Any]
+    ) -> None:
+        """Apply one standalone memory unit into ``schema``."""
+        from ..schema import fq_table_explicit
+
+        await pg_sync_objects.apply_standalone_unit_payload(
+            conn=conn,
+            ops=PostgreSQLOps(),
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+            unit_id=unit_id,
+            payload=payload,
+        )
+
+    async def sync_delete_memory_unit(self, *, conn, schema: str, bank_id: str, unit_id: str) -> None:
+        """Delete one standalone memory unit from ``schema``."""
+        await pg_sync_objects.delete_standalone_unit_payload(
+            conn=conn,
+            ops=PostgreSQLOps(),
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            bank_id=bank_id,
+            unit_id=unit_id,
+        )
+
+    async def sync_export_observation(
+        self, *, conn, schema: str, bank_id: str, observation_id: str
+    ) -> dict[str, Any] | None:
+        """Export one observation and its history for sync."""
+        from ..schema import fq_table_explicit
+
+        return await pg_sync_objects.export_observation_payload(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+            observation_id=observation_id,
+        )
+
+    async def sync_apply_observation(
+        self, *, conn, schema: str, bank_id: str, observation_id: str, payload: dict[str, Any]
+    ) -> None:
+        """Apply one synced observation and its history into ``schema``."""
+        from ..schema import fq_table_explicit
+
+        await pg_sync_objects.apply_observation_payload(
+            conn=conn,
+            ops=PostgreSQLOps(),
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+            observation_id=observation_id,
+            payload=payload,
+        )
+
+    async def sync_delete_observation(self, *, conn, schema: str, bank_id: str, observation_id: str) -> None:
+        """Delete one observation and its history from ``schema``."""
+        from ..schema import fq_table_explicit
+
+        await pg_sync_objects.delete_observation_payload(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+            observation_id=observation_id,
+        )
+
+    async def sync_apply_bank_stub(self, *, conn, schema: str | None, bank_id: str) -> None:
+        """Ensure a bank row and its vector indexes exist in ``schema``."""
+        from ..schema import fq_table_explicit
+
+        await pg_sync_objects.apply_bank_stub(
+            conn=conn,
+            ops=PostgreSQLOps(),
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
+        )
+
+    async def sync_delete_bank_cascade(self, *, conn, schema: str | None, bank_id: str) -> None:
+        """Delete a bank and its store rows cleanly in dependency order."""
+        from ..schema import fq_table_explicit
+
+        await pg_sync_objects.delete_bank_cascade(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            fq_non_store_table=lambda t: fq_table_explicit(t, schema),
+            bank_id=bank_id,
         )
 
 

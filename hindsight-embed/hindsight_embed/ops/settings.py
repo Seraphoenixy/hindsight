@@ -352,22 +352,27 @@ SETTING_GROUPS: tuple[SettingGroup, ...] = (
                 key="HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL",
                 label="Local model",
                 kind="combo",
-                default="BAAI/bge-small-en-v1.5",
+                default="qwen3-0.6b",
                 description="A bundled GGUF preset, or any HuggingFace id / local .gguf path for the local provider.",
-                placeholder="BAAI/bge-small-en-v1.5",
+                placeholder="qwen3-0.6b",
                 label_zh="本地模型",
                 description_zh="内置 GGUF 预设，或本地提供商可用的任意 HuggingFace id / 本地 .gguf 路径。",
-                options=("BAAI/bge-small-en-v1.5", "qwen3-0.6b"),
+                options=("qwen3-0.6b", "bge-m3", "qwen3-4b"),
                 option_labels=(
                     OptionLabel(
-                        "BAAI/bge-small-en-v1.5",
-                        "BAAI/bge-small-en-v1.5 — 384 dims (default)",
-                        "BAAI/bge-small-en-v1.5 — 384 维（默认）",
+                        "qwen3-0.6b",
+                        "Qwen3-Embedding-0.6B-Q8_0.gguf (default)",
+                        "Qwen3-Embedding-0.6B-Q8_0.gguf（默认）",
                     ),
                     OptionLabel(
-                        "qwen3-0.6b",
-                        "qwen3-0.6b — Qwen3-Embedding-0.6B, 1024 dims, multilingual",
-                        "qwen3-0.6b — Qwen3-Embedding-0.6B，1024 维，多语言",
+                        "bge-m3",
+                        "bge-m3-Q8_0.gguf",
+                        "bge-m3-Q8_0.gguf",
+                    ),
+                    OptionLabel(
+                        "qwen3-4b",
+                        "Qwen3-Embedding-4B-Q8_0.gguf",
+                        "Qwen3-Embedding-4B-Q8_0.gguf",
                     ),
                 ),
             ),
@@ -467,13 +472,13 @@ SETTING_GROUPS: tuple[SettingGroup, ...] = (
                 option_labels=(
                     OptionLabel(
                         "hindsight-ai/hs-rerank-1",
-                        "hindsight-ai/hs-rerank-1 — bge-reranker-base (default)",
-                        "hindsight-ai/hs-rerank-1 — bge-reranker-base（默认）",
+                        "bge-reranker-base-q8_0.gguf (default)",
+                        "bge-reranker-base-q8_0.gguf（默认）",
                     ),
                     OptionLabel(
                         "bge-reranker-v2-m3",
-                        "bge-reranker-v2-m3 — multilingual",
-                        "bge-reranker-v2-m3 — 多语言",
+                        "bge-reranker-v2-m3-Q8_0.gguf",
+                        "bge-reranker-v2-m3-Q8_0.gguf",
                     ),
                 ),
             ),
@@ -582,15 +587,65 @@ SETTING_GROUPS: tuple[SettingGroup, ...] = (
 )
 
 
+# Sync lives on its own page (`/sync`), not in the local settings form: signing
+# in needs the daemon running, while that form is meant to work with it stopped,
+# and the two were sharing one save path. See ADR-012. The catalog below is the
+# sync page's, and `save-sync-settings` owns exactly these keys.
+SYNC_SETTING_GROUP = SettingGroup(
+    id="sync",
+    label="Multi-device sync",
+    description="Background object-level sync across devices through a Hindsight relay.",
+    label_zh="多端同步",
+    description_zh="通过 Hindsight 中继在多台设备之间自动同步记忆对象。",
+    fields=(
+        SettingField(
+            key="HINDSIGHT_SYNC_STATE_DIR",
+            label="State directory",
+            kind="string",
+            description="Local private directory holding device identity and sync lock.",
+            label_zh="状态目录",
+            description_zh="存放设备凭据与同步锁的本地目录。",
+        ),
+        SettingField(
+            key="HINDSIGHT_SYNC_AUTO_ENABLED",
+            label="Automatic sync",
+            kind="boolean",
+            default="true",
+            description="Run lightweight checks on startup, after local writes, and on interval.",
+            label_zh="自动同步",
+            description_zh="在启动、本地写入后和固定间隔自动检查并同步变更。",
+        ),
+        SettingField(
+            key="HINDSIGHT_SYNC_INTERVAL_SECONDS",
+            label="Check interval (s)",
+            kind="number",
+            default="15",
+            description="Seconds between lightweight sync checks.",
+            placeholder="15",
+            label_zh="检查间隔（秒）",
+            description_zh="两次轻量同步检查之间的间隔秒数。",
+        ),
+    ),
+)
+
+ALL_SETTING_GROUPS = SETTING_GROUPS + (SYNC_SETTING_GROUP,)
+
+
 def field_index() -> dict[str, SettingField]:
-    """Every field in the catalog, keyed by env var name."""
+    """Every field in the LOCAL catalog, keyed by env var name."""
     return {field.key: field for group in SETTING_GROUPS for field in group.fields}
 
 
-def managed_keys() -> set[str]:
-    """The env var names the grouped form owns.
+def sync_field_index() -> dict[str, SettingField]:
+    """The sync page's fields, keyed by env var name."""
+    return {field.key: field for field in SYNC_SETTING_GROUP.fields}
 
-    The save path only rewrites these; every other key in the profile's .env is
-    preserved as-is, which is what lets the form and the raw editor coexist.
+
+def managed_keys() -> set[str]:
+    """The env var names the grouped forms own, together.
+
+    Each save path only rewrites its own subset (`field_index` or
+    `sync_field_index`); every other key in the profile's .env is preserved
+    as-is, which is what lets the forms and the raw editor coexist.
     """
-    return set(field_index())
+    return set(field_index()) | set(sync_field_index())

@@ -37,20 +37,38 @@ export const CONVERSATION_MISSION =
   "verified cause or effective method. Return the FEWEST facts, at most three. An ordinary " +
   "implementation task should return [] even when it changed several files. Do not record routine " +
   "refactors, file-by-file changes, status reports, tool activity, passing tests, one-off task state, " +
-  "proposed work, or unverified assistant guesses. If a decision was revised, keep only the final " +
-  "state and explain that it superseded the earlier choice. Each fact's what field must state the " +
-  "conclusion, its applicability, and its reason. Preserve applicable versions, literal values, and " +
-  "issue references verbatim. Never invent a decision or claim.";
+  "single-session operational tweaks, proposed work, or unverified assistant guesses. Never emit both " +
+  'a "world" fact and an "assistant" (experience) fact for the same underlying decision or change; ' +
+  'prefer "world" for settled rules, constraints, and facts, and use "assistant" only for distinct ' +
+  "reusable troubleshooting procedures not already captured as a world fact. If a decision was revised, " +
+  "keep only the final state and explain that it superseded the earlier choice. Each fact's what field " +
+  "must state the conclusion, its applicability, and its reason. Preserve applicable versions, literal " +
+  "values, and issue references verbatim. Never invent a decision or claim.";
 
-export const CONVERSATION_INSTRUCTIONS =
+const PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS =
   "Return [] unless the completed exchange established durable engineering knowledge. " +
-  "Use no more than three facts. Put the complete conclusion, applicability, and rationale into each " +
+  "Use no more than three facts. Never emit both a world fact and an assistant fact for the same " +
+  "conclusion or change; prefer world for rules and decisions, and use assistant only for distinct " +
+  "troubleshooting experience. Put the complete conclusion, applicability, and rationale into each " +
   "fact's what field. When the content has a PROJECT header or project/project_id metadata, begin " +
   "every fact with that exact project label followed by a colon, so the conclusion remains " +
   "attributable after synthesis. " +
   "Leave optional dimension fields empty. Do not emit a fact for a normal code " +
   "change or a successful test run. Do not treat a " +
   "proposal as a decision unless the user confirmed it or the exchange verified it.";
+
+export const CONVERSATION_INSTRUCTIONS = PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS.replace(
+  "Leave optional dimension fields empty.",
+  "Leave unrelated descriptive dimensions empty. Treat confirmed decisions, configuration changes, " +
+    "deployments and verification events as fact_kind='event' when the source establishes when they happened. " +
+    "Set occurred_start/end from explicit dates or a source turn timestamp when the action explicitly " +
+    "occurred in that turn; resolve relative dates against the source timestamp. A source timestamp alone " +
+    "does not date a previously completed action. Preserve stated date precision. Leave unknown event " +
+    "times null; never substitute ingestion time. Timeless knowledge remains fact_kind='conversation'. " +
+    "For an explicitly confirmed replacement, state the old value, new value, affected scope and known " +
+    "change time in what; distinguish a requested change from verified deployment. Do not infer a " +
+    "replacement or a validity interval from recency alone."
+);
 
 export const REFLECT_MISSION =
   "You are a debugging assistant with the project's past decisions in memory (git rationale and " +
@@ -76,14 +94,15 @@ const ENGINEERING_REFLECT_MISSION =
   "conflicts; do not choose by recency alone. If nothing applies, return an empty answer.";
 
 const ENGINEERING_OBSERVATIONS_MISSION =
-  "Maintain a compact model of durable engineering conclusions, not a fact log. Combine the facts " +
-  "that support one future decision, constraint, or verified troubleshooting lesson into one " +
-  "observation when their subject and applicability agree. Include the rationale and scope. Do not " +
-  "create separate observations for file edits, commands, tool activity, test runs, status updates, " +
-  "or implementation steps; omit those supporting details when they do not form a reusable " +
-  "conclusion. Split only when conclusions have different subjects or applicability. Distinguish " +
-  "required behavior from observed behavior, and mark a conclusion superseded only when later " +
-  "information confirms the change.";
+  "Maintain a compact, topic-level model of durable engineering conclusions, not a fact log. " +
+  "Always prefer updating and merging into an existing observation on the same component or topic over " +
+  "creating a new sibling observation. Combine all facts that support one future decision, constraint, or " +
+  "verified troubleshooting lesson into one cohesive observation when their subject and applicability agree. " +
+  "Include the rationale and scope. Do not create separate observations for file edits, commands, tool " +
+  "activity, test runs, status updates, or implementation steps; omit those supporting details when they do " +
+  "not form a reusable conclusion. Split only when conclusions have genuinely different subjects or " +
+  "applicability. Distinguish required behavior from observed behavior, and mark a conclusion superseded " +
+  "only when later information confirms the change.";
 
 export const OBSERVATIONS_MISSION =
   "Consolidate durable knowledge about THIS codebase — recurring patterns, conventions, module " +
@@ -828,10 +847,11 @@ export function codingBankManifest(
       have.retain_mission === def.retain_mission &&
       have.retain_extraction_mode === def.retain_extraction_mode &&
       have.retain_chunk_size === def.retain_chunk_size &&
-      have.retain_custom_instructions === LEGACY_CONVERSATION_INSTRUCTIONS
+      (have.retain_custom_instructions === LEGACY_CONVERSATION_INSTRUCTIONS ||
+        have.retain_custom_instructions === PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS)
     ) {
-      // The previous selective strategy had no project-attribution instruction. Upgrade only that
-      // exact prompt; a mission, mode, chunk size or instructions edit belongs to the bank owner.
+      // Upgrade only exact prompts previously emitted by this plugin. An owner-edited mission,
+      // mode, chunk size or instruction set remains unchanged.
       updates[name] = { ...have, retain_custom_instructions: def.retain_custom_instructions };
     } else if (
       name === "conversation" &&

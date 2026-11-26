@@ -8,11 +8,21 @@ import { bankRoute } from "@/lib/bank-url";
 import { Constellation } from "./constellation";
 import type { GraphData, GraphNode, GraphLink } from "./graph-data";
 import { Button } from "@/components/ui/button";
-import { Network, FileText, Layers, FilePlus, ArrowRight } from "lucide-react";
+import {
+  Network,
+  FileText,
+  Layers,
+  FilePlus,
+  ArrowRight,
+  Database,
+  LayoutDashboard,
+  ListChecks,
+} from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { formatRelativeTime, formatAbsoluteDateTime } from "@/lib/relative-time";
 import { MemoryStoreCard, MemoriesActivityChart, type BankStats } from "./bank-stats-view";
 import { TreeRow } from "./pages-view";
+import { MemoryPageHeader, MemoryPageStat } from "./memory-page-header";
 import { useFeatures } from "@/lib/features-context";
 
 const FALLBACK_COLOR = "#0074d9";
@@ -57,17 +67,21 @@ export function HomeView({
 }) {
   const t = useTranslations("home");
   const tk = useTranslations("pages");
+  const tNav = useTranslations("bank.sidebar");
+  const tMemoryOrganization = useTranslations("memoryOrganization");
   const router = useRouter();
   const { features } = useFeatures();
   const observationsEnabled = features?.observations ?? false;
   const [stats, setStats] = useState<BankStats | null>(null);
   const [graph, setGraph] = useState<{ nodes?: unknown[]; edges?: unknown[] } | null>(null);
-  const [graphLoading, setGraphLoading] = useState(true);
+  const [graphLoadedBankId, setGraphLoadedBankId] = useState<string | null>(null);
+  const graphLoading = graphLoadedBankId !== bankId;
   const [roots, setRoots] = useState<PageNode[]>([]);
   const [pages, setPages] = useState<PageNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [docs, setDocs] = useState<DocItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadedBankId, setLoadedBankId] = useState<string | null>(null);
+  const loading = loadedBankId !== bankId;
 
   const toggleFolder = (id: string) =>
     setExpanded((prev) => {
@@ -79,7 +93,6 @@ export function HomeView({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     // The light panels (stats, pages, docs) gate the page — they're small and
     // fast, so the dashboard paints immediately.
     Promise.allSettled([
@@ -104,7 +117,7 @@ export function HomeView({
         );
       }
       if (d.status === "fulfilled") setDocs((d.value as { items?: DocItem[] }).items || []);
-      setLoading(false);
+      setLoadedBankId(bankId);
     });
     return () => {
       cancelled = true;
@@ -116,7 +129,6 @@ export function HomeView({
   // cap. The full memory graph lives in the Memories view.
   useEffect(() => {
     let cancelled = false;
-    setGraphLoading(true);
     client
       .getGraph({ bank_id: bankId, limit: GRAPH_NODE_CAP })
       .then((g) => {
@@ -124,7 +136,7 @@ export function HomeView({
       })
       .catch(() => {})
       .finally(() => {
-        if (!cancelled) setGraphLoading(false);
+        if (!cancelled) setGraphLoadedBankId(bankId);
       });
     return () => {
       cancelled = true;
@@ -182,10 +194,63 @@ export function HomeView({
 
   return (
     <div>
-      <h1 className="text-3xl font-bold mb-2 text-foreground">{t("title")}</h1>
-      <p className="text-muted-foreground mb-6">
-        {t("subtitle")} <span className="font-mono text-foreground">{bankId}</span>
-      </p>
+      <MemoryPageHeader
+        icon={LayoutDashboard}
+        title={t("title")}
+        description={t("subtitle")}
+        className="mb-5"
+      >
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          {stats ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <MemoryPageStat
+                icon={Database}
+                label={t("statMemories")}
+                value={stats.total_nodes.toLocaleString()}
+              />
+              <MemoryPageStat
+                icon={Layers}
+                label={t("statObservations")}
+                value={stats.total_observations.toLocaleString()}
+                tone="violet"
+              />
+              <MemoryPageStat
+                icon={Network}
+                label={t("statPages")}
+                value={pages.length.toLocaleString()}
+                tone="emerald"
+              />
+              <MemoryPageStat
+                icon={FileText}
+                label={t("statDocuments")}
+                value={stats.total_documents.toLocaleString()}
+                tone="amber"
+              />
+            </div>
+          ) : (
+            <span />
+          )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {[
+              { id: "data", label: tNav("memories"), icon: Database },
+              { id: "organize", label: tMemoryOrganization("navLabel"), icon: ListChecks },
+              { id: "pages", label: tNav("pages"), icon: Network },
+              { id: "documents", label: tNav("documents"), icon: FileText },
+            ].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onNavigate(id)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background/60 px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/25 hover:bg-primary/[0.06] hover:text-foreground"
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+                <ArrowRight className="h-3 w-3 opacity-45" />
+              </button>
+            ))}
+          </div>
+        </div>
+      </MemoryPageHeader>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[520px]">
         {/* Memory constellation — fills the row height so it never leaves a gap. */}

@@ -16,7 +16,7 @@ export default {
     _input: unknown,
     options: { port?: number; processRequest?: ProcessRequest } = {}
   ) => {
-    const port = Number(options.port ?? 19077);
+    const port = Number(options.port ?? 18888);
     if (!Number.isInteger(port) || port < 1024 || port > 65535)
       throw new Error("Invalid Hindsight port");
     const cfg = loadConfig({ harness: "magpie" });

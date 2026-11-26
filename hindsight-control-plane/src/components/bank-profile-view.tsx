@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -188,7 +188,7 @@ export function BankProfileView({ hideReflectFields = false }: { hideReflectFiel
       setProfile(profileData);
       setStats(statsData as BankStats);
       setDirectives(directivesData);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setLoading(false);
@@ -205,7 +205,7 @@ export function BankProfileView({ hideReflectFields = false }: { hideReflectFiel
       setCurrentBank(null);
       await loadBanks();
       router.push("/");
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setIsDeleting(false);
@@ -223,7 +223,7 @@ export function BankProfileView({ hideReflectFields = false }: { hideReflectFiel
       toast.success("Success", {
         description: result.message || "Observations cleared successfully",
       });
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setIsClearingObservations(false);
@@ -239,7 +239,7 @@ export function BankProfileView({ hideReflectFields = false }: { hideReflectFiel
       setDirectives((prev) => prev.filter((d) => d.id !== directiveDeleteTarget.id));
       if (selectedDirective?.id === directiveDeleteTarget.id) setSelectedDirective(null);
       setDirectiveDeleteTarget(null);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setDeletingDirective(false);
@@ -647,7 +647,7 @@ function DispositionEditDialog({
         disposition_empathy: editDisposition.empathy,
       });
       onSaved();
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setSaving(false);
@@ -738,7 +738,7 @@ function MissionEditDialog({
         reflect_mission: editMission || null,
       });
       onSaved();
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setSaving(false);
@@ -845,7 +845,7 @@ function DirectiveFormDialog({
         onSaved?.(result);
         onClose();
       }
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setSubmitting(false);

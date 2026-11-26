@@ -141,7 +141,7 @@ function makeTestConfig(bankId: string): {
   apiToken?: string;
   containerConfig: RawConfig & {
     bankId: string;
-    autoInject: "reflect";
+    autoInject: "recall";
     autoSeed: boolean;
     codebaseSurvey: boolean;
     gitIngest: "none";
@@ -161,7 +161,7 @@ function makeTestConfig(bankId: string): {
       apiToken,
       bankId,
       // The Docker run must exercise semantic injection, not merely record an empty session.
-      autoInject: "reflect",
+      autoInject: "recall",
       autoSeed: false,
       codebaseSurvey: false,
       gitIngest: "none",

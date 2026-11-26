@@ -67,7 +67,14 @@ if (!existsSync(tracedModules)) {
   fail(`${distDirName}/standalone/node_modules not found - standalone build failed`);
 }
 
-rmSync(output, { recursive: true, force: true });
+try {
+  rmSync(output, { recursive: true, force: true });
+} catch (err) {
+  if (err?.code !== "EPERM" && err?.code !== "EBUSY") throw err;
+  for (const entry of readdirSync(output)) {
+    rmSync(path.join(output, entry), { recursive: true, force: true });
+  }
+}
 cpSync(path.dirname(serverJs), output, { recursive: true });
 cpSync(tracedModules, path.join(output, "node_modules"), { recursive: true });
 mkdirSync(path.join(output, ".next"), { recursive: true });

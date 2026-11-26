@@ -43,6 +43,8 @@ from ..document_history import (
 )
 from ..memory_engine import count_tokens
 from ..schema import fq_table
+from ..sync_journal import mark_sync_tx_managed, record_sync_change
+from ..sync_objects_codec import export_object_payload
 
 if TYPE_CHECKING:
     from ...config import HindsightConfig
@@ -3056,7 +3058,7 @@ async def _streaming_retain_batch(
     # semaphore inside fact_extraction to 32 concurrent).  As each completes
     # it pushes the enriched result into the queue for the DB consumer.
     async def _llm_producer() -> None:
-        async def _extract_one(global_idx: int, chunk_text: str) -> None:
+        async def _extract_one(global_idx: int, chunk_text: str, before: str, after: str) -> None:
             source = contents[chunk_to_content[global_idx]] if contents else _default_content
             event_date = source.event_date
             if prior_dates is not None and source.event_date_defaulted and event_date is not None:
@@ -3073,6 +3075,8 @@ async def _streaming_retain_batch(
                 tags=source.tags,
                 attachment_filenames=source.attachment_filenames,
                 observation_scopes=source.observation_scopes,
+                context_before=before,
+                context_after=after,
             )
             # Attribute this chunk's extraction LLM call to its document, so the
             # trace row carries document_id (a document accrues one such trace
@@ -3117,8 +3121,18 @@ async def _streaming_retain_batch(
 
         tasks: list[asyncio.Task] = []
         skipped_total = 0
+        # The neighbours a chunk is extracted with (#6645), from the same content item only; the
+        # prompt trims them. The list entries are freed as the loop and the tasks go, so the
+        # previous chunk is kept here before its entry is cleared.
+        with_context = config.retain_chunk_context_tokens > 0
+        previous_chunk = ""
         try:
             for i, chunk_text in enumerate(all_pre_chunks):
+                same_item_before = i > 0 and chunk_to_content[i - 1] == chunk_to_content[i]
+                same_item_after = i + 1 < len(all_pre_chunks) and chunk_to_content[i + 1] == chunk_to_content[i]
+                before = previous_chunk if with_context and same_item_before else ""
+                after = all_pre_chunks[i + 1] if with_context and same_item_after else ""
+                previous_chunk = chunk_text
                 chunk_hash = chunk_storage.compute_chunk_hash(chunk_text)
                 if chunk_hash in existing_chunk_hashes:
                     # Memory: skipped chunks aren't needed either.
@@ -3132,7 +3146,7 @@ async def _streaming_retain_batch(
                     # return below throws away.
                     source = contents[chunk_to_content[i]] if contents else _default_content
                     extracted_content_tokens[0] += count_tokens(chunk_text) + count_tokens(source.context or "")
-                tasks.append(asyncio.create_task(_extract_one(i, chunk_text)))
+                tasks.append(asyncio.create_task(_extract_one(i, chunk_text, before, after)))
 
             if skipped_total > 0:
                 log_buffer.append(
@@ -3353,6 +3367,7 @@ async def _streaming_retain_batch(
                     return
                 async with acquire_with_retry(pool) as conn:
                     async with conn.transaction():
+                        await mark_sync_tx_managed(conn)
                         # Same create-and-lock the fact-bearing path uses. Routed
                         # through the ops layer so this branch takes the row lock
                         # on Oracle too, and so the append gate below sees the
@@ -3396,6 +3411,19 @@ async def _streaming_retain_batch(
                         # it now so the rest of the consumer loop doesn't pin
                         # a multi-MB string. Nothing reads it after tracking.
                         combined_content = ""
+                        if effective_doc_id:
+                            doc_payload = await export_object_payload(
+                                conn, object_type="document", bank_id=bank_id, object_id=effective_doc_id
+                            )
+                            if doc_payload is not None:
+                                await record_sync_change(
+                                    conn,
+                                    object_type="document",
+                                    bank_id=bank_id,
+                                    object_id=effective_doc_id,
+                                    op="upsert",
+                                    payload=doc_payload,
+                                )
                         log_buffer.append(f"[streaming] Document {effective_doc_id} tracked (0 facts in first batch)")
             log_buffer.append(
                 f"[streaming] Consumer batch {consumer_batch_idx + 1}: "
@@ -3551,6 +3579,7 @@ async def _streaming_retain_batch(
 
             async with acquire_with_retry(pool) as conn:
                 async with conn.transaction():
+                    await mark_sync_tx_managed(conn)
                     # --- Document ownership gate ---
                     # Ensure the document row exists, lock it to serialize all
                     # concurrent same-document writers, and read its pre-existing
@@ -3711,6 +3740,34 @@ async def _streaming_retain_batch(
                         outbox_callback=outbox_callback if is_last else None,
                         ops=pool.ops,
                     )
+                    if effective_doc_id:
+                        doc_payload = await export_object_payload(
+                            conn, object_type="document", bank_id=bank_id, object_id=effective_doc_id
+                        )
+                        if doc_payload is not None:
+                            await record_sync_change(
+                                conn,
+                                object_type="document",
+                                bank_id=bank_id,
+                                object_id=effective_doc_id,
+                                op="upsert",
+                                payload=doc_payload,
+                            )
+                    else:
+                        for content_ids in batch_result_ids:
+                            for uid in content_ids:
+                                unit_payload = await export_object_payload(
+                                    conn, object_type="memory_unit", bank_id=bank_id, object_id=uid
+                                )
+                                if unit_payload is not None:
+                                    await record_sync_change(
+                                        conn,
+                                        object_type="memory_unit",
+                                        bank_id=bank_id,
+                                        object_id=uid,
+                                        op="upsert",
+                                        payload=unit_payload,
+                                    )
 
                 logger.info(f"[streaming] Phase 2 (write transaction): {time.perf_counter() - p2_start:.3f}s")
 
@@ -3859,6 +3916,7 @@ async def _streaming_retain_batch(
             else:
                 async with acquire_with_retry(pool) as conn:
                     async with conn.transaction():
+                        await mark_sync_tx_managed(conn)
                         await _edge_provider.lock_pending_document(
                             conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=effective_doc_id
                         )
@@ -3892,6 +3950,19 @@ async def _streaming_retain_batch(
                         # Memory: combined_content has been persisted and won't be
                         # read again — release the per-document text now.
                         combined_content = ""
+                        if effective_doc_id:
+                            doc_payload = await export_object_payload(
+                                conn, object_type="document", bank_id=bank_id, object_id=effective_doc_id
+                            )
+                            if doc_payload is not None:
+                                await record_sync_change(
+                                    conn,
+                                    object_type="document",
+                                    bank_id=bank_id,
+                                    object_id=effective_doc_id,
+                                    op="upsert",
+                                    payload=doc_payload,
+                                )
                         log_buffer.append(f"[streaming] Document {effective_doc_id} tracked (no facts extracted)")
 
         # Transactional-outbox fallback. The in-TXN fire only runs on a final
@@ -4509,6 +4580,7 @@ async def _try_delta_retain(
             # the chunk state we based our delta diff on is stale — abort.
             async with acquire_with_retry(pool) as conn:
                 async with conn.transaction():
+                    await mark_sync_tx_managed(conn)
                     current_hash = await _delta_store.lock_document_hash(
                         conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=effective_doc_id
                     )
@@ -4705,6 +4777,19 @@ async def _try_delta_retain(
                         outbox_callback=outbox_callback,
                         ops=pool.ops,
                     )
+                    if is_final and effective_doc_id:
+                        doc_payload = await export_object_payload(
+                            conn, object_type="document", bank_id=bank_id, object_id=effective_doc_id
+                        )
+                        if doc_payload is not None:
+                            await record_sync_change(
+                                conn,
+                                object_type="document",
+                                bank_id=bank_id,
+                                object_id=effective_doc_id,
+                                op="upsert",
+                                payload=doc_payload,
+                            )
 
                 if not is_final:
                     # Logged on its own, not buffered: an interrupted retain never reaches the
@@ -4818,6 +4903,7 @@ async def _delta_metadata_only(
         # marked consolidated against observations that are gone.
         async with acquire_with_retry(pool) as conn:
             async with conn.transaction():
+                await mark_sync_tx_managed(conn)
                 await fact_storage.update_memory_units_metadata_and_tags(
                     conn,
                     bank_id,
@@ -4829,6 +4915,18 @@ async def _delta_metadata_only(
                     previous_document_tags=previous_document_tags,
                     ops=pool.ops,
                 )
+                doc_payload = await export_object_payload(
+                    conn, object_type="document", bank_id=bank_id, object_id=document_id
+                )
+                if doc_payload is not None:
+                    await record_sync_change(
+                        conn,
+                        object_type="document",
+                        bank_id=bank_id,
+                        object_id=document_id,
+                        op="upsert",
+                        payload=doc_payload,
+                    )
         if outbox_callback is not None:
             # The outbox is still SQL for every deployment, so it keeps its own connection.
             async with acquire_with_retry(pool) as conn:
@@ -4841,6 +4939,7 @@ async def _delta_metadata_only(
     async def _update() -> bool:
         async with acquire_with_retry(pool) as conn:
             async with conn.transaction():
+                await mark_sync_tx_managed(conn)
                 # Lock the document row to serialize with concurrent retains
                 current_content_hash = await _meta_store.lock_document_hash(
                     conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id
@@ -4879,6 +4978,18 @@ async def _delta_metadata_only(
                     previous_document_tags=previous_document_tags,
                     ops=pool.ops,
                 )
+                doc_payload = await export_object_payload(
+                    conn, object_type="document", bank_id=bank_id, object_id=document_id
+                )
+                if doc_payload is not None:
+                    await record_sync_change(
+                        conn,
+                        object_type="document",
+                        bank_id=bank_id,
+                        object_id=document_id,
+                        op="upsert",
+                        payload=doc_payload,
+                    )
                 if outbox_callback is not None:
                     await outbox_callback(conn)
         return True
@@ -5004,6 +5115,9 @@ def _build_delta_contents(
             resolve_entities=template_content.resolve_entities,
             tags=template_content.tags,
             observation_scopes=template_content.observation_scopes,
+            # Unchanged neighbours too: an appended reply must see the turn it answers (#6645).
+            context_before=new_chunks_with_contents.get(original_chunk_idx - 1, ""),
+            context_after=new_chunks_with_contents.get(original_chunk_idx + 1, ""),
         )
         delta_contents.append(delta_content)
         delta_chunk_map[len(delta_contents) - 1] = original_chunk_idx

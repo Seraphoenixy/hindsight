@@ -4,7 +4,7 @@ import * as React from "react";
 import { Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { useBank } from "@/lib/bank-context";
 import { bankRoute } from "@/lib/bank-url";
 import { hoistCurrentBank } from "@/lib/bank-order";
@@ -74,6 +74,7 @@ import {
   Copy,
   Globe,
   MoreHorizontal,
+  RefreshCw,
   ScrollText,
   ServerCog,
 } from "lucide-react";
@@ -94,7 +95,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { BANKS_PAGE_SIZE, type BankInfo } from "@/lib/bank-context";
+import { BANKS_PAGE_SIZE } from "@/lib/bank-context";
 
 function formatCompact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
@@ -136,6 +137,7 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
   const tNavBank = useTranslations("nav.bank");
   const tLocal = useTranslations("local");
   const tWorkingRules = useTranslations("workingRules");
+  const syncLabel = useLocale().startsWith("zh") ? "多端同步" : "Sync";
   const tKb = useTranslations("knowledgeBanks.selector");
   const tCommon = useTranslations("common");
   const tAddDocument = useTranslations("addDocument");
@@ -1008,6 +1010,16 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
           <span className="text-sm font-medium">{tWorkingRules("title")}</span>
         </Link>
 
+        {/* Global Sync management page */}
+        <Link
+          href="/sync"
+          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+          title={syncLabel}
+        >
+          <RefreshCw className="h-5 w-5" />
+          <span className="text-sm font-medium">{syncLabel}</span>
+        </Link>
+
         {/* Local management: this machine's profiles, their .env and their
             daemon. A separate page rather than a bank view because it is not
             about one bank — it is about the stack serving all of them, and it is
@@ -1049,6 +1061,12 @@ function BankSelectorInner({ kind = "memory", knowledgeBankId }: BankSelectorPro
               <Link href="/working-rules">
                 <ScrollText className="h-4 w-4 mr-2" />
                 {tWorkingRules("title")}
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/sync">
+                <RefreshCw className="h-4 w-4 mr-2" />
+                {syncLabel}
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>

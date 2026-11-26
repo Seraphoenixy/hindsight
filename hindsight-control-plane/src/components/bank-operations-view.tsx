@@ -460,7 +460,7 @@ export function BankOperationsView({
     try {
       await ops.cancel(currentBank, operationId);
       await loadOperations();
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setCancellingOpId(null);
@@ -474,7 +474,7 @@ export function BankOperationsView({
     try {
       await ops.retry(currentBank, operationId);
       await loadOperations();
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setRetryingOpId(null);
@@ -524,7 +524,7 @@ export function BankOperationsView({
         setSelectedOperation(null);
       }
       await loadOperations();
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setDeletingOpId(null);

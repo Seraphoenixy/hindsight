@@ -19,6 +19,34 @@ const MAX_ENTRIES = 9;
 
 const results = new Map<string, Entry>();
 const inflight = new Map<string, Promise<unknown>>();
+let globalGeneration = 0;
+const bankGenerations = new Map<string, number>();
+
+function cacheGeneration(bankId: string): number {
+  return globalGeneration + (bankGenerations.get(bankId) ?? 0);
+}
+
+function bankPrefix(bankId: string): string {
+  return JSON.stringify([bankId]).slice(0, -1) + ",";
+}
+
+export function invalidateGraphCache(bankId?: string): void {
+  if (!bankId) {
+    globalGeneration += 1;
+    bankGenerations.clear();
+    results.clear();
+    inflight.clear();
+    return;
+  }
+  bankGenerations.set(bankId, (bankGenerations.get(bankId) ?? 0) + 1);
+  const prefix = bankPrefix(bankId);
+  for (const key of results.keys()) {
+    if (key.startsWith(prefix)) results.delete(key);
+  }
+  for (const key of inflight.keys()) {
+    if (key.startsWith(prefix)) inflight.delete(key);
+  }
+}
 
 function graphKey(p: GraphParams): string {
   return JSON.stringify([
@@ -66,10 +94,13 @@ export function fetchGraph(p: GraphParams, signal?: AbortSignal): Promise<unknow
 export function prefetchGraph(p: GraphParams): Promise<void> {
   const key = graphKey(p);
   if (results.has(key) || inflight.has(key)) return Promise.resolve();
+  const gen = cacheGeneration(p.bank_id);
   const read = client
     .getGraph(p)
     .then((data) => {
-      storeGraph(p, data);
+      if (cacheGeneration(p.bank_id) === gen) {
+        storeGraph(p, data);
+      }
       return data;
     })
     .finally(() => inflight.delete(key));

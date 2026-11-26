@@ -79,7 +79,7 @@ const TOOL_GUIDE =
   "- hindsight_list_pages / hindsight_read_page — BEFORE substantial work, list the pages and " +
   "read the relevant ones to ground yourself in this repo's architecture, conventions, and past decisions instead " +
   "of re-deriving them from the code; follow any [[page:<id>]] links you see.\n" +
-  "- hindsight_reflect(query) — when pages are too shallow and you need the WHY: deep reasoning over the " +
+  "- hindsight_reflect(query) — when pages and recall are too shallow and you need the WHY: deep reasoning over the " +
   "repo's full memory for the past decision and exact values that explain a behavior or bug (slower — " +
   'use deliberately, and credit results with a blockquote header "> 🧠 **From Hindsight memory** — <summary>").\n' +
   "- hindsight_capture_initiative(title, summary) — right after the user approves a plan or finishes brainstorming a " +
@@ -92,31 +92,32 @@ const TOOL_GUIDE =
   "- hindsight_edit_memory(...) — rewrite, archive, or restore one recalled memory only after the user explicitly requests that change.";
 
 const ENGINEERING_TOOL_GUIDE =
-  "- hindsight_reflect(query) — ask a concrete project question when remembered decisions, operating " +
-  "constraints, or verified troubleshooting experience could change what you do. Check applicability " +
-  "and credit memory used with a blockquote beginning `> 🧠 **From Hindsight memory**`.\n" +
-  "- hindsight_search_pages(query) / hindsight_read_page — read relevant project knowledge pages when they exist.\n" +
+  "- hindsight_search_pages(query) / hindsight_read_page — read relevant project knowledge pages when they exist. " +
+  "This is the first retrieval path: it is LLM-free and returns curated pages.\n" +
+  "- hindsight_recall(query) — retrieve raw world/experience facts when pages lack the exact evidence. " +
+  "LLM-free; results include IDs, text, source metadata, and state.\n" +
+  "- hindsight_reflect(query) — explicit deep reasoning over the bank when pages and recall are too shallow. " +
+  "This call spends a sub-LLM and is never part of automatic recall; use it deliberately and credit results " +
+  "with a blockquote beginning `> 🧠 **From Hindsight memory**`.\n" +
   "- hindsight_ingest_document(title, content, reference) — save durable knowledge from a user-supplied " +
   "document. Include its location and version when available.\n" +
-  "- hindsight_recall(query) — retrieve raw world/experience facts when pages lack the exact evidence. " +
-  "Results include IDs, text, source metadata, and state.\n" +
   "- hindsight_edit_memory(...) — only after the user explicitly requests a correction, archive, or restore. " +
   "Use the exact id, text, and state from hindsight_recall so stale edits are rejected.";
 
 /**
- * Any autoInject other than "reflect" means no first-prompt synthesis. Keep the pull trigger explicit,
- * but start with the curated pages: they are the fast path, while reflection is the slower fallback
- * when those pages do not contain enough depth for the new goal.
+ * Automatic injection never synthesizes. Keep the pull trigger explicit, starting with the curated
+ * pages: they are the fast path, while reflect is the explicit slower path when pages do not carry
+ * enough depth for the new goal.
  */
 const PAGES_FIRST_ON_GOALS =
   "- The user just set a NEW task or goal → search the pages FIRST with " +
   "hindsight_search_pages. No synthesis is injected automatically in this configuration; " +
-  "call hindsight_reflect only when those pages are too shallow and deeper reasoning is needed.\n";
+  "use hindsight_recall when pages lack the evidence; call hindsight_reflect only when pages and " +
+  "recall are too shallow and deeper reasoning is needed.\n";
 
 export interface ToolGuideOpts {
-  /** Add the new-goal pull trigger (no automatic synthesis: cfg.autoInject !== "reflect"). It used to send
-   *  the agent straight to hindsight_reflect; it now goes to the pages first and keeps
-   *  reflect for what they don't cover. The field name is unchanged so call sites stay stable. */
+  /** Add the new-goal pull trigger. Automatic synthesis was removed, so every configuration is
+   *  pages-first. The field name is unchanged so call sites stay stable. */
   reflectOnNewGoals?: boolean;
   engineering?: boolean;
   /** cfg.toolGuideExtra: the team's own guidance, added after ours rather than replacing it. */

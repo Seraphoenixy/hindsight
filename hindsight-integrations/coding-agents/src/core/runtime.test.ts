@@ -7,12 +7,12 @@ import { resolveConfig } from "./config";
 import type { HindsightClient } from "./hindsight";
 import { RuntimeCore } from "./runtime";
 
-// The real ensureDaemon shells out (uvx/cargo probes) and spawns a detached process; only WHERE it
-// is called from is under test here — the deciding itself is covered in daemon.test.ts.
-const daemonSpy = vi.hoisted(() => vi.fn(async () => {}));
+// The connection and detached startup are covered in daemon.test.ts.
+const daemonSpy = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("./daemon", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./daemon")>()),
   ensureDaemon: daemonSpy,
+  isHookServerReady: async () => true,
 }));
 
 // Whether a bank is new enough to defer is session-start's call (session-start.test.ts); here only
@@ -30,11 +30,11 @@ vi.mock("./session-start", async (importOriginal) => {
 });
 
 describe("RuntimeCore", () => {
-  it("uses the shared prompt lifecycle and consumes the new-bank reflect deferral once", async () => {
+  it("uses the shared prompt lifecycle and consumes the new-bank injection deferral once", async () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: [] })),
-      reflect: vi.fn(async () => "shared reflect"),
+      recallObservations: vi.fn(async () => ["shared recall"]),
     } as unknown as HindsightClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));
 
@@ -45,11 +45,11 @@ describe("RuntimeCore", () => {
       forceDefer.on = false;
     }
     await runtime.onPrompt("runtime-shared-lifecycle", "first prompt");
-    expect(client.reflect).not.toHaveBeenCalled();
+    expect(client.recallObservations).not.toHaveBeenCalled();
 
     await runtime.onPrompt("runtime-shared-lifecycle", "second prompt");
-    expect(client.reflect).toHaveBeenCalledTimes(1);
-    expect(runtime.getInjection("runtime-shared-lifecycle")).toContain("shared reflect");
+    expect(client.recallObservations).toHaveBeenCalledTimes(1);
+    expect(runtime.getInjection("runtime-shared-lifecycle")).toContain("shared recall");
   });
 
   it("hands out a block once per turn: no other session's, and none on a prompt with no text", async () => {
@@ -58,7 +58,7 @@ describe("RuntimeCore", () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: [] })),
-      reflect: vi.fn(async () => "a memory"),
+      recallObservations: vi.fn(async () => ["a memory"]),
     } as unknown as HindsightClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));
 
@@ -76,7 +76,7 @@ describe("RuntimeCore", () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: [] })),
-      reflect: vi.fn(async () => "a memory"),
+      recallObservations: vi.fn(async () => ["a memory"]),
     } as unknown as HindsightClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));
     const id = `session-guide-${randomUUID()}`;
@@ -89,34 +89,34 @@ describe("RuntimeCore", () => {
     expect(runtime.getInjection(id)).toContain("<hindsight_page_refresh>");
   });
 
-  it("drops a host's injected tags from the prompt before reflecting on it (#6488)", async () => {
+  it("drops a host's injected tags from the prompt before recalling on it (#6488)", async () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: [] })),
-      reflect: vi.fn(async () => "a memory"),
+      recallObservations: vi.fn(async () => ["a memory"]),
     } as unknown as HindsightClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));
-    const reflect = vi.mocked(client.reflect);
+    const recall = vi.mocked(client.recallObservations);
 
     const a = `session-a-${randomUUID()}`;
     await runtime.onPrompt(a, "<system-reminder>host text</system-reminder>");
-    expect(reflect).not.toHaveBeenCalled();
+    expect(recall).not.toHaveBeenCalled();
     expect(runtime.getInjection(a)).toBeUndefined();
 
     await runtime.onPrompt(
       a,
       "<system-reminder>\nhost text\n</system-reminder>\n\nwhy does upload retry fail?"
     );
-    expect(reflect).toHaveBeenCalledTimes(1);
-    expect(reflect.mock.calls[0][0]).not.toContain("system-reminder");
-    expect(reflect.mock.calls[0][0]).toContain("why does upload retry fail?");
+    expect(recall).toHaveBeenCalledTimes(1);
+    expect(recall.mock.calls[0][0]).not.toContain("system-reminder");
+    expect(recall.mock.calls[0][0]).toContain("why does upload retry fail?");
   });
 
   it("shows the recall toast as plain text, without the terminal's color codes (#6257)", async () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: [] })),
-      reflect: vi.fn(async () => "a memory"),
+      recallObservations: vi.fn(async () => ["a memory"]),
     } as unknown as HindsightClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));
     const notify = vi.fn();
@@ -137,7 +137,7 @@ describe("RuntimeCore", () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: pages })),
-      reflect: vi.fn(async () => ""),
+      recallObservations: vi.fn(async () => []),
     } as unknown as HindsightClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));
 
@@ -327,7 +327,7 @@ describe("RuntimeCore daemon lifecycle", () => {
   it("starts the daemon at seedIfCold — the plugin hosts' SessionStart", async () => {
     const core = new RuntimeCore(client, "bank-1", daemonCfg, "dsh", "/repos/one");
     await core.seedIfCold("/repos/one");
-    expect(daemonSpy).toHaveBeenCalledWith(daemonCfg, "dsh", { waitMs: 12_000 });
+    expect(daemonSpy).toHaveBeenCalledWith(daemonCfg, "dsh");
   });
 
   // A daemon that is gone by write-back time — crashed, or stopped by the user between turns —
@@ -345,7 +345,9 @@ describe("RuntimeCore daemon lifecycle", () => {
   // onSessionIdle, and a 40s block there would freeze the UI on a cold daemon.
   it("never makes the host wait for the daemon on the write path", async () => {
     let released = () => {};
-    daemonSpy.mockImplementationOnce(() => new Promise<void>((r) => (released = r)));
+    daemonSpy.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => (released = () => resolve(true)))
+    );
     const core = new RuntimeCore(client, "bank-1", daemonCfg, "dsh", "/repos/one");
     core.setTranscriptSource(async () => [{ role: "user", content: "hi" }] as never);
     await expect(core.onSessionIdle("s2")).resolves.toBeUndefined();

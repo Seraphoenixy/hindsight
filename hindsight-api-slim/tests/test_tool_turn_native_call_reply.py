@@ -1,7 +1,7 @@
 """A tool turn answered with a native tool call is read as the reply (#6520).
 
 A schema tool turn sends no ``tools``, but it describes the functions and asks for one by
-name. gpt-oss (on Bedrock through LiteLLM, and on Ollama's native API) answers with a native
+name. gpt-oss on Ollama's native API answers with a native
 call and empty ``content``; every provider read only ``content``, so every forced reflect
 step came back "no usable call" and reflect failed on its first turn.
 """
@@ -14,7 +14,6 @@ import pytest
 from pydantic import BaseModel
 
 from hindsight_api.engine.llm_interface import LLM_TOOL_CHOICE_REQUIRED, LLMToolChoice
-from hindsight_api.engine.providers.litellm_llm import LiteLLMLLM
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM, ProviderResponseError
 from hindsight_api.engine.providers.tools_via_schema import (
     calls_from_reply,
@@ -128,18 +127,6 @@ async def test_openai_compatible_tool_turn_reads_a_native_call() -> None:
                 skip_validation=True,
                 max_retries=0,
             )
-
-
-@pytest.mark.asyncio
-async def test_litellm_tool_turn_reads_a_native_call() -> None:
-    llm = LiteLLMLLM(provider="litellm", api_key="k", base_url="", model="bedrock/openai.gpt-oss-20b-1:0")
-    fmt = schema_format(response_schema(TOOLS, FORCED))
-    with patch.object(llm, "_acompletion", new_callable=AsyncMock) as completion:
-        completion.return_value = _openai_response([_sdk_call("search_mental_models", json.dumps(ARGS))])
-        result = await llm.call(
-            messages=[{"role": "user", "content": "q"}], response_format=fmt, skip_validation=True, max_retries=0
-        )
-    assert result.content == {"call": {"name": "search_mental_models", "arguments": ARGS}}
 
 
 @pytest.mark.asyncio

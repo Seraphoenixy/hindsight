@@ -12,6 +12,11 @@
 | [ADR-006：本地运维并入控制平面](decisions/006-local-ops-control-plane.md) | 2026-11-21 | ops 架构保留；DSH 入口由 ADR-007 取代 |
 | [ADR-007：Magpie 统一管理入口](decisions/007-magpie-management.md) | 2026-11-23 | 已采纳；管理进程独立生命周期 |
 | [ADR-008：工作准则（Working Rules）独立子系统](decisions/008-working-rules.md) | 2026-11-24 | 已采纳；独立于 bank directives 的全局/项目准则 |
+| [ADR-009：本地记忆库快照同步](decisions/009-local-memory-sync.md) | 2026-11-25 | 已采纳；本地 PostgreSQL 副本与独立 Linux 中继 |
+| [ADR-010：同名工作区共享项目身份](decisions/010-workspace-name-identity.md) | 2026-11-26 | 已采纳；项目名称代替本地路径短码 |
+| [ADR-011：本地设置页读路径](decisions/011-local-read-path.md) | 2026-11-26 | 已采纳；`ops snapshot` 分组读取，诊断后置 |
+| [ADR-012：多端同步设置独立成页](decisions/012-sync-settings-page.md) | 2026-11-26 | 已采纳；同步配置从 `/local` 迁至 `/sync` |
+| [ADR-013：Agent 召回不经过子 LLM](decisions/013-agent-recall-without-sub-llm.md) | 2026-11-26 | 已采纳；hook 默认注入改为 `recall`，移除自动 reflect |
 
 ## 新增决策的格式
 

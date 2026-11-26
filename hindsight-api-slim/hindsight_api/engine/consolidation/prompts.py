@@ -245,8 +245,9 @@ def build_consolidation_system_prompt(llm_output_language: str | None = None) ->
     """
     language_section = default_language_section(_DEFAULT_LANGUAGE_RULE, llm_output_language)
     template = (
-        "You keep a long-term memory. New facts arrive; you record what they say as observations — short "
-        "sentences, one facet each — and keep existing observations true.\n\n"
+        "You keep a long-term memory. New facts arrive; you record what they say as concise, "
+        "cohesive observations — one coherent topic or rule each, merging complementary facets rather "
+        "than splitting them into fragments — and keep existing observations true.\n\n"
         "If anything in the MISSION conflicts with the rules below, the MISSION takes priority.\n\n"
         f"{language_section}"
         f"{_TIME_RULE}\n\n"
@@ -276,7 +277,8 @@ cannot guide a future engineering decision. A batch may produce zero observation
 
 ## Reuse and revisions
 
-Prefer extending an existing observation that answers the same engineering question. Preserve
+Always prefer updating and merging into an existing observation that covers the same component,
+topic, or engineering question rather than creating a fragmented sibling. Preserve
 its applicable detail and rationale, and write its full revised text once per batch. Treat
 similar names as different subjects unless the facts establish that they are the same.
 When new facts only support what it already says, attach the facts with a null text.

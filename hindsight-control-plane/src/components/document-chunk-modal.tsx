@@ -54,7 +54,7 @@ export function DocumentChunkModal({ type, id, onClose }: DocumentChunkModalProp
     };
 
     loadData();
-  }, [id, type, currentBank]);
+  }, [id, type, currentBank, t]);
 
   const isOpen = id !== null;
 

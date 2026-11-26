@@ -23,7 +23,6 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { ZodRawShape } from "zod";
 import type { HindsightClient } from "./hindsight";
 import { syncStatus } from "./status";
-import { gitBranch } from "./git";
 import { applyBankConfig, DEFAULT_REFLECT_TOOL_TIMEOUT_MS, loadConfig } from "./config";
 import { diagFilePath } from "./diag";
 import { describeError } from "./log";
@@ -127,6 +126,8 @@ function shapeEngineeringMemory(record: {
   context?: string;
   date?: string;
   mentioned_at?: string | null;
+  occurred_start?: string | null;
+  occurred_end?: string | null;
   tags?: string[];
   document_id?: string | null;
   metadata?: Record<string, string>;
@@ -143,6 +144,8 @@ function shapeEngineeringMemory(record: {
     ...(record.context ? { context: record.context } : {}),
     ...(record.date ? { date: record.date } : {}),
     ...(record.mentioned_at ? { mentioned_at: record.mentioned_at } : {}),
+    occurred_start: record.occurred_start ?? null,
+    occurred_end: record.occurred_end ?? null,
     tags: record.tags ?? [],
     ...(record.document_id ? { document_id: record.document_id } : {}),
     ...(record.metadata ? { metadata: record.metadata } : {}),
@@ -167,7 +170,7 @@ export function buildPageTools(
     /** How long `hindsight_reflect` waits on the server (cfg.reflectToolTimeoutMs). Must be
      *  threaded in by every caller: left unset, the client falls back to a 120s deadline that
      *  aborts high-budget synthesis on a populated bank mid-flight (#3590). */
-    reflectTimeoutMs?: number;
+    reflectToolTimeoutMs?: number;
     /** Reflect budget for `hindsight_reflect` (cfg.reflectBudget, default "high"). */
     reflectBudget?: "low" | "mid" | "high";
     /** cfg.toolGuideExtra, added after the crediting note so it lands with the results too. */
@@ -260,6 +263,8 @@ export function buildPageTools(
         const records = await client.engineeringRecords(query, limit ?? 10);
         return {
           records: records.map(shapeEngineeringMemory),
+          applicability:
+            "Records describe knowledge at their mentioned_at time, not verified current state. Check current code and newer records before applying historical defaults.",
           crediting: CREDIT_REMINDER,
         };
       }),
@@ -454,7 +459,7 @@ export function buildPageTools(
         client.reflect(query, {
           ...(all_projects ? { allProjects: true } : {}),
           budget: opts.reflectBudget ?? "high",
-          timeoutMs: opts.reflectTimeoutMs ?? DEFAULT_REFLECT_TOOL_TIMEOUT_MS,
+          timeoutMs: opts.reflectToolTimeoutMs ?? DEFAULT_REFLECT_TOOL_TIMEOUT_MS,
         })
       ),
     },
@@ -578,40 +583,26 @@ export function buildPageTools(
     {
       name: "hindsight_working_rules",
       description:
-        "Read standing Working Rules for the user (cross-project global rules plus current project rules). " +
-        "Defaults to the effective active projection filtered by project and current Git branch; pass view='all' " +
+        "Read standing Working Rules for the user. " +
+        "Defaults to the effective active projection; pass view='all' " +
         "or filters to inspect stored rules and usage metadata.",
       inputSchema: {
         view: z
           .enum(["effective", "all"])
           .optional()
-          .describe("'effective' returns active filtered projection; 'all' lists stored entries"),
-        scope: z
-          .enum(["global", "project"])
-          .optional()
-          .describe("Optional scope filter when view='all'"),
-        include_archived: z
-          .boolean()
-          .optional()
-          .describe("Include archived rules when view='all'"),
+          .describe("'effective' returns active projection; 'all' lists stored entries"),
+        include_archived: z.boolean().optional().describe("Include archived rules when view='all'"),
         query: z
           .string()
           .trim()
           .max(200)
           .optional()
           .describe("Case-insensitive substring search when view='all'"),
-        branch: z
-          .string()
-          .trim()
-          .max(128)
-          .optional()
-          .describe("Git branch name to filter projection (defaults to current repository branch)"),
       },
       annotations: READ_ONLY_ANNOTATIONS,
-      handler: guarded(async ({ view, scope, include_archived, query, branch }) => {
-        if (view === "all" || scope || include_archived || query) {
+      handler: guarded(async ({ view, include_archived, query }) => {
+        if (view === "all" || include_archived || query) {
           const list = await client.listWorkingRules({
-            scope,
             includeArchived: include_archived,
             q: query,
           });
@@ -620,8 +611,7 @@ export function buildPageTools(
           }
           return list;
         }
-        const resolvedBranch = branch ?? (opts.repoDir ? gitBranch(opts.repoDir) : undefined);
-        const projection = await client.getWorkingRulesProjection({ branch: resolvedBranch });
+        const projection = await client.getWorkingRulesProjection();
         if (!projection) {
           return { supported: false, revision: "", text: "", entries: [] };
         }
@@ -632,8 +622,7 @@ export function buildPageTools(
       name: "hindsight_manage_working_rules",
       description:
         "Add, replace, or remove standing Working Rules when the user explicitly sets, updates, or " +
-        "withdraws an ongoing preference, workflow constraint, or coding rule. Use scope='global' for " +
-        "cross-project preferences or scope='project' for current-project rules. Do not store secrets, " +
+        "withdraws an ongoing preference, workflow constraint, or coding rule. Do not store secrets, " +
         "temporary progress, or one-off task context.",
       inputSchema: {
         action: z.enum(["add", "replace", "remove"]).describe("Mutation operation"),
@@ -654,31 +643,17 @@ export function buildPageTools(
         importance: z
           .enum(["critical", "normal", "low"])
           .optional()
-          .describe("Rule importance (default normal; replace keeps existing higher level unless raised)"),
-        scope: z
-          .enum(["global", "project"])
-          .optional()
-          .describe("Rule scope ('global' by default, or 'project' for the current workspace project)"),
-        pinned: z
-          .boolean()
-          .optional()
-          .describe("Reserve this rule in projections and protect it from capacity overflow archiving"),
-        branches: z
-          .array(z.string().trim().min(1).max(128))
-          .max(16)
-          .optional()
-          .describe("Optional Git branch names; omit on replace to keep existing branches, pass [] to clear"),
+          .describe(
+            "Rule importance (default normal; replace keeps existing higher level unless raised)"
+          ),
       },
       annotations: NON_DESTRUCTIVE_WRITE_ANNOTATIONS,
-      handler: guarded(async ({ action, content, old_text, importance, scope, pinned, branches }) => {
+      handler: guarded(async ({ action, content, old_text, importance }) => {
         const result = await client.mutateWorkingRules({
           action,
           content,
           old_text,
           importance,
-          scope,
-          pinned,
-          branches,
         });
         if (!result) {
           throw new Error("This Hindsight server does not support Working Rules yet.");

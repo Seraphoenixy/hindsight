@@ -11,10 +11,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from hindsight_api.config import ENV_LLM_LITELLM_PROMPT_CACHE, clear_config_cache
 from hindsight_api.engine.llm_interface import LLM_TOOL_CHOICE_REQUIRED, LLMToolChoice
 from hindsight_api.engine.llm_wrapper import LLMProvider
-from hindsight_api.engine.providers.litellm_llm import LiteLLMLLM
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 
 TOOLS = [
@@ -181,33 +179,3 @@ async def test_other_providers_keep_a_schema_per_forced_turn():
     sent = call.await_args.kwargs
     assert "call" not in sent["response_format"].model_json_schema()["properties"]
     assert not _marked(sent["messages"])
-
-
-@pytest.mark.parametrize(
-    ("model", "marks"),
-    [
-        ("bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", True),
-        ("vertex_ai/claude-sonnet-4-5", True),
-        ("bedrock/us.amazon.nova-lite-v1:0", False),
-        ("azure/gpt-4o", False),
-    ],
-)
-def test_litellm_marks_only_claude_models(monkeypatch, model: str, marks: bool):
-    monkeypatch.delenv(ENV_LLM_LITELLM_PROMPT_CACHE, raising=False)
-    clear_config_cache()
-    llm = LiteLLMLLM(provider="litellm", api_key="", base_url="", model=model)
-    assert llm.caches_marked_prefix() is marks
-
-
-@pytest.mark.parametrize(("setting", "marks"), [("true", True), ("false", False)])
-def test_the_setting_overrides_the_model_name(monkeypatch, setting: str, marks: bool):
-    """A Claude model behind an application inference profile ARN has no "claude" in its name."""
-    monkeypatch.setenv(ENV_LLM_LITELLM_PROMPT_CACHE, setting)
-    clear_config_cache()
-    try:
-        arn = "bedrock/arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123"
-        assert LiteLLMLLM(provider="bedrock", api_key="", base_url="", model=arn).caches_marked_prefix() is marks
-        claude = "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
-        assert LiteLLMLLM(provider="bedrock", api_key="", base_url="", model=claude).caches_marked_prefix() is marks
-    finally:
-        clear_config_cache()  # read lazily, after monkeypatch has put the env back

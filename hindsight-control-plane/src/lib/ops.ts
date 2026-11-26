@@ -290,10 +290,6 @@ interface OpsProfileConfig {
   cp_version: string | null;
 }
 
-export function getProfileConfig(profile: string): Promise<OpsProfileConfig> {
-  return readCached("config", profileArgs(normalizeProfile(profile)));
-}
-
 interface OpsOptionLabel {
   value: string;
   label: string;
@@ -335,6 +331,16 @@ export function getSettings(profile: string): Promise<OpsSettings> {
   return readCached("settings", profileArgs(normalizeProfile(profile)));
 }
 
+/**
+ * The sync page's group, separate from the local form's catalog.
+ *
+ * Two documents, two write paths: the local page must not own these keys, and
+ * the sync page must not fetch the other ~35 fields (ADR-012).
+ */
+export function getSyncSettings(profile: string): Promise<OpsSettings> {
+  return readCached("sync-settings", profileArgs(normalizeProfile(profile)));
+}
+
 export interface ModelsView {
   provider: string;
   base_url: string;
@@ -359,27 +365,6 @@ interface OpsEnvFile {
   path: string;
   content: string;
   exists: boolean;
-}
-
-export function getEnvFile(profile: string): Promise<OpsEnvFile> {
-  return readCached("env", profileArgs(normalizeProfile(profile)));
-}
-
-interface OpsPaths {
-  name: string;
-  display_name: string;
-  port: number;
-  config_path: string;
-  log_path: string;
-  lock_path: string;
-  database_url: string;
-  database_path: string | null;
-  daemon_url: string;
-  ui_url: string;
-}
-
-export function getPaths(profile: string): Promise<OpsPaths> {
-  return readCached("paths", profileArgs(normalizeProfile(profile)));
 }
 
 interface OpsHealth {
@@ -433,6 +418,14 @@ export function saveSettings(
   return runOps("save-settings", profileArgs(normalizeProfile(profile)), { values });
 }
 
+export function saveSyncSettings(
+  profile: string,
+  values: Record<string, string>
+): Promise<OpsSettings> {
+  invalidateOpsCache();
+  return runOps("save-sync-settings", profileArgs(normalizeProfile(profile)), { values });
+}
+
 export interface SaveConfigRequest {
   provider?: string;
   api_key?: string;
@@ -470,4 +463,152 @@ export function daemonAction(profile: string, action: string): Promise<OpsDaemon
   const command = { start: "daemon-start", stop: "daemon-stop", restart: "daemon-restart" }[action];
   if (!command) throw new Error(`unknown daemon action '${action}'`);
   return runOps(command, profileArgs(normalizeProfile(profile)));
+}
+
+export interface OpsLocalModelStatus {
+  name: string;
+  mode: string;
+  filename: string;
+  dimensions: number | null;
+  ctx: number;
+  downloaded: boolean;
+  downloading: boolean;
+  downloaded_bytes: number;
+  total_bytes: number | null;
+  path: string;
+  in_use: boolean;
+  error: string | null;
+}
+
+export interface OpsLocalModelsView {
+  gguf_dir: string;
+  models: OpsLocalModelStatus[];
+}
+
+export interface OpsDownloadLocalModelResult {
+  ok: boolean;
+  status: string;
+  model: string;
+  filename: string;
+  message: string;
+  message_zh: string;
+}
+
+export interface OpsEmbeddingCompatibilityView {
+  compatible: boolean;
+  reason: string;
+  current_dimension: number | null;
+  target_dimension: number | null;
+  memory_count: number;
+  mental_model_count: number;
+  is_pg0: boolean;
+  can_reembed: boolean;
+  message: string;
+  message_zh: string;
+}
+
+export interface OpsReembedStatusView {
+  status: string;
+  phase: string;
+  rows_embedded: number;
+  message: string;
+  message_zh: string;
+  error: string | null;
+}
+
+export interface OpsResetMemoriesResult {
+  ok: boolean;
+  daemon_running: boolean;
+  message: string;
+  message_zh: string;
+}
+
+export function getLocalModels(profile: string): Promise<OpsLocalModelsView> {
+  return runOps("local-models", profileArgs(normalizeProfile(profile)));
+}
+
+export function downloadLocalModel(
+  profile: string,
+  model: string
+): Promise<OpsDownloadLocalModelResult> {
+  invalidateOpsCache();
+  return runOps("download-local-model", profileArgs(normalizeProfile(profile)), { model });
+}
+
+export function checkEmbeddingCompatibility(
+  profile: string,
+  values?: Record<string, string>
+): Promise<OpsEmbeddingCompatibilityView> {
+  return runOps(
+    "embedding-check",
+    profileArgs(normalizeProfile(profile)),
+    values ? { values } : {}
+  );
+}
+
+export function startReembed(
+  profile: string,
+  values?: Record<string, string>
+): Promise<OpsReembedStatusView> {
+  invalidateOpsCache();
+  return runOps("reembed-start", profileArgs(normalizeProfile(profile)), values ? { values } : {});
+}
+
+export function getReembedStatus(profile: string): Promise<OpsReembedStatusView> {
+  return runOps("reembed-status", profileArgs(normalizeProfile(profile)));
+}
+
+/**
+ * Sections `ops snapshot` can read, mirroring `service.SNAPSHOT_SECTIONS`.
+ *
+ * The list is duplicated rather than discovered because this side needs types
+ * for each section; the CLI stays the validator (it rejects an unknown name
+ * with a message naming the known ones).
+ */
+export type SnapshotSection =
+  | "config"
+  | "settings"
+  | "env"
+  | "paths"
+  | "health"
+  | "local-models"
+  | "embedding-check"
+  | "reembed-status";
+
+export interface SnapshotView {
+  profile: string;
+  sections: Partial<{
+    config: OpsProfileConfig;
+    settings: OpsSettings;
+    env: OpsEnvFile;
+    paths: OpsPaths;
+    health: OpsHealth;
+    "local-models": OpsLocalModelsView;
+    "embedding-check": OpsEmbeddingCompatibilityView;
+    "reembed-status": OpsReembedStatusView;
+  }>;
+  /** Sections that raised, with the CLI's message. Absent sections loaded. */
+  errors: Partial<Record<SnapshotSection, string>>;
+}
+
+/**
+ * Read several sections in one `hindsight-embed` process.
+ *
+ * Deliberately not served from `readCache`: this is the page-load path, and a
+ * cached snapshot would show a stale daemon state right after a save. The
+ * single process is already cheaper than any cache hit it could produce.
+ */
+export function getSnapshot(profile: string, include?: string): Promise<SnapshotView> {
+  const args = profileArgs(normalizeProfile(profile));
+  const sections = include?.trim();
+  if (sections) args.push("--include", sections);
+  return runOps("snapshot", args);
+}
+
+export function resetLocalMemories(
+  profile: string,
+  values?: Record<string, string>
+): Promise<OpsResetMemoriesResult> {
+  invalidateOpsCache();
+  return runOps("reset-memories", profileArgs(normalizeProfile(profile)), values ? { values } : {});
 }

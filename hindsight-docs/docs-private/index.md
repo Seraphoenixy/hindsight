@@ -7,11 +7,13 @@
 | 要做的事 | 入口 |
 | --- | --- |
 | 判断 private 对应哪个上游版本 | [上游同步状态与流程](upstream/index.md) |
-| 查看已引入、暂缓和跳过的具体提交 | [2026-11-24 同步批次](upstream/2026-11-24.md)、[2026-11-23 同步批次](upstream/2026-11-23.md) |
+| 查看已引入、暂缓和跳过的具体提交 | [2026-11-26 同步批次](upstream/2026-11-26.md)、[2026-11-24 同步批次](upstream/2026-11-24.md)、[2026-11-23 同步批次](upstream/2026-11-23.md) |
 | 理解当前组件关系、端口与默认配置 | [当前运行架构](architecture/runtime.md) |
 | 理解为什么采用现有方案 | [架构决策目录](architecture/index.md) |
 | 判断上游改动是否涉及已裁剪目录 | [裁剪边界](maintenance/trimming.md) |
 | 排查 Magpie 加载和进程问题 | [本地管理排障](maintenance/local-management.md) |
+| 排查 Codex Desktop 记不住会话 | [Codex Desktop hook 与记忆写入](maintenance/codex-desktop-hooks.md) |
+| 部署 Linux 同步中继并同步本地记忆库 | [Linux 记忆库同步服务](maintenance/linux-sync.md) |
 
 ## 给接手的 AI 或维护者
 

@@ -18,7 +18,6 @@ from ..engine.working_rules import (
     WorkingRuleOrganizeProposalItem,
     WorkingRulePromotedResult,
     WorkingRuleRecord,
-    WorkingRuleScope,
     WorkingRulesListResult,
     WorkingRulesProjection,
 )
@@ -34,15 +33,7 @@ class CreateWorkingRuleRequest(BaseModel):
     """Request body for creating a Working Rule."""
 
     content: str = Field(description="Rule content (whitespace-folded; UTF-8 byte ceiling applies)")
-    scope: WorkingRuleScope = Field(default="global", description="'global' or 'project'")
-    project_id: str | None = Field(default=None, description="Project identifier when scope='project'")
     importance: WorkingRuleImportance = Field(default="normal", description="'critical', 'normal', or 'low'")
-    pinned: bool = Field(
-        default=False, description="Pin rule so it is reserved in projections and protected from eviction"
-    )
-    branches: list[str] = Field(
-        default_factory=list, description="Optional Git branch allowlist; empty means all branches"
-    )
 
 
 class MutateWorkingRuleRequest(BaseModel):
@@ -54,16 +45,9 @@ class MutateWorkingRuleRequest(BaseModel):
         default=None,
         description="Full existing content or unique substring (required for replace/remove)",
     )
-    scope: WorkingRuleScope = Field(default="global", description="'global' or 'project'")
-    project_id: str | None = Field(default=None, description="Project identifier when scope='project'")
     importance: WorkingRuleImportance | None = Field(
         default=None,
         description="Importance level; replace keeps existing higher importance by default",
-    )
-    pinned: bool | None = Field(default=None, description="Optional pin override")
-    branches: list[str] | None = Field(
-        default=None,
-        description="Optional Git branch list; omit on replace to preserve existing branches, pass [] to clear",
     )
     preserve_importance: bool = Field(
         default=True,
@@ -76,10 +60,6 @@ class UpdateWorkingRuleRequest(BaseModel):
 
     content: str | None = None
     importance: WorkingRuleImportance | None = None
-    pinned: bool | None = None
-    branches: list[str] | None = None
-    scope: WorkingRuleScope | None = None
-    project_id: str | None = None
     is_archived: bool | None = None
 
 
@@ -106,8 +86,6 @@ class WorkingRuleOrganizePreviewRequest(BaseModel):
     """Request body for generating an AI organization preview for Working Rules."""
 
     instructions: str = Field(default="", description="Optional reviewer instructions")
-    scope: WorkingRuleScope | None = Field(default=None, description="Optional scope filter")
-    project_id: str | None = Field(default=None, description="Optional project identifier")
 
 
 class WorkingRuleOrganizeApplyRequest(BaseModel):
@@ -139,8 +117,6 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
     )
     async def list_working_rules(
         request: Request,
-        scope: WorkingRuleScope | None = Query(default=None),
-        project_id: str | None = Query(default=None),
         include_archived: bool = Query(default=False),
         q: str | None = Query(default=None, description="Case-insensitive substring search"),
         limit: Annotated[int, Query(ge=0), TRIM_TO_PAGE] = 100,
@@ -149,8 +125,6 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
     ) -> WorkingRulesListResult:
         try:
             return await request.app.state.memory.working_rules.list_working_rules(
-                scope=scope,
-                project_id=project_id,
                 include_archived=include_archived,
                 q=q,
                 limit=limit,
@@ -163,20 +137,16 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
     @router.get(
         "/projection",
         response_model=WorkingRulesProjection,
-        summary="Get filtered working rules projection",
+        summary="Get working rules projection",
         operation_id="get_working_rules_projection",
     )
     async def get_working_rules_projection(
         request: Request,
-        project_id: str | None = Query(default=None),
-        branch: str | None = Query(default=None),
         max_chars: int | None = Query(default=None, ge=0),
         rc: RequestContext = Depends(get_request_context),
     ) -> WorkingRulesProjection:
         try:
             return await request.app.state.memory.working_rules.get_working_rules_projection(
-                project_id=project_id,
-                branch=branch,
                 max_chars=max_chars,
                 request_context=rc,
             )
@@ -191,15 +161,11 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
     )
     async def export_working_rules(
         request: Request,
-        scope: WorkingRuleScope | None = Query(default=None),
-        project_id: str | None = Query(default=None),
         include_archived: bool = Query(default=False),
         rc: RequestContext = Depends(get_request_context),
     ) -> ExportWorkingRulesResponse:
         try:
             markdown = await request.app.state.memory.working_rules.export_working_rules_markdown(
-                scope=scope,
-                project_id=project_id,
                 include_archived=include_archived,
                 request_context=rc,
             )
@@ -223,11 +189,7 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
                 action=body.action,
                 content=body.content,
                 old_text=body.old_text,
-                scope=body.scope,
-                project_id=body.project_id,
                 importance=body.importance,
-                pinned=body.pinned,
-                branches=body.branches,
                 preserve_importance=body.preserve_importance,
                 request_context=rc,
             )
@@ -248,8 +210,6 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
         try:
             return await request.app.state.memory.working_rules.preview_working_rules_organization(
                 instructions=body.instructions,
-                scope=body.scope,
-                project_id=body.project_id,
                 request_context=rc,
             )
         except Exception as exc:
@@ -289,11 +249,7 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
         try:
             return await request.app.state.memory.working_rules.create_working_rule(
                 content=body.content,
-                scope=body.scope,
-                project_id=body.project_id,
                 importance=body.importance,
-                pinned=body.pinned,
-                branches=body.branches,
                 request_context=rc,
             )
         except Exception as exc:
@@ -335,10 +291,6 @@ def build_router(get_request_context: Callable[..., RequestContext]) -> APIRoute
                 rule_id,
                 content=body.content,
                 importance=body.importance,
-                pinned=body.pinned,
-                branches=body.branches,
-                scope=body.scope,
-                project_id=body.project_id,
                 is_archived=body.is_archived,
                 request_context=rc,
             )

@@ -37,6 +37,30 @@ function setup(facts: (material: string) => string[]) {
 }
 
 describe("engineering memory", () => {
+  it("preserves source turn times without assigning ingestion time to undated turns", async () => {
+    const { retained } = setup(() => []);
+    await retainLiveSession(
+      client(),
+      "dated-session",
+      [
+        { role: "user", content: "Adopt the new default.", timestamp: "2026-11-25T09:00:00Z" },
+        {
+          role: "assistant",
+          content: "The change was applied.",
+          timestamp: "2026-11-25T09:01:00Z",
+        },
+        { role: "assistant", content: "The old document has no date." },
+      ],
+      "",
+      "codex",
+      { cursors: memoryCursorStore() }
+    );
+    const content = retained[0].items[0].content;
+    expect(content).toContain("[source_time=2026-11-25T09:00:00Z] user:");
+    expect(content).toContain("[source_time=2026-11-25T09:01:00Z] assistant:");
+    expect(content).toContain("\nassistant: The old document has no date.");
+  });
+
   it("retains nothing for a routine exchange and does not extract it twice", async () => {
     const { retained, extracted } = setup(() => []);
     const cursors = memoryCursorStore();
@@ -51,12 +75,13 @@ describe("engineering memory", () => {
     expect(retained).toHaveLength(1);
     expect(extracted).toHaveLength(0);
     expect(retained[0].items[0].content).not.toContain("Edit app.ts");
-    expect(retained[0].items[0].content).toMatch(/^PROJECT: test project \[one\]\n/);
+    expect(retained[0].items[0].content).toMatch(/^PROJECT: test project\n/);
     expect(retained[0].items[0].strategy).toBe("conversation");
     expect(retained[0].items[0].tags).toEqual(
-      expect.arrayContaining(["project:one", "source:chat", "engineering:record"])
+      expect.arrayContaining(["project:one", "source:chat"])
     );
-    expect(retained[0].items[0].context).toContain("test project [one]");
+    expect(retained[0].items[0].tags).not.toContain("engineering:record");
+    expect(retained[0].items[0].context).toContain("test project");
     expect(retained[0].items[0].metadata).toMatchObject({
       project: "test project",
       project_id: "one",

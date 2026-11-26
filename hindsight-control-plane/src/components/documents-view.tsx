@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import { toast } from "sonner";
 import { client, DocumentTimeField, LLMRequestEntry } from "@/lib/api";
+import { invalidateGraphCache } from "@/lib/graph-cache";
 import {
   DateRangePreset,
   resolveCustomRange,
@@ -12,6 +13,7 @@ import {
 import { useBank } from "@/lib/bank-context";
 import { useFeatures } from "@/lib/features-context";
 import { DataView } from "./data-view";
+import { MemoryPageHeader } from "./memory-page-header";
 import { TraceDialog } from "./llm-requests-view";
 import { DocumentHistory } from "./document-history";
 import { Button } from "@/components/ui/button";
@@ -130,13 +132,13 @@ function formatRelativeTime(dateStr: string): string {
 function LastRefreshedLabel({ at }: { at: number }) {
   const t = useTranslations("documentsView");
   const locale = useLocale();
-  const [, tick] = useState(0);
+  const [now, setNow] = useState(() => at);
   useEffect(() => {
-    const id = window.setInterval(() => tick((n) => n + 1), 1000);
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
 
-  const sec = Math.max(0, Math.round((Date.now() - at) / 1000));
+  const sec = Math.max(0, Math.round((now - at) / 1000));
   const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
   const rel =
     sec < 60
@@ -552,6 +554,7 @@ function InvalidatedFactsSection({ bankId, documentId }: { bankId: string; docum
     setRestoringId(id);
     try {
       await client.updateMemory(id, bankId, { state: "valid" });
+      invalidateGraphCache(bankId);
       await load();
     } finally {
       setRestoringId(null);
@@ -768,7 +771,6 @@ export function DocumentsView() {
   // Document view panel state
   const [selectedDocument, setSelectedDocument] = useState<any>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
-  const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [deletingUploadOperationId, setDeletingUploadOperationId] = useState<string | null>(null);
   const [retryingUploadOperationId, setRetryingUploadOperationId] = useState<string | null>(null);
 
@@ -836,7 +838,7 @@ export function DocumentsView() {
         setDocuments(data.items || []);
         setTotal(data.total || 0);
         setTotalIsEstimate(Boolean(data.total_is_estimate));
-      } catch (error) {
+      } catch {
         // Error toast is shown automatically by the API client interceptor
       } finally {
         setLoading(false);
@@ -999,7 +1001,7 @@ export function DocumentsView() {
     try {
       const doc: any = await client.getDocument(documentId, currentBank);
       setSelectedDocument(doc);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
       setSelectedDocument(null);
     } finally {
@@ -1020,7 +1022,7 @@ export function DocumentsView() {
       setChunks(data.items || []);
       setChunksTotal(data.total || 0);
       setChunksLoaded(true);
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setLoadingChunks(false);
@@ -1054,7 +1056,6 @@ export function DocumentsView() {
     if (!currentBank || !documentToDelete) return;
 
     const documentId = documentToDelete.id;
-    setDeletingDocumentId(documentId);
     setDocumentToDelete(null);
 
     try {
@@ -1077,8 +1078,6 @@ export function DocumentsView() {
         success: false,
         message: t("toastErrorDeletingDocument") + (error as Error).message,
       });
-    } finally {
-      setDeletingDocumentId(null);
     }
   };
 
@@ -1347,46 +1346,48 @@ export function DocumentsView() {
     <div>
       {/* Page header: the bank-page title for the Documents tab, with the
           Export/Import Actions menu on the same row (right-aligned). */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold mb-2 text-foreground">{tBank("documents")}</h1>
-          <p className="text-muted-foreground">{tBank("documentsDescription")}</p>
-        </div>
-        {(canExport || canImport) && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 shrink-0"
-                disabled={!currentBank || exporting || importing}
-              >
-                {exporting ? t("exporting") : importing ? t("importing") : t("actionsButton")}
-                <ChevronDown className="w-4 h-4 ml-1" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {canExport && (
-                <DropdownMenuItem
-                  onClick={() => {
-                    setExportIncludeObservations(false);
-                    setExportDialogOpen(true);
-                  }}
+      <MemoryPageHeader
+        icon={FileText}
+        title={tBank("documents")}
+        description={tBank("documentsDescription")}
+        className="mb-5"
+        actions={
+          canExport || canImport ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 shrink-0"
+                  disabled={!currentBank || exporting || importing}
                 >
-                  <Download className="h-4 w-4 mr-2" />
-                  {t("exportButton")}
-                </DropdownMenuItem>
-              )}
-              {canImport && (
-                <DropdownMenuItem onClick={() => setImportDialogOpen(true)}>
-                  <Upload className="h-4 w-4 mr-2" />
-                  {t("importButton")}
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
+                  {exporting ? t("exporting") : importing ? t("importing") : t("actionsButton")}
+                  <ChevronDown className="w-4 h-4 ml-1" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {canExport && (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setExportIncludeObservations(false);
+                      setExportDialogOpen(true);
+                    }}
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    {t("exportButton")}
+                  </DropdownMenuItem>
+                )}
+                {canImport && (
+                  <DropdownMenuItem onClick={() => setImportDialogOpen(true)}>
+                    <Upload className="h-4 w-4 mr-2" />
+                    {t("importButton")}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : undefined
+        }
+      />
 
       {/* Export dialog: offers opt-in inclusion of derived/bank-level knowledge. */}
       <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>

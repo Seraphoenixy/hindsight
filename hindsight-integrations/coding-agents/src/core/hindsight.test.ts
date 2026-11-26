@@ -741,6 +741,60 @@ describe("HindsightClient.reflect failures", () => {
 });
 
 describe("HindsightClient.recallObservations", () => {
+  it("filters weak and graph-only results while preserving an unresolved empty injection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(200, {
+          results: [
+            { id: "weak", text: "unrelated configuration", scores: { semantic: 0.41 } },
+            { id: "graph", text: "related entity only", scores: { semantic: null } },
+          ],
+        })
+      )
+    );
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    expect(await client.recallObservations("unseen topic", { timeoutMs: 1000 })).toEqual([]);
+  });
+
+  it("applies the configured similarity floor to both Agent retrieval paths", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(200, {
+          results: [{ id: "borderline", text: "related", scores: { semantic: 0.6 } }],
+        })
+      )
+    );
+    const client = new HindsightClient({
+      apiUrl: "http://x",
+      bank: "b",
+      recallOptions: { min_scores: { semantic: 0.7 } },
+    });
+    expect(await client.recallObservations("goal", { timeoutMs: 1000 })).toEqual([]);
+    expect(await client.engineeringRecords("goal")).toEqual([]);
+  });
+
+  it("ranks the wider raw candidate pool before applying the requested result limit", async () => {
+    const direct = { id: "answer", text: "hourly refresh", scores: { semantic: 0.81 } };
+    const fetchMock = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      jsonResponse(200, {
+        results: [
+          ...Array.from({ length: 7 }, (_, index) => ({
+            id: String(index),
+            text: "other topic",
+            scores: { semantic: 0.47 },
+          })),
+          direct,
+        ],
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    expect(await client.engineeringRecords("refresh", 1)).toEqual([direct]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).max_tokens).toBe(12000);
+  });
+
   it("merges recallOptions key-by-key over the defaults, leaving untouched keys alone", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       jsonResponse(200, { results: [{ text: "only" }] })
@@ -797,14 +851,34 @@ describe("HindsightClient.recallObservations", () => {
 
   it("recalls only observations, low budget, no entities, and returns their texts in order", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
-      jsonResponse(200, { results: [{ text: " first " }, { text: "" }, { text: "second" }] })
+      jsonResponse(200, {
+        results: [
+          {
+            id: "first",
+            text: " first ",
+            scores: { semantic: 0.8 },
+            mentioned_at: "2026-11-26T08:00:00Z",
+            occurred_start: "2026-11-25T10:00:00Z",
+            occurred_end: "2026-11-25T10:00:00Z",
+          },
+          { text: "", scores: { semantic: 0.8 } },
+          { id: "second", text: "second", scores: { semantic: 0.6 } },
+        ],
+      })
     );
     vi.stubGlobal("fetch", fetchMock);
     const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
 
     const out = await client.recallObservations("goal", { timeoutMs: 5_000 });
 
-    expect(out).toEqual(["first", "second"]);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toContain("mentioned_at=2026-11-26T08:00:00Z");
+    expect(out[0]).toContain("occurred_start=2026-11-25T10:00:00Z");
+    expect(out[0]).toContain("occurred_end=2026-11-25T10:00:00Z");
+    expect(out[1]).toContain("occurred_start=unknown");
+    expect(out[0]).toContain("historical record, verify current applicability");
+    expect(out[0]).toMatch(/\nfirst$/);
+    expect(out[1]).toMatch(/\nsecond$/);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe("http://x/v1/default/banks/b/memories/recall");
     expect(JSON.parse(String(init?.body))).toEqual({

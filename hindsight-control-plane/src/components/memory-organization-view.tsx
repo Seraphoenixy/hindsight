@@ -7,19 +7,12 @@ import { Archive, Check, GitMerge, PencilLine, ShieldQuestion, Sparkles } from "
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { client } from "@/lib/api";
 import { useBank } from "@/lib/bank-context";
+import { cn } from "@/lib/utils";
 import type {
   MemoryOrganizationAction,
   MemoryOrganizationChange,
@@ -27,28 +20,31 @@ import type {
   MemoryOrganizationRecord,
 } from "@/lib/memory-organization-types";
 
-const ALL_MEMORIES = "__all__";
 const APPLICABLE_ACTIONS: MemoryOrganizationAction[] = ["rewrite", "archive", "merge"];
 
 const ACTION_META: Record<
   MemoryOrganizationAction,
-  { icon: typeof PencilLine; className: string }
+  { icon: typeof PencilLine; className: string; strip: string }
 > = {
   rewrite: {
     icon: PencilLine,
     className: "border-blue-500/25 bg-blue-500/10 text-blue-700 dark:text-blue-300",
+    strip: "bg-blue-500/65",
   },
   archive: {
     icon: Archive,
     className: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    strip: "bg-amber-500/65",
   },
   merge: {
     icon: GitMerge,
     className: "border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+    strip: "bg-violet-500/65",
   },
   verify: {
     icon: ShieldQuestion,
     className: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300",
+    strip: "bg-red-500/65",
   },
 };
 
@@ -59,31 +55,13 @@ function applicable(change: MemoryOrganizationChange): boolean {
 export function MemoryOrganizationView({ bankId }: { bankId: string }) {
   const t = useTranslations("memoryOrganization");
   const { currentBankName } = useBank();
-  const [topic, setTopic] = useState("");
   const [instructions, setInstructions] = useState("");
-  const [tag, setTag] = useState(ALL_MEMORIES);
-  const [projectTags, setProjectTags] = useState<Array<{ tag: string; count: number }>>([]);
   const [preview, setPreview] = useState<MemoryOrganizationPreview | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [applied, setApplied] = useState<Record<number, MemoryOrganizationRecord>>({});
   const [generating, setGenerating] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    client
-      .listTags(bankId, "project:*", 100)
-      .then((result) => {
-        if (!cancelled) setProjectTags(result.items);
-      })
-      .catch(() => {
-        if (!cancelled) setProjectTags([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [bankId]);
 
   useEffect(() => {
     setPreview(null);
@@ -108,14 +86,12 @@ export function MemoryOrganizationView({ bankId }: { bankId: string }) {
   };
 
   async function generatePreview() {
-    if (!topic.trim() || !instructions.trim()) return;
+    if (!instructions.trim()) return;
     setGenerating(true);
     setError(null);
     try {
       const next = await client.previewMemoryOrganization(bankId, {
-        topic: topic.trim(),
         instructions: instructions.trim(),
-        ...(tag === ALL_MEMORIES ? {} : { tag }),
       });
       setPreview(next);
       setSelected(new Set());
@@ -209,44 +185,26 @@ export function MemoryOrganizationView({ bankId }: { bankId: string }) {
 
   return (
     <div className="space-y-5">
-      <Card>
-        <CardHeader className="p-5 pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Sparkles className="h-4 w-4 text-primary" />
-            {t("instructionsTitle")}
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">{t("instructionsDescription")}</p>
-        </CardHeader>
-        <CardContent className="p-5 pt-0">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="memory-organization-project">{t("projectScope")}</Label>
-              <Select value={tag} onValueChange={setTag}>
-                <SelectTrigger id="memory-organization-project">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL_MEMORIES}>{t("allMemories")}</SelectItem>
-                  {projectTags.map((project) => (
-                    <SelectItem key={project.tag} value={project.tag}>
-                      {project.tag} · {project.count}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="memory-organization-topic">{t("topic")}</Label>
-              <Input
-                id="memory-organization-topic"
-                value={topic}
-                onChange={(event) => setTopic(event.target.value)}
-                placeholder={t("topicPlaceholder")}
-                maxLength={2000}
-              />
+      <Card className="relative overflow-hidden">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-[radial-gradient(ellipse_at_top_right,rgba(0,116,217,0.08),transparent_58%)] dark:bg-[radial-gradient(ellipse_at_top_right,rgba(91,176,255,0.07),transparent_58%)]"
+        />
+        <CardHeader className="relative p-5 pb-4 sm:p-6 sm:pb-4">
+          <div className="flex items-start gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-primary/15 bg-primary/10 text-primary">
+              <Sparkles className="h-4 w-4" />
+            </span>
+            <div>
+              <CardTitle className="text-base">{t("instructionsTitle")}</CardTitle>
+              <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-muted-foreground">
+                {t("instructionsDescription")}
+              </p>
             </div>
           </div>
-          <div className="mt-4 space-y-2">
+        </CardHeader>
+        <CardContent className="relative p-5 pt-0 sm:p-6 sm:pt-0">
+          <div className="space-y-2">
             <Label htmlFor="memory-organization-instructions">{t("instructions")}</Label>
             <Textarea
               id="memory-organization-instructions"
@@ -258,14 +216,11 @@ export function MemoryOrganizationView({ bankId }: { bankId: string }) {
             />
             <p className="text-xs text-muted-foreground">{t("instructionsHint")}</p>
           </div>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
             <p className="text-xs text-muted-foreground">
               {currentBankName ? t("bankScope", { bank: currentBankName }) : null}
             </p>
-            <Button
-              onClick={generatePreview}
-              disabled={generating || !topic.trim() || !instructions.trim()}
-            >
+            <Button onClick={generatePreview} disabled={generating || !instructions.trim()}>
               {generating ? (
                 <Spinner size="sm" className="mr-2" />
               ) : (
@@ -287,8 +242,8 @@ export function MemoryOrganizationView({ bankId }: { bankId: string }) {
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">{t("previewTitle")}</h2>
-              <p className="text-sm text-muted-foreground">
+              <h2 className="text-[17px] font-semibold tracking-[-0.02em]">{t("previewTitle")}</h2>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">
                 {t("previewSummary", {
                   records: preview.records.length,
                   changes: preview.changes.length,
@@ -343,8 +298,17 @@ export function MemoryOrganizationView({ bankId }: { bankId: string }) {
                 const isApplied = Boolean(applied[change.number]);
                 const canChoose = applicable(change) && !isApplied;
                 return (
-                  <Card key={change.number}>
-                    <CardContent className="p-4 sm:p-5">
+                  <Card
+                    key={change.number}
+                    className={cn(
+                      "relative overflow-hidden transition-colors",
+                      selected.has(change.number)
+                        ? "border-primary/30 bg-primary/[0.015]"
+                        : "hover:border-primary/20"
+                    )}
+                  >
+                    <span className={cn("absolute inset-y-0 left-0 w-[3px]", meta.strip)} />
+                    <CardContent className="p-4 pl-5 sm:p-5 sm:pl-6">
                       <div className="flex items-start gap-3">
                         <Checkbox
                           checked={selected.has(change.number)}

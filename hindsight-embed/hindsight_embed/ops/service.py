@@ -13,7 +13,7 @@ killing the caller mid-request. Its lifecycle belongs to whoever launched it:
 ``hindsight-embed ui start`` or the coding-agents host half.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 
@@ -27,7 +27,7 @@ from ..profile_manager import (
     parse_env_file,
     write_profile_env,
 )
-from . import models, settings
+from . import local_models, models, settings
 from .settings import SettingField
 
 # Env var names the wizard owns. Writing config replaces these; everything else
@@ -474,6 +474,33 @@ def daemon_status(name: str) -> DaemonActionResult:
 def start_daemon(name: str) -> DaemonActionResult:
     """Start the profile's daemon (no-op if already healthy)."""
     name = normalize_profile(name)
+    if not daemon_client.is_daemon_running(name):
+        try:
+            missing = local_models.missing_local_models(name)
+        except Exception:  # noqa: BLE001
+            missing = []
+        if missing:
+            files = ", ".join(filename for _, filename in missing)
+            return DaemonActionResult(
+                ok=False,
+                running=False,
+                url=None,
+                message=f"Local model not downloaded yet: {files}. Download it in Local Settings first.",
+                message_zh=f"本地模型尚未下载：{files}。请先在本地设置页点击下载。",
+            )
+        try:
+            compat = local_models.check_embedding_compatibility(name)
+        except Exception:  # noqa: BLE001
+            compat = None
+        if compat is not None and not compat.compatible:
+            return DaemonActionResult(
+                ok=False,
+                running=False,
+                url=None,
+                message=compat.message,
+                message_zh=compat.message_zh,
+            )
+
     paths = ProfileManager().resolve_profile_paths(name)
     error_detail: str | None = None
     try:
@@ -492,8 +519,15 @@ def start_daemon(name: str) -> DaemonActionResult:
         message = "Daemon started."
         message_zh = "守护进程已启动。"
     else:
-        tail = tail_log(name, lines=12, source="daemon").content.strip()
-        snippet = error_detail or (tail.splitlines()[-1] if tail else "")
+        tail = tail_log(name, lines=80, source="daemon").content.strip()
+        # A failed startup may print shutdown messages after its traceback. Prefer
+        # the actual exception so cleanup cannot hide a dimension/config error.
+        exceptions = [
+            line.strip()
+            for line in tail.splitlines()
+            if line.partition(":")[0].strip().endswith(("Error", "Exception"))
+        ]
+        snippet = error_detail or (exceptions[-1] if exceptions else tail.splitlines()[-1] if tail else "")
         # The underlying failure text comes from the API/launcher and stays in
         # its own language; only the wrapper sentence is translated.
         message = f"Failed to start daemon: {snippet}" if snippet else "Failed to start daemon — check the logs."
@@ -595,25 +629,44 @@ def _required_unset(env: dict[str, str]) -> list[str]:
     return []
 
 
+def _group_view(group: settings.SettingGroup, env: dict[str, str]) -> SettingGroupView:
+    """Project one catalog group and its current values onto the wire shape."""
+    return SettingGroupView(
+        id=group.id,
+        label=group.label,
+        description=group.description,
+        label_zh=group.label_zh,
+        description_zh=group.description_zh,
+        fields=[_field_view(field, env) for field in group.fields],
+    )
+
+
 def get_settings(name: str) -> SettingsView:
-    """Return the grouped form: every catalog field with its current value."""
+    """Return the local settings form: every local group with its current value."""
     name = normalize_profile(name)
     env = _read_raw_env(name)
     return SettingsView(
         name=name,
         display_name=_display_name(name),
-        groups=[
-            SettingGroupView(
-                id=group.id,
-                label=group.label,
-                description=group.description,
-                label_zh=group.label_zh,
-                description_zh=group.description_zh,
-                fields=[_field_view(field, env) for field in group.fields],
-            )
-            for group in settings.SETTING_GROUPS
-        ],
+        groups=[_group_view(group, env) for group in settings.SETTING_GROUPS],
         unset_required=_required_unset(env),
+    )
+
+
+def get_sync_settings(name: str) -> SettingsView:
+    """Return the sync page's settings group with its current values.
+
+    A separate document from `get_settings` on purpose: the local form must not
+    offer these keys (they belong to a page that can also sign in), and this
+    page must not have to fetch the other ~35 fields. See ADR-012.
+    """
+    name = normalize_profile(name)
+    env = _read_raw_env(name)
+    return SettingsView(
+        name=name,
+        display_name=_display_name(name),
+        groups=[_group_view(settings.SYNC_SETTING_GROUP, env)],
+        unset_required=[],
     )
 
 
@@ -639,8 +692,12 @@ def list_models(
     return models.list_models(resolved_provider or "", resolved_key or "", resolved_base or "")
 
 
-def save_settings(name: str, values: dict[str, str]) -> SettingsView:
-    """Write the grouped form's values into a profile's .env.
+def _write_settings(
+    name: str,
+    values: dict[str, str],
+    known: dict[str, SettingField],
+) -> None:
+    """Write one group's values into a profile's .env.
 
     Only keys the catalog owns are touched, and an EMPTY value removes the key so
     the daemon falls back to its own default — that is what makes "blank means
@@ -649,7 +706,6 @@ def save_settings(name: str, values: dict[str, str]) -> SettingsView:
     verbatim, so the raw .env editor and this form can be used interchangeably.
     """
     name = normalize_profile(name)
-    known = settings.field_index()
     unknown = sorted(set(values) - set(known))
     if unknown:
         raise ValueError(f"unknown setting(s): {', '.join(unknown)}")
@@ -678,7 +734,24 @@ def save_settings(name: str, values: dict[str, str]) -> SettingsView:
             if field.kind == "select" and field.options and value not in field.options:
                 raise ValueError(f"{key} must be one of {', '.join(field.options)}, got '{value}'")
             env[key] = value
+
+
+def save_settings(name: str, values: dict[str, str]) -> SettingsView:
+    """Write the local form's values and return the refreshed local catalog."""
+    name = normalize_profile(name)
+    _write_settings(name, values, settings.field_index())
     return get_settings(name)
+
+
+def save_sync_settings(name: str, values: dict[str, str]) -> SettingsView:
+    """Write the sync page's values and return the refreshed sync group.
+
+    `save-settings` deliberately rejects these keys: the local form no longer
+    shows them, so accepting them there would be a second, undocumented path.
+    """
+    name = normalize_profile(name)
+    _write_settings(name, values, settings.sync_field_index())
+    return get_sync_settings(name)
 
 
 # --------------------------------------------------------------------------
@@ -852,6 +925,111 @@ def delete_profile(name: str) -> ProfileDeleteResult:
         message=f"Deleted profile '{name}'.",
         message_zh=f"已删除配置档“{name}”。",
     )
+
+
+def list_local_models(name: str) -> local_models.LocalModelsView:
+    """Return on-disk and active-usage status for built-in GGUF presets."""
+    return local_models.list_local_models(normalize_profile(name))
+
+
+def download_local_model(name: str, model: str) -> local_models.DownloadLocalModelResult:
+    """Start a detached background download for a built-in GGUF preset."""
+    return local_models.download_local_model(normalize_profile(name), model)
+
+
+def check_embedding_compatibility(
+    name: str,
+    values: dict[str, str] | None = None,
+) -> local_models.EmbeddingCompatibilityView:
+    """Check whether existing DB embedding dimensions match target settings."""
+    return local_models.check_embedding_compatibility(normalize_profile(name), values)
+
+
+def start_reembed(
+    name: str,
+    values: dict[str, str] | None = None,
+) -> local_models.ReembedStatusView:
+    """Save settings (optional), stop daemon, and start background re-embed."""
+    return local_models.start_reembed(normalize_profile(name), values)
+
+
+def get_reembed_status(name: str) -> local_models.ReembedStatusView:
+    """Return status of the background re-embed job for a profile."""
+    return local_models.get_reembed_status(normalize_profile(name))
+
+
+def reset_local_memories(
+    name: str,
+    values: dict[str, str] | None = None,
+) -> local_models.ResetMemoriesResult:
+    """Stop daemon, clear local memories, save settings (optional), and restart."""
+    return local_models.reset_local_memories(normalize_profile(name), values)
+
+
+# ── composite reads ────────────────────────────────────────────────────────
+
+# The control plane's read model, one entry per panel it renders. It lives here
+# rather than in the CLI so the catalog is importable by tests and by any future
+# caller that wants the same projection, and so the CLI stays a router.
+#
+# The split matters for latency, not for looks: every section below is a file
+# read or a 2 s loopback probe, except `local-models` and `embedding-check`,
+# which import the memory engine (fastapi/sqlalchemy/pgvector) and can start a
+# temporary Postgres. Callers that render a form should ask for the cheap ones
+# first and the diagnostics afterwards (see ADR-011).
+SNAPSHOT_SECTIONS: dict[str, Callable[[str], object]] = {
+    "config": get_profile_config,
+    "settings": get_settings,
+    "env": read_env_file,
+    "paths": get_profile_paths,
+    "health": health,
+    "local-models": list_local_models,
+    "embedding-check": check_embedding_compatibility,
+    "reembed-status": get_reembed_status,
+}
+
+
+@dataclass(frozen=True)
+class SnapshotView:
+    """Several read documents, assembled in one process.
+
+    A section that raises is reported in ``errors`` instead of failing the whole
+    document: the caller renders the panels it could read and names the ones it
+    could not. The per-route fan-out this replaces turned every failure into
+    ``null``, which made "not loaded yet" and "failed" indistinguishable.
+    """
+
+    profile: str
+    sections: dict[str, dict]
+    errors: dict[str, str]
+
+
+def read_snapshot(name: str, include: list[str] | None = None) -> SnapshotView:
+    """Read several sections in this one process.
+
+    ``include=None`` means every section; otherwise the order of ``include`` is
+    the order of the emitted document, so a caller can put the cheapest data
+    first. Unknown names are a usage error: silently ignoring them would make a
+    typo look like an empty panel.
+    """
+    name = normalize_profile(name)
+    # Dedupe while keeping the caller's order: a repeated name would otherwise
+    # run an expensive section (a database inspection) twice for one document.
+    selected = list(SNAPSHOT_SECTIONS) if include is None else list(dict.fromkeys(include))
+    if not selected:
+        raise ValueError("snapshot needs at least one section")
+    unknown = [section for section in selected if section not in SNAPSHOT_SECTIONS]
+    if unknown:
+        raise ValueError(f"unknown snapshot section(s): {', '.join(unknown)}; known: {', '.join(SNAPSHOT_SECTIONS)}")
+
+    sections: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    for section in selected:
+        try:
+            sections[section] = to_json(SNAPSHOT_SECTIONS[section](name))
+        except Exception as exc:  # noqa: BLE001 - a section failure is data, not a crash
+            errors[section] = f"{type(exc).__name__}: {exc}"
+    return SnapshotView(profile=name, sections=sections, errors=errors)
 
 
 def to_json(obj: object) -> dict:

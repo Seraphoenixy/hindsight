@@ -18,7 +18,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { FactType, FactTypeFilter } from "@/components/fact-type-filter";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Search,
@@ -279,7 +278,7 @@ export function SearchDebugView() {
       setObservations(data.observations || null);
       setTrace(data.trace || null);
       setViewMode("results");
-    } catch (error) {
+    } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {
       setLoading(false);
@@ -736,7 +735,7 @@ export function SearchDebugView() {
 
                       {/* Fact type lanes */}
                       <div className="space-y-2">
-                        {factTypes.map((factType, ftIdx) => {
+                        {factTypes.map((factType) => {
                           const methods = factTypeGroups[factType];
                           const laneKey = `lane-${factType}`;
                           const isLaneExpanded = expandedSteps.has(laneKey);

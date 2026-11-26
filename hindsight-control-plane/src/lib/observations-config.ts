@@ -205,8 +205,7 @@ export function compactStrategy(strategy: ConsolidationStrategy): ConsolidationS
 /** Whether a strategy changes anything. The server drops one that does not, so
  *  the editor warns about it instead of letting it look configured. */
 export function strategyOverridesSomething(strategy: ConsolidationStrategy): boolean {
-  const { scopes: _scopes, ...settings } = compactStrategy(strategy);
-  return Object.keys(settings).length > 0;
+  return Object.keys(compactStrategy(strategy)).some((key) => key !== "scopes");
 }
 
 /** A strategy's tab label: its scopes are its name. Tags inside one scope must

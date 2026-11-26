@@ -35,6 +35,7 @@ from ..remote_retry import status_code_of
 from ..response_models import BATCH_TERMINAL_FAILURE_STATUSES, BatchRequest, BatchResult, LLMCallResult, TokenUsage
 from ..stored_dates import bank_timezone, is_placeholder_date
 from ..structured_output import provider_json_schema, strict_json_schema
+from ..token_encoding import count_tokens, truncate_to_tokens
 from . import attachment_content
 
 if TYPE_CHECKING:
@@ -1121,6 +1122,7 @@ fact_kind:
 fact_type:
 - "world": Objective/external facts, including the user's preferences, rules, corrections, constraints, plans, traits, or context. These stay "world" even when the user states them during an assistant interaction (e.g., "User prefers browser_navigate over web_search", "User corrected the project deadline").
 - "assistant": Actions, experiences, or observations the assistant/agent actually performed (e.g., "I changed X", "I discovered Y", "I debugged Z"). Use this for the assistant/agent doing, trying, learning, deciding, recommending, or responding — not merely for user facts mentioned in conversation.
+- Do NOT emit both a "world" fact and an "assistant" fact for the same underlying conclusion or change (for example, do not emit both "X uses Y" as world and "I changed X to Y" as assistant). Prefer "world" for settled rules, decisions, and system facts; emit "assistant" only when the agent action or troubleshooting experience adds distinct value not already captured as a "world" fact.
 
 ══════════════════════════════════════════════════════════════════════════
 TEMPORAL HANDLING
@@ -1156,6 +1158,7 @@ SELECTIVITY - CRITICAL (Reduces 90% of unnecessary output)
 ONLY extract facts that are:
 ✅ Personal info: names, relationships, roles, background
 ✅ Preferences: likes, dislikes, habits, interests (e.g., "Alice likes coffee")
+   An instruction for the task at hand is a decision, not a preference: keep what it was for (e.g., "For the billing service, user chose Postgres", not "User prefers Postgres")
 ✅ Significant events: milestones, decisions, achievements, changes
 ✅ Plans/goals: future intentions, deadlines, commitments
 ✅ Expertise: skills, knowledge, certifications, experience
@@ -1296,6 +1299,7 @@ FACT_KIND CLASSIFICATION (CRITICAL FOR TEMPORAL HANDLING)
 ⚠️ MUST set fact_kind correctly - this determines whether occurred_start/end are set!
 
 fact_kind="event" - USE FOR:
+- Confirmed software decisions, configuration changes, deployments and verification results with source-supported occurrence times; distinguish requested changes from deployed changes
 - Actions that happened at a specific time: "went to", "attended", "visited", "bought", "made"
 - Past events: "yesterday I...", "last week...", "in March 2020..."
 - Future plans with dates: "will go to", "scheduled for"
@@ -1779,6 +1783,8 @@ def build_chunk_prompt_parts(
     metadata: dict[str, str] | None = None,
     agent_name: str | None = None,
     extraction_prompt: ExtractionPrompt | None = None,
+    context_before: str = "",
+    context_after: str = "",
 ) -> ChunkPromptParts:
     """Render the extraction messages for one chunk without calling the LLM.
 
@@ -1803,6 +1809,8 @@ def build_chunk_prompt_parts(
         mission_preamble=_retain_mission_preamble(config),
         output_language=config.llm_output_language,
         custom_instructions=_uses_custom_instructions(config),
+        context_before=context_before,
+        context_after=context_after,
     )
     return ChunkPromptParts(
         system_prompt=extraction_prompt.system_prompt,
@@ -1861,6 +1869,54 @@ def _numbering_phrase(count: int) -> str:
     return "1" if count <= 1 else f"1 to {count}"
 
 
+_NEIGHBOUR_RULE = (
+    "CONTEXT ONLY — NOT part of this chunk. Its facts are extracted from its own chunk, so extracting "
+    "them here stores them twice. Use it only to understand what the Content refers to: a reply to a "
+    "question or a list, a choice between options, a pronoun or a name."
+)
+# Repeated after the Content, next to where the model starts answering: with the rule only in the
+# headers, the model still extracted facts from the context (test_chunk_neighbour_context_llm.py).
+_NEIGHBOUR_REMINDER = (
+    "\n\nExtract facts ONLY from what the Content says. Anything that appears only in the CONTEXT ONLY "
+    "sections is not a fact of this chunk, even when it is about the user. Write each fact from the "
+    "Content so it makes sense on its own, naming what it refers to (the option chosen, the item "
+    "approved, the person meant) instead of 'option 1', 'the cheaper one' or 'her'."
+)
+_NEIGHBOUR_BEFORE_HEADER = f"BEFORE THIS CHUNK (the end of the previous chunk of the same document). {_NEIGHBOUR_RULE}"
+_NEIGHBOUR_AFTER_HEADER = f"AFTER THIS CHUNK (the start of the next chunk of the same document). {_NEIGHBOUR_RULE}"
+
+
+@dataclass(frozen=True)
+class _Neighbours:
+    before: str
+    after: str
+
+
+def _neighbour_context(limit: int, before: str, after: str) -> _Neighbours:
+    """The neighbouring text to show around a chunk, trimmed to ``limit`` tokens on each side.
+
+    The END of what came before and the START of what comes after: the part next to the boundary.
+    """
+    if limit <= 0:
+        return _Neighbours("", "")
+    # The tail of `before`: cut the head that leaves `limit` tokens, keep the rest.
+    total = count_tokens(before)
+    head = truncate_to_tokens(before, total - limit).text if total > limit else ""
+    return _Neighbours(before[len(head) :], truncate_to_tokens(after, limit).text)
+
+
+def _chunk_neighbours(limit: int, chunks: list[str], before: str, after: str) -> list[_Neighbours]:
+    """Each chunk's neighbours: the text's own chunks, and at the ends what surrounds the text."""
+    return [
+        _neighbour_context(
+            limit,
+            chunks[i - 1] if i > 0 else before,
+            chunks[i + 1] if i + 1 < len(chunks) else after,
+        )
+        for i in range(len(chunks))
+    ]
+
+
 def _build_user_message(
     chunk: str,
     chunk_index: int,
@@ -1872,6 +1928,8 @@ def _build_user_message(
     mission_preamble: str = "",
     output_language: str | None = None,
     custom_instructions: bool = False,
+    context_before: str = "",
+    context_after: str = "",
 ) -> str:
     """Build user message for fact extraction.
 
@@ -1952,14 +2010,20 @@ def _build_user_message(
     reminders = [r for r in (reminder, _CUSTOM_INSTRUCTIONS_REMINDER if custom_instructions else "") if r]
     reminders_section = "".join(f"\n\n{r}" for r in reminders)
 
+    before_section = (
+        f"\n\n{_NEIGHBOUR_BEFORE_HEADER}\n<<<\n{_sanitize_text(context_before)}\n>>>" if context_before else ""
+    )
+    after_section = f"\n\n{_NEIGHBOUR_AFTER_HEADER}\n<<<\n{_sanitize_text(context_after)}\n>>>" if context_after else ""
+    reminder_section = _NEIGHBOUR_REMINDER if context_before or context_after else ""
+
     return f"""{mission_preamble}Extract facts from the following chunk.
 
 Chunk: {chunk_index + 1}/{total_chunks}
 Event Date: {event_date_str}
-Context: {sanitized_context}{metadata_section}{narrator_section}{attachment_section}
+Context: {sanitized_context}{metadata_section}{narrator_section}{attachment_section}{before_section}
 
 Content:
-{sanitized_chunk}{reminders_section}"""
+{sanitized_chunk}{after_section}{reminder_section}{reminders_section}"""
 
 
 def _build_request_body(batch_impl, config, prompt: str, user_message: str, response_schema: type) -> dict:
@@ -2097,6 +2161,8 @@ async def _extract_facts_from_chunk(
     attachment_loader: "AttachmentLoader | None" = None,
     vlm_config: "AnyLLMProvider | None" = None,
     extraction_prompt: ExtractionPrompt | None = None,
+    context_before: str = "",
+    context_after: str = "",
 ) -> tuple[list[dict[str, str]], TokenUsage]:
     """
     Extract facts from a single chunk (internal helper for parallel processing).
@@ -2122,6 +2188,8 @@ async def _extract_facts_from_chunk(
         metadata=metadata,
         agent_name=agent_name,
         extraction_prompt=extraction_prompt,
+        context_before=context_before,
+        context_after=context_after,
     )
     prompt = parts.system_prompt
     response_schema = parts.response_schema
@@ -2350,12 +2418,12 @@ async def _extract_facts_from_chunk(
 
                 # Add temporal fields
                 # For events: occurred_start/occurred_end (when the event happened)
-                if fact_kind == "event":
+                if fact_kind == "event" or get_value("occurred_start") or get_value("occurred_end"):
                     occurred_start = get_value("occurred_start")
                     occurred_end = get_value("occurred_end")
 
                     # If LLM didn't set temporal fields, try to extract them from the fact text
-                    if not occurred_start:
+                    if not occurred_start and fact_kind == "event":
                         fact_data["occurred_start"] = _infer_temporal_date(combined_text, event_date)
                     else:
                         fact_data["occurred_start"] = occurred_start
@@ -2598,6 +2666,8 @@ async def _extract_facts_with_auto_split(
     attachment_loader: "AttachmentLoader | None" = None,
     vlm_config: "AnyLLMProvider | None" = None,
     extraction_prompt: ExtractionPrompt | None = None,
+    context_before: str = "",
+    context_after: str = "",
 ) -> tuple[list[dict[str, str]], TokenUsage]:
     """
     Extract facts from a chunk with automatic splitting if output exceeds token limits.
@@ -2644,6 +2714,8 @@ async def _extract_facts_with_auto_split(
             attachment_loader=attachment_loader,
             vlm_config=vlm_config,
             extraction_prompt=extraction_prompt,
+            context_before=context_before,
+            context_after=context_after,
         )
     except OutputTooLongError:
         # Output exceeded token limits - split the chunk and retry. Conversation
@@ -2685,6 +2757,8 @@ async def _extract_facts_with_auto_split(
                 attachment_loader=attachment_loader,
                 vlm_config=vlm_config,
                 extraction_prompt=extraction_prompt,
+                context_before=context_before,
+                context_after=context_after,
             ),
             _extract_facts_with_auto_split(
                 chunk=second_half,
@@ -2699,6 +2773,8 @@ async def _extract_facts_with_auto_split(
                 attachment_loader=attachment_loader,
                 vlm_config=vlm_config,
                 extraction_prompt=extraction_prompt,
+                context_before=context_before,
+                context_after=context_after,
             ),
         ]
 
@@ -2727,6 +2803,8 @@ async def extract_facts_from_text(
     attachment_loader: "AttachmentLoader | None" = None,
     vlm_config: "AnyLLMProvider | None" = None,
     extraction_prompt: ExtractionPrompt | None = None,
+    context_before: str = "",
+    context_after: str = "",
 ) -> tuple[list[Fact], list[tuple[str, int]], TokenUsage]:
     """
     Extract semantic facts from conversational or narrative text using LLM.
@@ -2793,6 +2871,10 @@ async def extract_facts_from_text(
             f"chunk_size={config.retain_chunk_size:,}) - starting parallel LLM extraction"
         )
 
+    # A chunk's neighbours are the text's own chunks; at the ends, what the caller says
+    # surrounds this text (the streaming path hands each chunk in alone, with its neighbours).
+    neighbours = _chunk_neighbours(config.retain_chunk_context_tokens, chunks, context_before, context_after)
+
     # Transient LLM failures (timeouts, rate limits) are already retried inside
     # the provider's inner loop.  Content-quality retries (malformed facts) are
     # handled by the middle loop in _extract_facts_from_chunk.  Adding a third
@@ -2812,6 +2894,8 @@ async def extract_facts_from_text(
             attachment_loader=attachment_loader,
             vlm_config=vlm_config,
             extraction_prompt=extraction_prompt,
+            context_before=neighbours[i].before,
+            context_after=neighbours[i].after,
         )
         for i, chunk in enumerate(chunks)
     ]
@@ -3060,6 +3144,9 @@ async def extract_facts_from_contents_batch_api(
             max_attachments_per_chunk=config.retain_max_attachments_per_chunk,
         )
 
+        neighbours = _chunk_neighbours(
+            config.retain_chunk_context_tokens, chunks, item.context_before, item.context_after
+        )
         for chunk_index_in_content, chunk in enumerate(chunks):
             all_chunks_info.append((chunk, content_index, chunk_index_in_content, item.event_date, item.context))
 
@@ -3077,6 +3164,8 @@ async def extract_facts_from_contents_batch_api(
                 mission_preamble=_retain_mission_preamble(config),
                 output_language=config.llm_output_language,
                 custom_instructions=_uses_custom_instructions(config),
+                context_before=neighbours[chunk_index_in_content].before,
+                context_after=neighbours[chunk_index_in_content].after,
             )
 
             # Build request body using helper function
@@ -3649,6 +3738,8 @@ async def extract_facts_from_contents(
             attachment_loader=attachment_loader,
             vlm_config=vlm_config,
             extraction_prompt=extraction_prompt,
+            context_before=item.context_before,
+            context_after=item.context_after,
         )
         fact_extraction_tasks.append(task)
 

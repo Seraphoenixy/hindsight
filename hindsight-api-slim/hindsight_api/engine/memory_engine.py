@@ -44,6 +44,7 @@ from .._vector_index import (
 from ..cancellation import OperationCancelledError
 from ..config import (
     DEFAULT_DATABASE_SCHEMA,
+    DEFAULT_ENABLE_RERANKING,
     DEFAULT_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS,
     DEFAULT_RECALL_CHUNKS_MAX_TOKENS,
     DEFAULT_RECALL_INCLUDE_CHUNKS,
@@ -1862,7 +1863,7 @@ def _resolve_reranking(config_dict: dict, reranking: "RecallReranking") -> "Reca
     the cross-encoder pass. "interleave" is an explicit caller choice (consolidation
     dedup relies on it) and "rrf" is already rerank-free, so neither is overridden.
     """
-    if reranking == "cross_encoder" and not config_dict.get("enable_reranking", True):
+    if reranking == "cross_encoder" and not config_dict.get("enable_reranking", DEFAULT_ENABLE_RERANKING):
         return "rrf"
     return reranking
 
@@ -3524,6 +3525,7 @@ class MemoryEngine(MemoryEngineInterface):
         # Page-index writes a create hands off instead of waiting on; held so the loop does not
         # collect a task mid-write, and so `wait_for_background_tasks` can drain them.
         self._page_index_tasks: set[asyncio.Task] = set()
+        self._sync_write_listeners: list[Callable[[], None]] = []
 
         # Initialize task backend.
         # All backends use BrokerTaskBackend + WorkerPoller for async background execution.
@@ -7542,6 +7544,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Same async side effects every fact insert triggers (retain or import).
         await self._submit_post_insert_maintenance(bank_id, request_context)
+        self.notify_sync_local_write()
 
         if return_usage:
             return result, total_usage
@@ -11831,102 +11834,124 @@ class MemoryEngine(MemoryEngineInterface):
         # ORA-00060 deadlock (#6283). The transaction rolled back, so a redo is safe.
         async def _delete() -> None:
             nonlocal invalidated_obs, unit_ids, deleted, orphaned_files, result
+            from .sync_journal import mark_sync_tx_managed
+
             invalidated_obs = 0
-            async with acquire_with_retry(backend) as conn:
-                async with conn.transaction():
-                    # Observation invalidation can update sources in another document.
-                    # Serialize bank-scoped deletes before taking any document/unit locks,
-                    # so two cascades cannot each hold a source the other's sweep needs.
-                    # NO KEY UPDATE stays compatible with FK checks on bank children;
-                    # Oracle translates it to its equivalent FOR UPDATE.
-                    await conn.fetchrow(
-                        f"SELECT bank_id FROM {fq_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
-                        bank_id,
-                    )
-                    # Get memory unit IDs before deletion (for observation cleanup).
-                    from .memories import get_memories
-
-                    _store = get_memories()
-                    # The document before its memories, as retain and consolidation take it (#5433):
-                    # the sweep below locks the memories, and the delete then needs this row.
-                    await _store.lock_document_row(
-                        conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id
-                    )
-                    _doc_units = await _store.document_source_units(
-                        conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id
-                    )
-                    unit_ids = _doc_units.unit_ids
-                    units_count = _doc_units.units_count
-
-                    # Sweep BEFORE the cascade too, so the shared observations and co-sources are
-                    # locked in the sweep's id order ahead of this document's own rows — as a
-                    # re-ingest, which sweeps first, takes them (#4251). The sweep after the cascade
-                    # stays for observations consolidation commits in between.
-                    if unit_ids:
-                        invalidated_obs = await self._delete_stale_observations_for_memories(conn, bank_id, unit_ids)
-
-                    # Capture relink victims and entity prune candidates BEFORE the
-                    # cascade — once the source rows are gone, the joins finding
-                    # them return nothing.
-                    if unit_ids:
-                        from .graph_maintenance import enqueue_entity_prune_candidates, enqueue_relink_victims
-
-                        await enqueue_relink_victims(conn, bank_id, unit_ids)
-                        await enqueue_entity_prune_candidates(conn, bank_id, unit_ids)
-
-                    # Delete the document and its memories: the store drops the links in lock order
-                    # before the cascade reaches them (#4251), and reads the key of the uploaded
-                    # original a file retain kept before the document that names it goes.
-                    _deleted_doc = await _store.delete_document_rows(
-                        conn=conn,
-                        ops=self._backend.ops,
-                        fq_table=fq_table,
-                        bank_id=bank_id,
-                        document_id=document_id,
-                        unit_ids=unit_ids,
-                    )
-                    deleted = _deleted_doc.deleted
-                    file_storage_key = _deleted_doc.file_storage_key
-
-                    # Its retain runs, and every run that created or consumed one of its memories,
-                    # consolidation included.
-                    if deleted and delete_traces:
-                        from .llm_trace import llm_requests_locked_in_id_order  # noqa: PLC0415
-
-                        _llm_table = fq_table("llm_requests")
-                        _traced = llm_requests_locked_in_id_order(
-                            _llm_table,
-                            "bank_id = $1 AND (metadata->>'document_id' = $2"
-                            " OR metadata->'memory_ids' ?| $3::text[]"
-                            " OR metadata->'source_memory_ids' ?| $3::text[])",
-                        )
-                        await conn.execute(
-                            f"{_traced} DELETE FROM {_llm_table} t USING target WHERE t.id = target.id",
+            with track_observation_changes() as delete_changes:
+                async with acquire_with_retry(backend) as conn:
+                    async with conn.transaction():
+                        await mark_sync_tx_managed(conn)
+                        # Observation invalidation can update sources in another document.
+                        # Serialize bank-scoped deletes before taking any document/unit locks,
+                        # so two cascades cannot each hold a source the other's sweep needs.
+                        # NO KEY UPDATE stays compatible with FK checks on bank children;
+                        # Oracle translates it to its equivalent FOR UPDATE.
+                        await conn.fetchrow(
+                            f"SELECT bank_id FROM {fq_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
                             bank_id,
-                            document_id,
-                            [str(u) for u in unit_ids],
                         )
+                        # Get memory unit IDs before deletion (for observation cleanup).
+                        from .memories import get_memories
 
-                    # Invalidate observations referencing these (now-deleted) memories
-                    if unit_ids:
-                        invalidated_obs += await self._delete_stale_observations_for_memories(conn, bank_id, unit_ids)
+                        _store = get_memories()
+                        # The document before its memories, as retain and consolidation take it (#5433):
+                        # the sweep below locks the memories, and the delete then needs this row.
+                        await _store.lock_document_row(
+                            conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id
+                        )
+                        _doc_units = await _store.document_source_units(
+                            conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id
+                        )
+                        unit_ids = _doc_units.unit_ids
+                        units_count = _doc_units.units_count
 
-                    # Rows here, files after the commit below.
-                    orphaned_files = []
-                    if deleted:
-                        # The document's own attachments, on either backend: the rows
-                        # name their document, so nothing here depends on the document
-                        # itself being a SQL row.
-                        orphaned_files = await self._drop_orphaned_attachments(conn, bank_id, document_id)
-                    if deleted and file_storage_key:
-                        orphaned_files.append(file_storage_key)
+                        # Sweep BEFORE the cascade too, so the shared observations and co-sources are
+                        # locked in the sweep's id order ahead of this document's own rows — as a
+                        # re-ingest, which sweeps first, takes them (#4251). The sweep after the cascade
+                        # stays for observations consolidation commits in between.
+                        if unit_ids:
+                            invalidated_obs = await self._delete_stale_observations_for_memories(
+                                conn, bank_id, unit_ids
+                            )
 
-                    result = {
-                        "document_deleted": 1 if deleted else 0,
-                        "memory_units_deleted": units_count if deleted else 0,
-                    }
+                        # Capture relink victims and entity prune candidates BEFORE the
+                        # cascade — once the source rows are gone, the joins finding
+                        # them return nothing.
+                        if unit_ids:
+                            from .graph_maintenance import enqueue_entity_prune_candidates, enqueue_relink_victims
+
+                            await enqueue_relink_victims(conn, bank_id, unit_ids)
+                            await enqueue_entity_prune_candidates(conn, bank_id, unit_ids)
+
+                        # Delete the document and its memories: the store drops the links in lock order
+                        # before the cascade reaches them (#4251), and reads the key of the uploaded
+                        # original a file retain kept before the document that names it goes.
+                        _deleted_doc = await _store.delete_document_rows(
+                            conn=conn,
+                            ops=self._backend.ops,
+                            fq_table=fq_table,
+                            bank_id=bank_id,
+                            document_id=document_id,
+                            unit_ids=unit_ids,
+                        )
+                        deleted = _deleted_doc.deleted
+                        file_storage_key = _deleted_doc.file_storage_key
+
+                        # Its retain runs, and every run that created or consumed one of its memories,
+                        # consolidation included.
+                        if deleted and delete_traces:
+                            from .llm_trace import llm_requests_locked_in_id_order  # noqa: PLC0415
+
+                            _llm_table = fq_table("llm_requests")
+                            _traced = llm_requests_locked_in_id_order(
+                                _llm_table,
+                                "bank_id = $1 AND (metadata->>'document_id' = $2"
+                                " OR metadata->'memory_ids' ?| $3::text[]"
+                                " OR metadata->'source_memory_ids' ?| $3::text[])",
+                            )
+                            await conn.execute(
+                                f"{_traced} DELETE FROM {_llm_table} t USING target WHERE t.id = target.id",
+                                bank_id,
+                                document_id,
+                                [str(u) for u in unit_ids],
+                            )
+
+                        # Invalidate observations referencing these (now-deleted) memories
+                        if unit_ids:
+                            invalidated_obs += await self._delete_stale_observations_for_memories(
+                                conn, bank_id, unit_ids
+                            )
+
+                        # Rows here, files after the commit below.
+                        orphaned_files = []
+                        if deleted:
+                            # The document's own attachments, on either backend: the rows
+                            # name their document, so nothing here depends on the document
+                            # itself being a SQL row.
+                            orphaned_files = await self._drop_orphaned_attachments(conn, bank_id, document_id)
+                        if deleted and file_storage_key:
+                            orphaned_files.append(file_storage_key)
+
+                        if deleted:
+                            await self._record_sync_aggregate_change(
+                                conn, object_type="document", bank_id=bank_id, object_id=document_id, op="delete"
+                            )
+                            for removed_obs_id in delete_changes.removed:
+                                await self._record_sync_aggregate_change(
+                                    conn,
+                                    object_type="observation",
+                                    bank_id=bank_id,
+                                    object_id=str(removed_obs_id),
+                                    op="delete",
+                                )
+
+                        result = {
+                            "document_deleted": 1 if deleted else 0,
+                            "memory_units_deleted": units_count if deleted else 0,
+                        }
 
         await retry_with_backoff(_delete)
+        self.notify_sync_local_write()
 
         await self._delete_files_quietly(orphaned_files)
 
@@ -12060,7 +12085,9 @@ class MemoryEngine(MemoryEngineInterface):
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
                     from .memories import get_memories
+                    from .sync_journal import mark_sync_tx_managed
 
+                    await mark_sync_tx_managed(conn)
                     _store = get_memories()
 
                     # Read the tags the document already carries BEFORE overwriting them.
@@ -12162,6 +12189,19 @@ class MemoryEngine(MemoryEngineInterface):
                         )
                         invalidated_obs = retagged_result.invalidated_observations
                         requeued_units = retagged_result.requeued_units
+                    await self._record_sync_aggregate_change(
+                        conn, object_type="document", bank_id=bank_id, object_id=document_id, op="upsert"
+                    )
+                    for removed_obs_id in retag_changes.removed:
+                        await self._record_sync_aggregate_change(
+                            conn,
+                            object_type="observation",
+                            bank_id=bank_id,
+                            object_id=str(removed_obs_id),
+                            op="delete",
+                        )
+
+        self.notify_sync_local_write()
 
         if invalidated_obs > 0:
             # Observation units were deleted, changing the counts get_bank_stats
@@ -12235,7 +12275,9 @@ class MemoryEngine(MemoryEngineInterface):
                     # the row itself; a store that keeps memories outside SQL is partitioned by bank,
                     # so the caller must say which one — hence the optional `bank_id` argument.
                     from .memories import get_memories
+                    from .sync_journal import mark_sync_tx_managed
 
+                    await mark_sync_tx_managed(conn)
                     _store = get_memories()
                     _location = await _store.locate_memory(
                         conn=conn, fq_table=fq_table, bank_id=bank_id, unit_id=str(unit_uuid)
@@ -12293,6 +12335,29 @@ class MemoryEngine(MemoryEngineInterface):
                     if deleted and bank_id and fact_type in ("experience", "world"):
                         bank_id_for_graph_maintenance = bank_id
 
+                    if deleted and bank_id:
+                        doc_owner = deleted_from.get(str(unit_uuid))
+                        if fact_type == "observation":
+                            await self._record_sync_aggregate_change(
+                                conn, object_type="observation", bank_id=bank_id, object_id=str(unit_uuid), op="delete"
+                            )
+                        elif doc_owner:
+                            await self._record_sync_aggregate_change(
+                                conn, object_type="document", bank_id=bank_id, object_id=doc_owner, op="upsert"
+                            )
+                        else:
+                            await self._record_sync_aggregate_change(
+                                conn, object_type="memory_unit", bank_id=bank_id, object_id=str(unit_uuid), op="delete"
+                            )
+                        for removed_obs_id in delete_changes.removed:
+                            await self._record_sync_aggregate_change(
+                                conn,
+                                object_type="observation",
+                                bank_id=bank_id,
+                                object_id=str(removed_obs_id),
+                                op="delete",
+                            )
+
                     result = {
                         "success": deleted is not None,
                         "unit_id": str(deleted) if deleted else None,
@@ -12300,6 +12365,9 @@ class MemoryEngine(MemoryEngineInterface):
                         if deleted
                         else "Memory unit not found",
                     }
+
+        if deleted:
+            self.notify_sync_local_write()
 
         # Drop any cached stats for this bank — the deleted unit (and its
         # cascaded links/entities) changed the counts get_bank_stats reports,
@@ -12702,6 +12770,20 @@ class MemoryEngine(MemoryEngineInterface):
                         result = {"memory_units_deleted": units_count, "entities_deleted": 0}
                     else:
                         # Delete all data for the bank — observations are included, no invalidation needed
+                        from .sync_journal import mark_sync_tx_managed, record_sync_change
+                        from .sync_objects_codec import list_bank_object_keys
+
+                        await mark_sync_tx_managed(conn)
+                        purge_keys = await list_bank_object_keys(conn, bank_id, include_bank=bool(delete_bank_profile))
+                        for pkey in purge_keys:
+                            await record_sync_change(
+                                conn,
+                                object_type=pkey.object_type,
+                                bank_id=pkey.bank_id,
+                                object_id=pkey.object_id,
+                                op="delete",
+                                payload=None,
+                            )
                         _contents = (
                             await _del_store.count_bank_contents(conn=conn, fq_table=fq_table, bank_id=bank_id)
                             if _ask_store
@@ -13682,6 +13764,43 @@ class MemoryEngine(MemoryEngineInterface):
                             need_graph = True
 
                     phase2_committed = True
+                    curated_row = live2 or archived2
+                    if curated_row is not None:
+                        from .sync_journal import mark_sync_tx_managed
+
+                        await mark_sync_tx_managed(conn)
+                        if curated_row.fact_type == "observation":
+                            await self._record_sync_aggregate_change(
+                                conn,
+                                object_type="observation",
+                                bank_id=bank_id,
+                                object_id=str(memory_uuid),
+                                op="restore" if curation_action == "revert" else "upsert",
+                            )
+                        elif curated_row.document_id:
+                            await self._record_sync_aggregate_change(
+                                conn,
+                                object_type="document",
+                                bank_id=bank_id,
+                                object_id=curated_row.document_id,
+                                op="upsert",
+                            )
+                        else:
+                            await self._record_sync_aggregate_change(
+                                conn,
+                                object_type="memory_unit",
+                                bank_id=bank_id,
+                                object_id=str(memory_uuid),
+                                op="restore" if curation_action == "revert" else "upsert",
+                            )
+                        for removed_obs_id in edit_changes.removed:
+                            await self._record_sync_aggregate_change(
+                                conn,
+                                object_type="observation",
+                                bank_id=bank_id,
+                                object_id=str(removed_obs_id),
+                                op="delete",
+                            )
         finally:
             # What Phase 1 resolution queued and Phase 2 did not flush (the edit did not apply)
             # describes postings that were never written; drop it rather than leak it.
@@ -13990,7 +14109,6 @@ class MemoryEngine(MemoryEngineInterface):
         event_date: "datetime | None" = None,
         strategy: str | None = None,
         overrides: dict | None = None,
-        agent_name: str | None = None,
         request_context: "RequestContext",
     ) -> "DryRunExtractionResult":
         """Run fact extraction ONLY — no entity resolution, links, embeddings, or persistence.
@@ -13998,8 +14116,8 @@ class MemoryEngine(MemoryEngineInterface):
         Returns candidate facts (a subset of the ``list_memory_units`` item shape) plus the LLM token
         usage, so callers can diff a mission's extraction output against stored memories without
         mutating the bank. Every prompt-affecting setting is overridable per call via ``overrides``
-        (e.g. to test a candidate retain mission). ``agent_name`` is deprecated (describe the speaker
-        in ``context`` instead) but still overrides the narrator when supplied, for backwards compatibility.
+        (e.g. to test a candidate retain mission). It never primes a narrator, exactly as retain doesn't:
+        a caller who wants to name the speaker says so in ``context``.
         Side-effect-free and idempotent.
         """
 
@@ -14114,9 +14232,10 @@ class MemoryEngine(MemoryEngineInterface):
                 usage=chunked.usage,
             )
 
-        # No narrator unless the caller passed one. The bank's display `name` is deliberately
-        # NOT consulted: it leaked into extracted fact text (#3962), and retain no longer
-        # derives a narrator from it either, so a dry run must mirror what retain would do.
+        # No narrator: retain primes none (#3962), and a dry run must build the prompt retain builds.
+        # The dry run used to honour the deprecated request field `agent_name` as a narrator
+        # override; that made it test a "Narrator:" prompt production never sends, so the field
+        # is still accepted by the endpoint but no longer reaches extraction.
         retain_llm = self._retain_llm_config.with_config(resolved_config, bank_id=bank_id, operation="retain")
         facts, chunks, usage = await fact_extraction.extract_facts_from_text(
             text=canonical.text,
@@ -14125,7 +14244,6 @@ class MemoryEngine(MemoryEngineInterface):
             vlm_config=self._vlm_config,
             config=resolved_config,
             context=context,
-            agent_name=agent_name,
             attachment_loader=attachment_loader,
         )
 
@@ -17784,6 +17902,47 @@ class MemoryEngine(MemoryEngineInterface):
                 tag_groups=tag_groups,
             )
 
+    def register_sync_write_listener(self, callback: Callable[[], None]) -> None:
+        """Register a non-blocking callback invoked after local committed writes."""
+        if callback not in self._sync_write_listeners:
+            self._sync_write_listeners.append(callback)
+
+    def notify_sync_local_write(self) -> None:
+        """Notify registered sync schedulers that local database state changed."""
+        for cb in list(self._sync_write_listeners):
+            try:
+                cb()
+            except Exception:
+                logger.debug("Sync write listener notification failed", exc_info=True)
+
+    async def _record_sync_aggregate_change(
+        self,
+        conn: Any,
+        *,
+        object_type: str,
+        bank_id: str,
+        object_id: str,
+        op: Literal["upsert", "delete", "restore"] = "upsert",
+    ) -> None:
+        from .sync_journal import record_sync_change
+        from .sync_objects_codec import export_object_payload
+
+        payload = (
+            None
+            if op == "delete"
+            else await export_object_payload(conn, object_type=object_type, bank_id=bank_id, object_id=object_id)
+        )
+        if op != "delete" and payload is None:
+            return
+        await record_sync_change(
+            conn,
+            object_type=object_type,
+            bank_id=bank_id,
+            object_id=object_id,
+            op=op,
+            payload=payload,
+        )
+
     async def _delete_stale_observations_for_memories(
         self,
         conn,
@@ -18901,6 +19060,10 @@ class MemoryEngine(MemoryEngineInterface):
                 from .memories import get_memories
 
                 store = get_memories()
+                # Resolved before taking the read connection: the resolver can need a
+                # connection of its own, and holding one while it waits for another can
+                # exhaust a small pool.
+                bank_config = await self._config_resolver.resolve_full_config(bank_id, request_context)
                 async with self._store_read_conn(bank_id) as conn:
                     live_ids = await store.live_memory_ids(
                         conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=cited_ids
@@ -18915,8 +19078,14 @@ class MemoryEngine(MemoryEngineInterface):
                         # whose replacement does not exist, and because the ids leave
                         # ``based_on`` with it, nothing would ever notice again. Wait for the
                         # bank to be caught up instead; staleness re-offers this every round.
+                        #
+                        # Only a bank that makes observations has anything to wait for. With
+                        # observations off nothing is ever consolidated, so ``pending`` never
+                        # drains and the wait deferred the pass forever: a deleted memory's
+                        # claims stayed on the page for good (#6855). There, the replacement
+                        # facts exist as soon as their retain commits.
                         freshness = await store.consolidation_freshness(conn=conn, fq_table=fq_table, bank_id=bank_id)
-                        if freshness.get("pending"):
+                        if bank_config.enable_observations and freshness.get("pending"):
                             retraction_deferred_reason = (
                                 f"{freshness['pending']} fact(s) are still pending consolidation"
                             )
@@ -19267,6 +19436,11 @@ class MemoryEngine(MemoryEngineInterface):
         final_content = reflect_result.text
         final_structured: StructuredDocument | None = None
         delta_applied = False
+        # The unsay pass has its own flag, apart from ``delta_applied``: when new facts
+        # follow, the unsay edits only stand if the new-facts delta lands too. Sharing
+        # one flag let a failed new-facts delta write the unsay-only document and move
+        # the watermark past the facts it never added (#6447).
+        unsay_applied = False
         delta_operations: MentalModelDeltaOperations | None = None
         # Both op calls share one LLM handle, built on first use so a refresh that
         # neither retracts nor has new facts still pays no config resolution.
@@ -19343,9 +19517,7 @@ class MemoryEngine(MemoryEngineInterface):
                         cleaned_doc = drop_inline_citations(unsay_outcome.document, retracted.ids)
                         if unsay_outcome.applied or cleaned_doc != unsay_outcome.document:
                             current_doc = cleaned_doc
-                            final_structured = cleaned_doc
-                            final_content = render_document(cleaned_doc)
-                            delta_applied = True
+                            unsay_applied = True
                         logger.info(
                             f"[MENTAL_MODELS] Retraction pass for {mental_model_id}: "
                             f"{len(retracted.facts)} retracted fact(s), applied "
@@ -19376,11 +19548,11 @@ class MemoryEngine(MemoryEngineInterface):
                 # already removed still stands: the document changed, so this is a
                 # write, not a preserved no-op.
                 if not supporting_facts:
-                    reflect_response_payload["delta_applied"] = delta_applied
+                    reflect_response_payload["delta_applied"] = unsay_applied
                     if retraction_operations is not None:
                         reflect_response_payload["delta_operations_applied"] = retraction_operations.applied
                         reflect_response_payload["delta_operations_skipped"] = retraction_operations.skipped
-                    if not delta_applied:
+                    if not unsay_applied:
                         reflect_response_payload["delta_skipped_reason"] = "no_new_facts"
                     if retraction_handled:
                         reflect_response_payload["based_on"] = prune_based_on(
@@ -19389,10 +19561,10 @@ class MemoryEngine(MemoryEngineInterface):
                     return _finish(
                         effective_mode="delta",
                         mode_fallback_reason=None,
-                        final_content=final_content if delta_applied else current_content,
-                        final_structured=final_structured,
+                        final_content=render_document(current_doc) if unsay_applied else current_content,
+                        final_structured=current_doc if unsay_applied else None,
                         delta_operations=retraction_operations,
-                        outcome="content_written" if delta_applied else "content_preserved_no_new_facts",
+                        outcome="content_written" if unsay_applied else "content_preserved_no_new_facts",
                     )
 
                 # Op JSON is denser than the rendered markdown — each op
@@ -19535,8 +19707,10 @@ class MemoryEngine(MemoryEngineInterface):
             # citing a memory that no longer exists. Only for a pass that actually ran:
             # a deferred or failed one must keep its ids, because they are the sole
             # remaining evidence that the prose is unsupported — pruning them would
-            # leave the stale claim in place with nothing left to notice it.
-            if retraction_handled:
+            # leave the stale claim in place with nothing left to notice it. The same
+            # holds when the new-facts delta failed: the refresh is refused, the unsay
+            # edits are not written, so the next refresh must see the retraction again.
+            if retraction_handled and delta_applied:
                 reflect_response_payload["based_on"] = prune_based_on(
                     reflect_response_payload["based_on"], retracted.ids
                 )
@@ -20740,6 +20914,7 @@ class MemoryEngine(MemoryEngineInterface):
             # to nothing, which the caller silently drops — so it looks like missing results rather
             # than a stale index.
             await self._deindex_pages(bank_id, [mental_model_id])
+            self.notify_sync_local_write()
         return deleted
 
     # =====================================================================
@@ -21764,6 +21939,7 @@ class MemoryEngine(MemoryEngineInterface):
         # Deleting a folder takes its whole subtree, so every backing model in it leaves the index
         # too — a single-page delete is just the one-element case.
         await self._deindex_pages(bank_id, mm_ids)
+        self.notify_sync_local_write()
         return True
 
     async def export_pages(self, bank_id: str, *, request_context: "RequestContext") -> PagesExport:
@@ -21962,6 +22138,7 @@ class MemoryEngine(MemoryEngineInterface):
         if self._llm_config.provider == "none":
             return 0
         try:
+            bank_config = await self._config_resolver.resolve_full_config(bank_id, request_context)
             backend = await self._get_backend()
             async with acquire_with_retry(backend) as conn:
                 # Someone else is already going to notice. Consolidation is pending, and
@@ -21971,7 +22148,11 @@ class MemoryEngine(MemoryEngineInterface):
                 # (A bank with auto-consolidation off never reaches that hook; its
                 # cron-refreshed pages are still covered by the scheduled loop, and its
                 # manually refreshed ones were never this function's business.)
-                if await get_memories().has_pending_consolidation(conn=conn, fq_table=fq_table, bank_id=bank_id):
+                # A bank without observations never consolidates, so its facts read as
+                # pending forever and nothing would ever schedule this refresh (#6855).
+                if bank_config.enable_observations and await get_memories().has_pending_consolidation(
+                    conn=conn, fq_table=fq_table, bank_id=bank_id
+                ):
                     return 0
                 rows = await conn.fetch(
                     f"""
@@ -22581,6 +22762,7 @@ class MemoryEngine(MemoryEngineInterface):
             await self._apply_default_bank_template(bank_id, request_context)
 
         logger.info(f"[DIRECTIVES] Created directive '{name}' for bank {bank_id}")
+        self.notify_sync_local_write()
         return self._row_to_directive(row)
 
     async def update_directive(
@@ -22677,7 +22859,10 @@ class MemoryEngine(MemoryEngineInterface):
                 *params,
             )
 
-            return self._row_to_directive(row) if row else None
+            if row is not None:
+                self.notify_sync_local_write()
+                return self._row_to_directive(row)
+            return None
 
     async def delete_directive(
         self,
@@ -22717,7 +22902,10 @@ class MemoryEngine(MemoryEngineInterface):
                 directive_id,
             )
 
-        return result == "DELETE 1"
+        deleted = result == "DELETE 1"
+        if deleted:
+            self.notify_sync_local_write()
+        return deleted
 
     def _row_to_directive(self, row) -> dict[str, Any]:
         """Convert a database row to a directive dict."""
@@ -23536,6 +23724,7 @@ class MemoryEngine(MemoryEngineInterface):
         if created:
             await self._apply_default_bank_template(bank_id, request_context)
 
+        self.notify_sync_local_write()
         return dict(row) if row is not None else None
 
     async def list_webhooks(

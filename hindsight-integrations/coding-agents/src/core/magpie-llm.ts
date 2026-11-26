@@ -144,7 +144,7 @@ function homeDir(env: NodeJS.ProcessEnv): string {
 
 export function profileEnvPath(profile: string, env: NodeJS.ProcessEnv = process.env): string {
   const root = homeDir(env);
-  return profile
+  return profile && profile !== "default"
     ? join(root, ".hindsight", "profiles", `${profile}.env`)
     : join(root, ".hindsight", "embed");
 }
