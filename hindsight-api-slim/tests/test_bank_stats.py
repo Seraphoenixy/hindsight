@@ -542,3 +542,63 @@ async def test_bank_stats_counts_entity_links_per_unit(api_client, memory, test_
         assert response.json()["links_by_link_type"]["entity"] == 144
     finally:
         await api_client.delete(f"/v1/default/banks/{test_bank_id}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_bank_stats_exposes_storage_bytes(api_client, memory, test_bank_id):
+    """/stats must report non-zero storage_bytes and category breakdown once memories are stored."""
+    try:
+        empty_resp = await api_client.get(f"/v1/default/banks/{test_bank_id}/stats")
+        assert empty_resp.status_code == 200
+        assert empty_resp.json()["storage_bytes"] == 0
+        assert sum(empty_resp.json()["storage_by_category"].values()) == 0
+
+        await _insert_memory(memory, test_bank_id, "Storage accounting test memory " + ("x" * 200))
+        await memory._bank_stats_cache.invalidate(get_current_schema(), test_bank_id)
+
+        populated_resp = await api_client.get(f"/v1/default/banks/{test_bank_id}/stats")
+        assert populated_resp.status_code == 200
+        payload = populated_resp.json()
+        assert payload["storage_bytes"] > 0
+        assert payload["storage_by_category"]["memories"] > 0
+        assert payload["storage_bytes"] == sum(payload["storage_by_category"].values())
+    finally:
+        await memory._bank_stats_cache.invalidate(get_current_schema(), test_bank_id)
+        await api_client.delete(f"/v1/default/banks/{test_bank_id}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_bank_stats_counts_audit_log_storage_bytes(api_client, memory, test_bank_id):
+    """/stats must include audit_log rows (including TOASTed JSONB bodies) in storage_bytes."""
+    import json
+
+    try:
+        log_id = uuid.uuid4()
+        large_payload = json.dumps({"blob": "x" * 6000})
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO audit_log (id, action, transport, bank_id, request, response, metadata)
+                VALUES ($1, 'retain', 'http', $2, $3::jsonb, $4::jsonb, $5::jsonb)
+                """,
+                log_id,
+                test_bank_id,
+                large_payload,
+                large_payload,
+                json.dumps({"source": "stats-test"}),
+            )
+        await memory._bank_stats_cache.invalidate(get_current_schema(), test_bank_id)
+
+        resp = await api_client.get(f"/v1/default/banks/{test_bank_id}/stats")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["storage_by_category"]["audit_logs"] > 0
+        assert payload["storage_bytes"] == sum(payload["storage_by_category"].values())
+        assert payload["storage_bytes"] >= payload["storage_by_category"]["audit_logs"]
+    finally:
+        await memory._bank_stats_cache.invalidate(get_current_schema(), test_bank_id)
+        async with memory._pool.acquire() as conn:
+            await conn.execute("DELETE FROM audit_log WHERE bank_id = $1", test_bank_id)
+        await api_client.delete(f"/v1/default/banks/{test_bank_id}")

@@ -8,10 +8,14 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { sanitizeReturnTo, withBasePath } from "@/lib/base-path";
+import { useTheme } from "@/lib/theme-context";
+import { Moon, Sun } from "lucide-react";
 import Image from "next/image";
 
 function LoginForm() {
   const t = useTranslations("login");
+  const tNav = useTranslations("nav");
+  const { theme, toggleTheme } = useTheme();
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -55,23 +59,36 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <div className="absolute top-4 right-4">
+    <div className="relative min-h-dvh bg-background bg-[radial-gradient(circle_at_50%_30%,rgba(0,116,217,0.10),transparent_48%)] dark:bg-[radial-gradient(circle_at_50%_30%,rgba(91,176,255,0.09),transparent_48%)] flex items-center justify-center p-4">
+      <div className="absolute top-4 right-4 flex items-center gap-1">
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8 text-muted-foreground"
+          onClick={toggleTheme}
+          aria-label={theme === "light" ? tNav("darkMode") : tNav("lightMode")}
+        >
+          {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+        </Button>
         <LanguageSwitcher />
       </div>
-      <Card className="w-full max-w-md">
-        <CardHeader className="text-center">
+      <Card className="relative w-full max-w-md overflow-hidden rounded-[20px] border-border shadow-[0_24px_80px_-48px_rgba(0,55,120,0.45)]">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent"
+        />
+        <CardHeader className="space-y-3 pt-8 text-center">
           <Image
             src={withBasePath("/logo.png")}
             alt="Hindsight"
-            width={160}
-            height={160}
-            className="mx-auto"
+            width={180}
+            height={47}
+            className="mx-auto h-auto w-44"
             unoptimized
           />
           <CardDescription>{t("description")}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="pb-8">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <Input
@@ -86,7 +103,7 @@ function LoginForm() {
 
             {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-            <Button type="submit" className="w-full" disabled={loading || !key}>
+            <Button type="submit" variant="gradient" className="w-full" disabled={loading || !key}>
               {loading ? t("signingIn") : t("signIn")}
             </Button>
           </form>

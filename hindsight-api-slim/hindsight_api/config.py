@@ -1063,6 +1063,8 @@ ENV_KB_INGEST_DEFAULT_STRATEGY = "HINDSIGHT_API_KB_INGEST_DEFAULT_STRATEGY"
 ENV_ENABLE_FILE_UPLOAD_API = "HINDSIGHT_API_ENABLE_FILE_UPLOAD_API"
 ENV_FILE_DELETE_AFTER_RETAIN = "HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN"
 ENV_STORE_DOCUMENT_TEXT = "HINDSIGHT_API_STORE_DOCUMENT_TEXT"
+ENV_DOCUMENT_TEXT_RETENTION_DAYS = "HINDSIGHT_API_DOCUMENT_TEXT_RETENTION_DAYS"
+ENV_INVALIDATED_MEMORY_RETENTION_DAYS = "HINDSIGHT_API_INVALIDATED_MEMORY_RETENTION_DAYS"
 ENV_DEFAULT_TIMEZONE = "HINDSIGHT_API_DEFAULT_TIMEZONE"
 
 # Document transfer (export/import documents between banks without re-running the LLM)
@@ -1446,6 +1448,8 @@ DEFAULT_LLM_HTTP_LOG_LEVEL = "WARNING"
 # attempts, so two stalls in a row landed right back on 120s. The headroom over a healthy
 # call is still an order of magnitude.
 DEFAULT_REFLECT_LLM_TIMEOUT = 30.0  # seconds
+DEFAULT_REFLECT_LLM_REASONING_EFFORT = "none"
+DEFAULT_CONSOLIDATION_LLM_REASONING_EFFORT = "medium"
 DEFAULT_LLM_SEND_BANK_AS_USER = False  # Opt-in: tag provider calls with user=<bank_id>
 
 # Codex credentials directory (None = CODEX_HOME, else ~/.codex)
@@ -2204,6 +2208,10 @@ DEFAULT_KB_INGEST_MEMORY_BUDGET_MB = 128
 DEFAULT_ENABLE_FILE_UPLOAD_API = True  # Enable file upload endpoint
 DEFAULT_FILE_DELETE_AFTER_RETAIN = True  # Delete file bytes after retain (saves storage)
 DEFAULT_STORE_DOCUMENT_TEXT = True  # Persist raw source text in documents.original_text / chunks.chunk_text
+DEFAULT_DOCUMENT_TEXT_RETENTION_DAYS = (
+    7  # Detach memories and delete documents & chunks after N days (<=0 keeps forever)
+)
+DEFAULT_INVALIDATED_MEMORY_RETENTION_DAYS = 7  # Prune invalidated_memory_units after N days (<=0 keeps forever)
 DEFAULT_DEFAULT_TIMEZONE = "UTC"  # IANA zone a retain timestamp with no UTC offset is read in
 
 # Document transfer defaults (export/import enabled by default; gated independently)
@@ -2223,11 +2231,11 @@ DEFAULT_ENABLE_OBSERVATION_HISTORY = True  # Observation history tracking enable
 DEFAULT_ENABLE_MENTAL_MODEL_HISTORY = True  # Mental model history tracking enabled by default
 # Floor on how often an *automatic* mental-model refresh may run: a triggered refresh
 # that arrives less than this many seconds after the model's last one is parked until
-# the window expires instead of rebuilding the document immediately. 0 (the default)
-# keeps the historical behaviour — every trigger refreshes at once. Explicit refreshes
+# the window expires instead of rebuilding the document immediately. The default
+# coalesces five minutes of changes; 0 restores immediate automatic refreshes. Explicit refreshes
 # (API/MCP/control plane) ignore it entirely. Per-model
 # `trigger.min_refresh_interval_seconds` overrides this.
-DEFAULT_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS = 0
+DEFAULT_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS = 300
 # Trigger fields layered over the engine's built-in page default
 # (MemoryEngine.PAGE_DEFAULT_TRIGGER) when a page is created; a request's
 # own trigger still wins. JSON object, e.g. {"refresh_cron": "0 * * * *"}.
@@ -2380,10 +2388,8 @@ DEFAULT_WORKER_MAX_SLOTS = 3  # Total concurrent tasks per worker
 # the platform's grace period; 20s fits Kubernetes' default 30s (#6021).
 DEFAULT_WORKER_SHUTDOWN_DRAIN_SECONDS = 20.0
 # Terminal rows keep their payload and metadata for one coherent debug/retry TTL.
-# Zero retention days disables automatic pruning entirely, and is the default:
-# operation history is a user-visible audit trail, so bounding it is an opt-in
-# policy decision rather than something an upgrade silently applies.
-DEFAULT_OPERATION_RETENTION_DAYS = 0
+# 7 days by default; zero retention days disables automatic pruning entirely.
+DEFAULT_OPERATION_RETENTION_DAYS = 7
 DEFAULT_OPERATION_CLEANUP_BATCH_SIZE = 1000
 DEFAULT_RETAIN_MAX_CONCURRENT = 4  # Max concurrent retain DB phases (HNSW reads + writes). Limits I/O contention.
 # Sub-batches of ONE document processed at a time. Most of a sub-batch is a store round-trip, so
@@ -2419,10 +2425,9 @@ DEFAULT_REFLECT_MAX_ITERATIONS = 10  # Max tool call iterations before forcing r
 # On by default, so setting up a decision model is what turns it on; a bank can opt out.
 DEFAULT_REFLECT_USE_DECISION_MODEL = True
 DEFAULT_MENTAL_MODEL_REFRESH_USE_DECISION_MODEL = True
-# A delta refresh asks the decision model which new memories could change the page, in place of reflect.
-DEFAULT_MENTAL_MODEL_DELTA_USE_DECISION_MODEL = True
-# Above this many new memories a delta refresh searches instead of asking about each: every
-# question is one decision-model request carrying the whole page.
+# Deprecated compatibility setting: delta edits now consume changes directly, without a decision model.
+DEFAULT_MENTAL_MODEL_DELTA_USE_DECISION_MODEL = False
+# Rows per database page and maximum facts per edit batch; exceeding it no longer runs reflect.
 DEFAULT_MENTAL_MODEL_DELTA_GATE_MAX_MEMORIES = 200
 DEFAULT_REFLECT_MAX_CONTEXT_TOKENS = 100_000  # Max accumulated context tokens before forcing final prompt
 DEFAULT_REFLECT_WALL_TIMEOUT = 300  # Wall-clock timeout in seconds for the entire reflect operation (5 minutes)
@@ -2501,9 +2506,9 @@ DEFAULT_LOOP_WATCHDOG_POLL_INTERVAL_MS = 250  # how often the watchdog thread pi
 DEFAULT_DB_ACQUIRE_WARN_THRESHOLD_MS = 1000  # log a warning when a pool acquire waits this long
 
 # Audit log defaults
-DEFAULT_AUDIT_LOG_ENABLED = False  # Disabled by default
+DEFAULT_AUDIT_LOG_ENABLED = True  # Enabled by default
 DEFAULT_AUDIT_LOG_ACTIONS = ""  # Empty = audit all eligible actions
-DEFAULT_AUDIT_LOG_RETENTION_DAYS = -1  # -1 = keep forever
+DEFAULT_AUDIT_LOG_RETENTION_DAYS = 30  # -1 = keep forever, >0 = delete after N days
 
 # Retain reliability defaults
 DEFAULT_FAIL_ON_EXTRACTION_ERRORS = (
@@ -4138,6 +4143,8 @@ class HindsightConfig:
     enable_file_upload_api: bool
     file_delete_after_retain: bool
     store_document_text: bool  # When False, store NULL original_text / empty chunk_text
+    document_text_retention_days: int  # <=0 = keep forever, >0 = prune original_text & chunks after N days
+    invalidated_memory_retention_days: int  # <=0 = keep forever, >0 = prune invalidated_memory_units after N days
     default_timezone: str  # IANA zone for retain times with no UTC offset, and for times shown to the LLM
     enable_document_export_api: bool
     enable_document_import_api: bool
@@ -5305,7 +5312,9 @@ class HindsightConfig:
             reflect_llm_max_backoff=_env_float(ENV_REFLECT_LLM_MAX_BACKOFF),
             reflect_llm_timeout=_resolve_reflect_llm_timeout(),
             reflect_llm_litellmrouter_config=_parse_llm_router_config(ENV_REFLECT_LLM_LITELLMROUTER_CONFIG),
-            reflect_llm_reasoning_effort=os.getenv(ENV_REFLECT_LLM_REASONING_EFFORT) or None,
+            reflect_llm_reasoning_effort=(
+                os.getenv(ENV_REFLECT_LLM_REASONING_EFFORT) or DEFAULT_REFLECT_LLM_REASONING_EFFORT
+            ),
             reflect_llm_extra_body=json.loads(os.getenv(ENV_REFLECT_LLM_EXTRA_BODY, "null")),
             reflect_llm_cache_affinity=os.getenv(ENV_REFLECT_LLM_CACHE_AFFINITY) or None,
             consolidation_llm_provider=os.getenv(ENV_CONSOLIDATION_LLM_PROVIDER) or None,
@@ -5321,7 +5330,9 @@ class HindsightConfig:
             consolidation_llm_max_backoff=_env_float(ENV_CONSOLIDATION_LLM_MAX_BACKOFF),
             consolidation_llm_timeout=_env_float(ENV_CONSOLIDATION_LLM_TIMEOUT),
             consolidation_llm_litellmrouter_config=_parse_llm_router_config(ENV_CONSOLIDATION_LLM_LITELLMROUTER_CONFIG),
-            consolidation_llm_reasoning_effort=os.getenv(ENV_CONSOLIDATION_LLM_REASONING_EFFORT) or None,
+            consolidation_llm_reasoning_effort=(
+                os.getenv(ENV_CONSOLIDATION_LLM_REASONING_EFFORT) or DEFAULT_CONSOLIDATION_LLM_REASONING_EFFORT
+            ),
             consolidation_llm_extra_body=json.loads(os.getenv(ENV_CONSOLIDATION_LLM_EXTRA_BODY, "null")),
             consolidation_llm_cache_affinity=os.getenv(ENV_CONSOLIDATION_LLM_CACHE_AFFINITY) or None,
             mental_model_refresh_llm_provider=os.getenv(ENV_MENTAL_MODEL_REFRESH_LLM_PROVIDER) or None,
@@ -6109,6 +6120,12 @@ class HindsightConfig:
             ).lower()
             == "true",
             store_document_text=os.getenv(ENV_STORE_DOCUMENT_TEXT, str(DEFAULT_STORE_DOCUMENT_TEXT)).lower() == "true",
+            document_text_retention_days=int(
+                os.getenv(ENV_DOCUMENT_TEXT_RETENTION_DAYS, str(DEFAULT_DOCUMENT_TEXT_RETENTION_DAYS))
+            ),
+            invalidated_memory_retention_days=int(
+                os.getenv(ENV_INVALIDATED_MEMORY_RETENTION_DAYS, str(DEFAULT_INVALIDATED_MEMORY_RETENTION_DAYS))
+            ),
             default_timezone=_validate_default_timezone(os.getenv(ENV_DEFAULT_TIMEZONE, DEFAULT_DEFAULT_TIMEZONE)),
             enable_document_export_api=os.getenv(
                 ENV_ENABLE_DOCUMENT_EXPORT_API, str(DEFAULT_ENABLE_DOCUMENT_EXPORT_API)

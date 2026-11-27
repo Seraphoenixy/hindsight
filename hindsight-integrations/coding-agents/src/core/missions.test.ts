@@ -304,6 +304,31 @@ describe("page trigger config resolution", () => {
  */
 describe("codingBankManifest (#3927)", () => {
   const bankOf = (overrides: BankOverrides | undefined) => codingBankManifest(overrides)?.bank;
+  const previousConversation = {
+    ...RETAIN_STRATEGIES.conversation,
+    retain_mission:
+      "You are ingesting a developer conversation excerpt. Text may contain EARLIER CONTEXT for " +
+      "interpretation and a NEW EXCHANGE that ended the turn. Only the NEW EXCHANGE can establish a " +
+      "memory. Extract durable engineering knowledge that would change a future decision or action: " +
+      "a rule the user explicitly confirmed, corrected, or asked to remember; a settled architectural " +
+      "or compatibility constraint with its reason; or a reusable troubleshooting lesson with a " +
+      "verified cause or effective method. Return the FEWEST facts, at most three. An ordinary " +
+      "implementation task should return [] even when it changed several files. Do not record routine " +
+      "refactors, file-by-file changes, status reports, tool activity, passing tests, one-off task state, " +
+      "single-session operational tweaks, proposed work, or unverified assistant guesses. Never emit both " +
+      'a "world" fact and an "assistant" (experience) fact for the same underlying decision or change; ' +
+      'prefer "world" for settled rules, constraints, and facts, and use "assistant" only for distinct ' +
+      "reusable troubleshooting procedures not already captured as a world fact. If a decision was revised, " +
+      "keep only the final state and explain that it superseded the earlier choice. Each fact's what field " +
+      "must state the conclusion, its applicability, and its reason. Preserve applicable versions, literal " +
+      "values, and issue references verbatim. Never invent a decision or claim.",
+    retain_custom_instructions: RETAIN_STRATEGIES.conversation.retain_custom_instructions.replace(
+      /Use "world"[\s\S]*?the exchange did not verify\./,
+      "Never emit both a world fact and an assistant fact for the same " +
+        "conclusion or change; prefer world for rules and decisions, and use assistant only for distinct " +
+        "troubleshooting experience."
+    ),
+  };
 
   it("keeps the project label on conclusions extracted from a conversation", () => {
     expect(RETAIN_STRATEGIES.conversation.retain_custom_instructions).toContain(
@@ -383,7 +408,7 @@ describe("codingBankManifest (#3927)", () => {
       "change or a successful test run. Do not treat a " +
       "proposal as a decision unless the user confirmed it or the exchange verified it.";
     const previous = {
-      ...RETAIN_STRATEGIES.conversation,
+      ...previousConversation,
       retain_custom_instructions: previousInstructions,
     };
     const strategies = bankOf({
@@ -406,13 +431,15 @@ describe("codingBankManifest (#3927)", () => {
   it("upgrades the exact pre-temporal conversation template and preserves owner edits", () => {
     const current = RETAIN_STRATEGIES.conversation;
     const previous = {
-      ...current,
-      retain_custom_instructions: current.retain_custom_instructions.replace(
+      ...previousConversation,
+      retain_custom_instructions: previousConversation.retain_custom_instructions.replace(
         /Leave unrelated descriptive dimensions empty\.[\s\S]*?recency alone\./,
         "Leave optional dimension fields empty."
       ),
     };
-    expect(previous.retain_custom_instructions).not.toBe(current.retain_custom_instructions);
+    expect(previous.retain_custom_instructions).not.toBe(
+      previousConversation.retain_custom_instructions
+    );
     const strategies = bankOf({
       reflect_mission: "seeded",
       retain_strategies: { conversation: previous },
@@ -427,6 +454,30 @@ describe("codingBankManifest (#3927)", () => {
       retain_strategies: { conversation: edited },
     })!.retain_strategies as Record<string, unknown>;
     expect(preserved.conversation).toEqual(edited);
+  });
+
+  it("upgrades the shipped conversation prompts once and keeps custom strategies and prompts", () => {
+    const bankWith = (conversation: Record<string, unknown>) => ({
+      reflect_mission: "seeded",
+      retain_strategies: {
+        ...RETAIN_STRATEGIES,
+        conversation,
+        mycustom: { retain_chunk_size: 500 },
+      },
+    });
+    const previous = bankWith(previousConversation);
+    const upgraded = bankOf(previous)!.retain_strategies;
+    expect(upgraded).toEqual(bankWith(RETAIN_STRATEGIES.conversation).retain_strategies);
+    expect(bankOf({ ...previous, retain_strategies: upgraded })).not.toHaveProperty(
+      "retain_strategies"
+    );
+    for (const conversation of [
+      { ...previousConversation, retain_mission: "Our local mission" },
+      { ...previousConversation, retain_custom_instructions: "Our local instructions" },
+      { ...previousConversation, retain_chunk_size: 6000 },
+    ]) {
+      expect(bankOf(bankWith(conversation))).not.toHaveProperty("retain_strategies");
+    }
   });
 
   it("upgrades only the plugin's old engineering observation mission", () => {

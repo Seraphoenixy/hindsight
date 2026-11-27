@@ -187,6 +187,19 @@ SETTING_GROUPS: tuple[SettingGroup, ...] = (
                 label_zh="操作记录保留天数",
                 description_zh="超过该天数的已完成操作记录会被清理。0 表示永久保留。",
             ),
+            SettingField(
+                key="HINDSIGHT_API_DOCUMENT_TEXT_RETENTION_DAYS",
+                label="Document text retention (days)",
+                kind="number",
+                default="30",
+                description=(
+                    "Prune raw document text and chunks after this many days while keeping extracted facts. "
+                    "0 or -1 keeps them forever."
+                ),
+                placeholder="30",
+                label_zh="原始文档正文保留天数",
+                description_zh="超过该天数的文档将剥离原始正文与分段并同步至各端，已提取事实保持不变。0 或 -1 表示永久保留。",
+            ),
         ),
     ),
     SettingGroup(
@@ -244,6 +257,23 @@ SETTING_GROUPS: tuple[SettingGroup, ...] = (
                     OptionLabel("none", "none — omit the parameter", "none — 不传该参数"),
                     OptionLabel("low", "low", "低"),
                     OptionLabel("medium", "medium", "中"),
+                    OptionLabel("high", "high", "高"),
+                    OptionLabel("xhigh", "xhigh", "极高"),
+                ),
+            ),
+            SettingField(
+                key="HINDSIGHT_API_CONSOLIDATION_LLM_REASONING_EFFORT",
+                label="Consolidation reasoning effort",
+                kind="combo",
+                default="medium",
+                description="Reasoning effort for background memory consolidation. Enabled ('medium') by default.",
+                options=("none", "low", "medium", "high", "xhigh"),
+                label_zh="记忆整理推理强度",
+                description_zh="后台记忆整理（Consolidation）的推理强度，默认开启（medium）。",
+                option_labels=(
+                    OptionLabel("none", "none — disabled", "none — 关闭"),
+                    OptionLabel("low", "low", "低"),
+                    OptionLabel("medium", "medium (default)", "中（默认）"),
                     OptionLabel("high", "high", "高"),
                     OptionLabel("xhigh", "xhigh", "极高"),
                 ),

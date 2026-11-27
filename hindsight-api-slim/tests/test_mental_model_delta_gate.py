@@ -1,10 +1,4 @@
-"""The decision-model gate in front of a delta page refresh.
-
-With a decision model set up, a delta refresh reads the memories new since its last run,
-asks the decision model which could change the page, and hands only those to the delta LLM
-call — reflect never runs. None kept means no LLM call at all, and the watermark still moves
-past them.
-"""
+"""Direct incremental edits: no reflect, complete pagination, atomic failure and usage."""
 
 import asyncio
 import uuid
@@ -14,14 +8,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from hindsight_api import MemoryEngine, RequestContext
 from hindsight_api.config import get_config
+from hindsight_api.engine.cross_encoder import RRFPassthroughCrossEncoder
 from hindsight_api.engine.memories import get_memories
 from hindsight_api.engine.memory_engine import MentalModelRefreshError
 from hindsight_api.engine.reflect.delta_ops import DeltaOperationList
-from hindsight_api.engine.response_models import LLMCallResult, ReflectResult, TokenUsage
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.schema import fq_table
+from hindsight_api.engine.task_backend import SyncTaskBackend
+from tests.conftest import _teardown_memory_engine
+from tests.refresh_support import RefreshTestEmbeddings
 
 TOPIC = "What are the user's durable collaboration preferences?"
 RELEVANT = "The user prefers bullet points over prose."
@@ -68,187 +67,169 @@ async def _page_with_new_memories(memory: MemoryEngine, request_context: Request
     return _Page(bank_id=bank_id, mm_id=mm["id"])
 
 
+@pytest_asyncio.fixture
+async def memory(pg0_db_url, query_analyzer):
+    # These tests enumerate rows rather than rank them. A deterministic embedding
+    # keeps the DB path real without installing the optional local ML stack.
+    embedding = RefreshTestEmbeddings()
+    engine = MemoryEngine(
+        db_url=pg0_db_url,
+        memory_llm_provider="mock",
+        embeddings=embedding,
+        cross_encoder=RRFPassthroughCrossEncoder(),
+        query_analyzer=query_analyzer,
+        run_migrations=False,
+        task_backend=SyncTaskBackend(),
+    )
+    await engine.initialize()
+    yield engine
+    await _teardown_memory_engine(engine)
+
+
 @pytest.fixture
 def gated(memory: MemoryEngine, monkeypatch):
-    """A decision model that keeps only the memory about preferences, and reflect plus
-    the delta LLM call recorded."""
-    model = SimpleNamespace(
-        provider="typesafe", could_change_page=AsyncMock(side_effect=lambda topic, page, text: "prefers" in text)
-    )
-    # Injected the way the constructor's decision_engine_for injects the shared engine.
-    monkeypatch.setattr(memory, "_decision_engine_for", lambda operation: model if operation == "reflect" else None)
-    calls = SimpleNamespace(reflect=[], llm=[], model=model)
-
-    async def fake_reflect_async(**kwargs):
-        calls.reflect.append(kwargs)
-        return ReflectResult(text="", based_on={})
+    calls = SimpleNamespace(reflect=AsyncMock(side_effect=AssertionError("delta must not reflect")), llm=[])
 
     async def fake_call(*, messages, **kwargs):
         calls.llm.append(messages)
         ops = DeltaOperationList.model_validate(
-            {"operations": [{"op": "append_block", "section_id": "preferences", "text": "Bullet points."}]}
+            {"operations": [{"op": "append_block", "section_id": "preferences", "text": f"Edit {len(calls.llm)}."}]}
         )
-        return LLMCallResult(content=ops, usage=TokenUsage())
+        return LLMCallResult(content=ops, usage=TokenUsage(input_tokens=11, output_tokens=3, total_tokens=14))
 
-    monkeypatch.setattr(memory, "reflect_async", fake_reflect_async)
+    monkeypatch.setattr(memory, "reflect_async", calls.reflect)
     monkeypatch.setattr(memory._mental_model_refresh_llm_config, "call", fake_call)
-    yield calls
-    monkeypatch.undo()
+    return calls
 
 
-async def test_only_the_kept_memories_reach_the_llm(memory, request_context, gated):
+async def test_delta_reads_facts_without_a_decision_model(memory, request_context, gated):
     page = await _page_with_new_memories(memory, request_context)
-
     refreshed = await memory.refresh_mental_model(
         bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
     )
-
-    assert gated.reflect == [], "the gate replaces reflect"
+    gated.reflect.assert_not_called()
     assert len(gated.llm) == 1
-    prompt = str(gated.llm[0])
-    assert RELEVANT in prompt and UNRELATED not in prompt
-    assert "Bullet points." in refreshed["content"]
-    assert refreshed["reflect_response"]["delta_gate"] == {"memories": 2, "kept": 1}
-
-
-async def test_nothing_kept_means_no_llm_call(memory, request_context, gated):
-    gated.model.could_change_page.side_effect = None
-    gated.model.could_change_page.return_value = False
-    page = await _page_with_new_memories(memory, request_context)
-
-    refreshed = await memory.refresh_mental_model(
-        bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
-    )
-
-    assert gated.reflect == [] and gated.llm == []
-    assert refreshed["content"] == "# Preferences\n\nThe user prefers concise answers.\n"
-    assert refreshed["reflect_response"]["delta_skipped_reason"] == "no_new_facts"
-    assert refreshed["reflect_response"]["delta_gate"] == {"memories": 2, "kept": 0}
-    async with memory._pool.acquire() as conn:
-        assert (
-            await memory.compute_mental_model_is_stale(
-                conn,
-                page.bank_id,
-                await conn.fetchrow(
-                    "SELECT id, tags, trigger, last_refreshed_at, last_memory_seen_at FROM mental_models "
-                    "WHERE bank_id = $1 AND id = $2",
-                    page.bank_id,
-                    page.mm_id,
-                ),
-            )
-            is False
-        ), "the watermark moves past memories the gate dropped"
-
-
-@pytest.mark.parametrize("why", ["no_decision_model", "bank_opted_out", "over_the_cap", "decision_model_failed"])
-async def test_falls_back_to_reflect(memory, request_context, gated, monkeypatch, why):
-    if why == "no_decision_model":
-        monkeypatch.setattr(memory, "_reflect_decision_model", lambda: None)
-    elif why == "over_the_cap":
-        monkeypatch.setattr(get_config()._config, "mental_model_delta_gate_max_memories", 1)
-    elif why == "decision_model_failed":
-        gated.model.could_change_page.side_effect = RuntimeError("down")
-    page = await _page_with_new_memories(memory, request_context)
-    if why == "bank_opted_out":
-        await memory._config_resolver.update_bank_config(page.bank_id, {"mental_model_delta_use_decision_model": False})
-
-    refreshed = await memory.refresh_mental_model(
-        bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
-    )
-
-    assert len(gated.reflect) == 1
-    assert "delta_gate" not in refreshed["reflect_response"]
-
-
-async def test_a_question_failing_after_others_answered_keeps_its_memory(memory, request_context, gated):
-    async def could_change_page(topic, page, text):
-        if "prefers" in text:
-            return True
-        await asyncio.sleep(0.05)  # fails after the other question answered
-        raise RuntimeError("429 after retries")
-
-    gated.model.could_change_page.side_effect = could_change_page
-    page = await _page_with_new_memories(memory, request_context)
-
-    refreshed = await memory.refresh_mental_model(
-        bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
-    )
-
-    assert gated.reflect == [], "the gate still replaces reflect"
     assert RELEVANT in str(gated.llm[0]) and UNRELATED in str(gated.llm[0])
-    assert refreshed["reflect_response"]["delta_gate"] == {"memories": 2, "kept": 2}
+    assert "Edit 1." in refreshed["content"]
+    rr = refreshed["reflect_response"]
+    assert rr["delta_read"] == {"memories": 2}
+    assert rr["delta_batches"] == 1 and rr["llm_call_count"] == 1
+    assert rr["usage"]["input_tokens"] == 11 and rr["usage"]["output_tokens"] == 3
 
 
-async def test_a_refresh_bounds_its_questions_in_flight(memory, request_context, gated, monkeypatch):
-    monkeypatch.setattr("hindsight_api.engine.memory_engine._DELTA_GATE_MAX_CONCURRENT", 1)
-    in_flight = peak = 0
-
-    async def could_change_page(topic, page, text):
-        nonlocal in_flight, peak
-        in_flight += 1
-        peak = max(peak, in_flight)
-        await asyncio.sleep(0.01)
-        in_flight -= 1
-        return "prefers" in text
-
-    gated.model.could_change_page.side_effect = could_change_page
+async def test_empty_window_costs_no_llm_call(memory, request_context, gated):
     page = await _page_with_new_memories(memory, request_context)
-
+    await memory.refresh_mental_model(bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context)
+    gated.llm.clear()
     refreshed = await memory.refresh_mental_model(
         bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
     )
+    assert gated.llm == []
+    gated.reflect.assert_not_called()
+    assert refreshed["reflect_response"]["outcome"] == "content_preserved_no_new_facts"
 
-    assert peak == 1
-    assert refreshed["reflect_response"]["delta_gate"] == {"memories": 2, "kept": 1}
 
-
-@pytest.mark.parametrize("switch", ["mental_model_refresh_use_decision_model", "reflect_use_decision_model"])
-async def test_other_decision_switches_leave_the_gate_on(memory, request_context, gated, switch):
-    """Each decision-model path has its own opt-out: turning off reflect's leaves the gate on."""
+async def test_operation_keeps_cost_after_the_page_is_refreshed_again(memory, request_context, gated):
     page = await _page_with_new_memories(memory, request_context)
-    await memory._config_resolver.update_bank_config(page.bank_id, {switch: False})
-
-    refreshed = await memory.refresh_mental_model(
+    queued = await memory.submit_async_refresh_mental_model(
         bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
     )
 
-    assert gated.reflect == []
-    assert refreshed["reflect_response"]["delta_gate"] == {"memories": 2, "kept": 1}
+    async def completed():
+        while True:
+            operation = await memory.get_operation_status(
+                bank_id=page.bank_id, operation_id=queued["operation_id"], request_context=request_context
+            )
+            if operation["status"] in ("completed", "failed"):
+                return operation
+            await asyncio.sleep(0.05)
+
+    operation = await asyncio.wait_for(completed(), timeout=10)
+    assert operation["status"] == "completed"
+    metadata = operation["result_metadata"]
+    assert metadata["refresh_mode"] == "delta"
+    assert metadata["llm_call_count"] == 1 and metadata["delta_batches"] == 1
+    assert metadata["input_tokens"] == 11 and metadata["output_tokens"] == 3
+    assert metadata["usage_complete"] is True
+    await memory.refresh_mental_model(bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context)
+    again = await memory.get_operation_status(
+        bank_id=page.bank_id, operation_id=queued["operation_id"], request_context=request_context
+    )
+    assert again["result_metadata"] == metadata
 
 
-async def test_directives_reach_the_gated_edit(memory, request_context, gated):
-    """Reflect hands the delta edit the bank's directives; the gated path must too."""
+async def test_over_cap_and_equal_timestamps_are_processed_in_batches(memory, request_context, gated, monkeypatch):
+    monkeypatch.setattr(get_config()._config, "mental_model_delta_gate_max_memories", 1)
+    page = await _page_with_new_memories(memory, request_context)
+    # Real retains often write many facts in a single transaction, hence equal timestamps.
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE memory_units SET updated_at = NOW() - INTERVAL '1 minute' WHERE bank_id = $1", page.bank_id
+        )
+    refreshed = await memory.refresh_mental_model(
+        bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
+    )
+    assert len(gated.llm) == 2
+    assert "Edit 1." in str(gated.llm[1]), "the second batch edits the first batch's result"
+    assert all(text in str(gated.llm) for text in (RELEVANT, UNRELATED))
+    assert refreshed["reflect_response"]["delta_batches"] == 2
+    assert refreshed["reflect_response"]["usage"]["total_tokens"] == 28
+    async with memory._pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM mental_models WHERE bank_id=$1 AND id=$2", page.bank_id, page.mm_id)
+        assert await memory.compute_mental_model_is_stale(conn, page.bank_id, row) is False
+
+
+async def test_second_batch_failure_preserves_document_and_watermark(memory, request_context, gated, monkeypatch):
+    monkeypatch.setattr(get_config()._config, "mental_model_delta_gate_max_memories", 1)
+    page = await _page_with_new_memories(memory, request_context)
+    before = await memory.get_mental_model(
+        bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
+    )
+    original_call = memory._mental_model_refresh_llm_config.call
+
+    async def fail_second(**kwargs):
+        if gated.llm:
+            raise ValueError("second batch failed")
+        return await original_call(**kwargs)
+
+    monkeypatch.setattr(memory._mental_model_refresh_llm_config, "call", fail_second)
+    with pytest.raises(MentalModelRefreshError):
+        await memory.refresh_mental_model(
+            bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
+        )
+    after = await memory.get_mental_model(
+        bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
+    )
+    assert after["content"] == before["content"]
+    assert after["last_memory_seen_at"] == before["last_memory_seen_at"]
+
+
+async def test_directives_reach_every_batch(memory, request_context, gated, monkeypatch):
+    monkeypatch.setattr(get_config()._config, "mental_model_delta_gate_max_memories", 1)
     page = await _page_with_new_memories(memory, request_context)
     await memory.create_directive(
         page.bank_id, "Tone", "Always write dates as YYYY-MM-DD.", request_context=request_context
     )
-
-    refreshed = await memory.refresh_mental_model(
-        bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
-    )
-
-    assert "Always write dates as YYYY-MM-DD." in str(gated.llm[0])
-    assert refreshed["reflect_response"]["delta_gate"] == {"memories": 2, "kept": 1}, "directives are not memories"
+    await memory.refresh_mental_model(bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context)
+    assert len(gated.llm) == 2
+    assert all("Always write dates as YYYY-MM-DD." in str(call) for call in gated.llm)
 
 
-async def test_a_failed_gated_edit_says_why(memory, request_context, gated, monkeypatch):
-    """The gate leaves no reflect candidate, so a failed edit must not read as "empty content"."""
+async def test_a_failed_direct_edit_says_why(memory, request_context, gated, monkeypatch):
     page = await _page_with_new_memories(memory, request_context)
 
-    async def boom(*, messages, **kwargs):
-        raise RuntimeError("simulated provider 500")
+    async def boom(**kwargs):
+        raise ValueError("invalid reply")
 
     monkeypatch.setattr(memory._mental_model_refresh_llm_config, "call", boom)
     with pytest.raises(MentalModelRefreshError):
         await memory.refresh_mental_model(
             bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
         )
-
-    preserved = await memory.get_mental_model(
+    after = await memory.get_mental_model(
         bank_id=page.bank_id, mental_model_id=page.mm_id, request_context=request_context
     )
-    assert preserved["content"] == "# Preferences\n\nThe user prefers concise answers.\n"
-    assert preserved["reflect_response"]["refresh_skipped"] == "delta_ops_failed"
+    assert after["reflect_response"]["refresh_skipped"] == "delta_ops_failed"
 
 
 class _ProviderStatusError(Exception):

@@ -1,12 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { buildMcpServer, resolveHarness, resolveProjectCwd, selectTools } from "./mcp-server";
+import {
+  buildMcpServer,
+  extractRootPath,
+  resolveHarness,
+  resolveProjectCwd,
+  selectTools,
+} from "./mcp-server";
 import { resolveConfig } from "./core/config";
 import type { HindsightClient } from "./core/hindsight";
+import { readActiveWorkspace, recordActiveWorkspace } from "./core/session-cache";
 
 // Plain stub — no SDK, no network. selectTools only needs a client reference to hand to
 // buildPageTools when enabled; it never calls any client method itself.
@@ -275,6 +283,38 @@ describe("buildMcpServer", () => {
     } finally {
       await client.close();
       await server.close();
+    }
+  });
+});
+
+describe("extractRootPath", () => {
+  it("extracts the first local file:// root URI and ignores non-file URIs", () => {
+    const dir = process.platform === "win32" ? "D:\\project\\hindsight" : "/workspace/hindsight";
+    const uri =
+      process.platform === "win32" ? "file:///D:/project/hindsight" : "file:///workspace/hindsight";
+    expect(extractRootPath([{ uri: "https://example.com/repo" }, { uri }])).toBe(dir);
+  });
+
+  it("returns undefined when no valid file:// root URI is present", () => {
+    expect(extractRootPath([])).toBeUndefined();
+    expect(extractRootPath([{ uri: "http://localhost:3000" }])).toBeUndefined();
+  });
+});
+
+describe("active-workspace fallback", () => {
+  it("records and reads an existing workspace directory per harness", () => {
+    const baseTmp = mkdtempSync(join(tmpdir(), "hs-mcp-ws-"));
+    const workspace = mkdtempSync(join(tmpdir(), "hs-repo-"));
+    try {
+      recordActiveWorkspace("antigravity-cli", workspace, baseTmp);
+      expect(readActiveWorkspace("antigravity-cli", baseTmp)).toBe(workspace);
+      expect(readActiveWorkspace("codex", baseTmp)).toBeUndefined();
+
+      rmSync(workspace, { recursive: true, force: true });
+      expect(readActiveWorkspace("antigravity-cli", baseTmp)).toBeUndefined();
+    } finally {
+      rmSync(baseTmp, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 });

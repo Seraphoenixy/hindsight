@@ -392,3 +392,77 @@ async def test_call_omits_the_reasoning_object_when_no_effort_is_configured():
     kwargs = create.await_args.kwargs
     assert "reasoning" not in kwargs
     assert "temperature" not in kwargs
+
+
+class _AsyncEventStream:
+    def __init__(self, events):
+        self._events = list(events)
+        self.closed = False
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        for event in self._events:
+            yield event
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_call_streams_responses_and_extracts_completed_event():
+    llm = _make_llm(model="gpt-5.6", reasoning_effort=None)
+    final = _fake_response(output_text='{"ok": true}', input_tokens=40, output_tokens=15, reasoning_tokens=5)
+    stream = _AsyncEventStream(
+        [
+            types.SimpleNamespace(type="response.created"),
+            types.SimpleNamespace(type="response.output_text.delta", delta='{"ok": '),
+            types.SimpleNamespace(type="response.output_text.delta", delta="true}"),
+            types.SimpleNamespace(type="response.completed", response=final),
+        ]
+    )
+    create = AsyncMock(return_value=stream)
+    llm._client.responses.create = create
+
+    with patch("hindsight_api.engine.providers.openai_responses_llm.get_metrics_collector"):
+        result = await llm.call(messages=[{"role": "user", "content": "hi"}], max_retries=0)
+
+    assert create.await_args.kwargs["stream"] is True
+    assert stream.closed is True
+    assert result.content == '{"ok": true}'
+    assert result.usage.input_tokens == 40
+    assert result.usage.output_tokens == 10
+    assert result.usage.thoughts_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_call_retries_when_responses_stream_ends_without_completed():
+    llm = _make_llm(model="gpt-5.6", reasoning_effort=None)
+    incomplete_stream = _AsyncEventStream([types.SimpleNamespace(type="response.output_text.delta", delta="partial")])
+    completed_stream = _AsyncEventStream(
+        [types.SimpleNamespace(type="response.completed", response=_fake_response(output_text="ok"))]
+    )
+    create = AsyncMock(side_effect=[incomplete_stream, completed_stream])
+    llm._client.responses.create = create
+
+    with patch("hindsight_api.engine.providers.openai_responses_llm.get_metrics_collector"):
+        result = await llm.call(
+            messages=[{"role": "user", "content": "hi"}],
+            max_retries=1,
+            initial_backoff=0,
+        )
+
+    assert create.await_count == 2
+    assert result.content == "ok"
+
+
+@pytest.mark.asyncio
+async def test_call_sends_explicit_reasoning_effort_for_custom_models():
+    llm = _make_llm(model="workbuddy/deepseek-v4.1-flash", reasoning_effort="none")
+    create = _mock_create(llm, _fake_response(output_text="ok", reasoning_tokens=0))
+
+    with patch("hindsight_api.engine.providers.openai_responses_llm.get_metrics_collector"):
+        await llm.call(messages=[{"role": "user", "content": "hi"}], max_retries=0)
+
+    assert create.await_args.kwargs["reasoning"] == {"effort": "none"}

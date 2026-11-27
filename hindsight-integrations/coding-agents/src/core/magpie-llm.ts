@@ -68,6 +68,8 @@ interface DiscoveryOk {
   ok: true;
   llm: MagpieLlm;
   mtimeMs: number;
+  wireApi?: string;
+  endpointsByModel?: Record<string, string[]>;
 }
 
 interface DiscoveryFailure {
@@ -246,21 +248,46 @@ function normalizeBaseUrl(raw: string): string {
   return `${url.origin}${path}`;
 }
 
-function modelIds(payload: unknown): { models: string[]; magpie: boolean } {
+function parseModels(payload: unknown): {
+  models: string[];
+  magpie: boolean;
+  endpointsByModel: Record<string, string[]>;
+} {
   const items =
     payload && typeof payload === "object" && Array.isArray((payload as { data?: unknown }).data)
       ? ((payload as { data: unknown[] }).data as unknown[])
       : [];
   const models: string[] = [];
+  const endpointsByModel: Record<string, string[]> = {};
   let magpie = false;
   for (const item of items) {
     if (!item || typeof item !== "object") continue;
     const entry = item as Record<string, unknown>;
-    if (typeof entry.id === "string" && entry.id.trim()) models.push(entry.id.trim());
-    if (typeof entry.magpie_label === "string" || Array.isArray(entry.native_endpoints))
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    if (id) models.push(id);
+    if (Array.isArray(entry.native_endpoints)) {
       magpie = true;
+      if (id) {
+        endpointsByModel[id] = entry.native_endpoints.filter(
+          (ep): ep is string => typeof ep === "string"
+        );
+      }
+    }
+    if (typeof entry.magpie_label === "string") magpie = true;
   }
-  return { models, magpie };
+  return { models, magpie, endpointsByModel };
+}
+
+function resolveProvider(
+  wireApi: unknown,
+  nativeEndpoints?: readonly string[]
+): MagpieLlm["provider"] {
+  if (wireApi === "chat") return "openai";
+  if (nativeEndpoints && nativeEndpoints.length > 0) {
+    if (nativeEndpoints.includes("/v1/responses")) return "openai-responses";
+    if (nativeEndpoints.includes("/v1/chat/completions")) return "openai";
+  }
+  return "openai-responses";
 }
 
 /**
@@ -338,8 +365,7 @@ export async function discoverMagpieLlm(options: DiscoveryOptions = {}): Promise
     (typeof magpie?.experimental_bearer_token === "string" &&
       magpie.experimental_bearer_token.trim()) ||
     "magpie";
-  const provider: MagpieLlm["provider"] =
-    magpie?.wire_api === "chat" ? "openai" : "openai-responses";
+  const wireApi = typeof magpie?.wire_api === "string" ? magpie.wire_api : undefined;
   const fetchFn = options.fetchFn ?? fetch;
 
   let response: Response;
@@ -371,7 +397,7 @@ export async function discoverMagpieLlm(options: DiscoveryOptions = {}): Promise
       mtimeMs
     );
   }
-  const listed = modelIds(payload);
+  const listed = parseModels(payload);
   if (!listed.magpie) {
     return fail(
       "unavailable",
@@ -388,10 +414,13 @@ export async function discoverMagpieLlm(options: DiscoveryOptions = {}): Promise
     : suffix.length === 1
       ? suffix[0]
       : requested;
+  const provider = resolveProvider(wireApi, listed.endpointsByModel[model]);
 
   return {
     ok: true,
     mtimeMs,
+    wireApi,
+    endpointsByModel: listed.endpointsByModel,
     llm: {
       provider,
       baseUrl,
@@ -481,8 +510,12 @@ export async function inspectMagpieLlm(
 
   const host = discovery.llm;
   const desiredModel = mode === "fixed" ? managed?.model || host.hostModel : host.hostModel;
+  const desiredProvider = resolveProvider(
+    discovery.wireApi,
+    discovery.endpointsByModel?.[desiredModel]
+  );
   const current = readProfileLlm(cfg.daemonProfile, env);
-  const synced = sameLlm(current, host.provider, host.baseUrl, desiredModel);
+  const synced = sameLlm(current, desiredProvider, host.baseUrl, desiredModel);
   const managedNow = managed && sameLlm(current, managed.provider, managed.baseUrl, managed.model);
   const status: LlmStatus = synced
     ? "synced"
@@ -522,8 +555,12 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
   const host = discovery.llm;
   const desiredModel =
     mode === "fixed" ? options.model?.trim() || managed?.model || host.hostModel : host.hostModel;
+  const desiredProvider = resolveProvider(
+    discovery.wireApi,
+    discovery.endpointsByModel?.[desiredModel]
+  );
   const current = readProfileLlm(cfg.daemonProfile, env);
-  const synced = sameLlm(current, host.provider, host.baseUrl, desiredModel);
+  const synced = sameLlm(current, desiredProvider, host.baseUrl, desiredModel);
   const managedNow = managed && sameLlm(current, managed.provider, managed.baseUrl, managed.model);
   const adoptable = isLegacyDefault(current);
 
@@ -548,7 +585,7 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
       cfg.daemonProfile,
       {
         profile: cfg.daemonProfile,
-        provider: host.provider,
+        provider: desiredProvider,
         baseUrl: host.baseUrl,
         model: desiredModel,
         mode,
@@ -562,7 +599,7 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
       mode,
       hostModel: host.hostModel,
       configuredModel: desiredModel,
-      provider: host.provider,
+      provider: desiredProvider,
       models: host.models,
       restartRequired,
       message: mode === "fixed" ? `使用固定模型 ${desiredModel}` : "已跟随 Magpie 当前模型",
@@ -576,7 +613,7 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
     await runOps(cfg, ["save-settings", "--profile", cfg.daemonProfile], {
       input: {
         values: {
-          [ENV_LLM_PROVIDER]: host.provider,
+          [ENV_LLM_PROVIDER]: desiredProvider,
           [ENV_LLM_BASE_URL]: host.baseUrl,
           [ENV_LLM_API_KEY]: host.apiKey,
           [ENV_LLM_MODEL]: desiredModel,
@@ -611,7 +648,7 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
         mode,
         hostModel: host.hostModel,
         configuredModel: desiredModel,
-        provider: host.provider,
+        provider: desiredProvider,
         models: host.models,
         restartRequired: true,
         message: `配置已同步，但重启记忆服务失败：${error instanceof Error ? error.message : String(error)}`,
@@ -625,7 +662,7 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
     cfg.daemonProfile,
     {
       profile: cfg.daemonProfile,
-      provider: host.provider,
+      provider: desiredProvider,
       baseUrl: host.baseUrl,
       model: desiredModel,
       mode,
@@ -643,7 +680,7 @@ async function doSync(cfg: Config, options: SyncOptions): Promise<LlmState> {
     mode,
     hostModel: host.hostModel,
     configuredModel: desiredModel,
-    provider: host.provider,
+    provider: desiredProvider,
     models: host.models,
     restartRequired,
     message: restarted

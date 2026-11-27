@@ -65,7 +65,15 @@ import { convertHindsightGraphData, GraphNode } from "./graph-data";
 import { Constellation } from "./constellation";
 import { TagFilterInput } from "./tag-filter-input";
 import { ObservationScopeFilter, ObservationScope } from "./observation-scope-filter";
-import { ScatterChart, Plus, FileText } from "lucide-react";
+import { ScatterChart, Plus, FileText, Trash2 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 type FactType = "world" | "experience" | "observation";
 type ViewMode = "table" | "timeline" | "constellation";
@@ -169,6 +177,9 @@ export function DataView({
   // Table view: toggle between live facts (graph-fed) and invalidated facts (archive).
   const [showInvalidated, setShowInvalidated] = useState(false);
   const [invalidatedRows, setInvalidatedRows] = useState<any[]>([]);
+  const [clearInvalidatedOpen, setClearInvalidatedOpen] = useState(false);
+  const [clearInvalidatedScope, setClearInvalidatedScope] = useState<"all" | "7d" | "30d">("all");
+  const [clearingInvalidated, setClearingInvalidated] = useState(false);
   const itemsPerPage = 100;
 
   // Fetch limit state - how many memories to load from the API
@@ -328,6 +339,30 @@ export function DataView({
       loadInvalidated();
     }
   }, [showInvalidated, viewMode, loadInvalidated]);
+
+  const handleClearInvalidated = async () => {
+    if (!currentBank || clearingInvalidated) return;
+    setClearingInvalidated(true);
+    try {
+      let before: string | undefined;
+      if (clearInvalidatedScope === "7d") {
+        before = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
+      } else if (clearInvalidatedScope === "30d") {
+        before = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
+      }
+      await client.clearInvalidatedMemories(currentBank, {
+        ...(before ? { before } : {}),
+        factType,
+      });
+      invalidateGraphCache(currentBank);
+      setClearInvalidatedOpen(false);
+      await loadInvalidated();
+    } catch (error) {
+      console.error("Failed to clear invalidated memories:", error);
+    } finally {
+      setClearingInvalidated(false);
+    }
+  };
 
   // Table rows: live rows are graph-fed (filtered server-side); invalidated rows
   // come from the archive via list.
@@ -1023,9 +1058,21 @@ export function DataView({
                 )}
                 <div className="flex min-w-0 items-center gap-2">
                   {showInvalidated ? (
-                    <span className="truncate text-[10.5px] text-muted-foreground">
-                      {t("invalidatedHint")}
-                    </span>
+                    <>
+                      <span className="truncate text-[10.5px] text-muted-foreground">
+                        {t("invalidatedHint")}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setClearInvalidatedOpen(true)}
+                        disabled={clearingInvalidated || invalidatedRows.length === 0}
+                        className="shrink-0 h-7 px-2.5 text-xs gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        {t("clearInvalidatedButton")}
+                      </Button>
+                    </>
                   ) : (
                     <span className="rounded-md border border-border/70 bg-background/70 px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
                       {filteredTableRows.length.toLocaleString()}
@@ -1261,6 +1308,47 @@ export function DataView({
           loadData(fetchLimit, appliedFilters.q || undefined, tags, match, false, true);
         }}
       />
+
+      <Dialog open={clearInvalidatedOpen} onOpenChange={setClearInvalidatedOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("clearInvalidatedDialogTitle")}</DialogTitle>
+            <DialogDescription>{t("clearInvalidatedDialogDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Select
+              value={clearInvalidatedScope}
+              onValueChange={(v) => setClearInvalidatedScope(v as "all" | "7d" | "30d")}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value="all">{t("clearInvalidatedScopeAll")}</SelectItem>
+                <SelectItem value="7d">{t("clearInvalidatedScope7d")}</SelectItem>
+                <SelectItem value="30d">{t("clearInvalidatedScope30d")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setClearInvalidatedOpen(false)}
+              disabled={clearingInvalidated}
+            >
+              {t("clearInvalidatedCancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleClearInvalidated}
+              disabled={clearingInvalidated}
+            >
+              {clearingInvalidated && <Spinner className="w-4 h-4 mr-1" />}
+              {t("clearInvalidatedConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

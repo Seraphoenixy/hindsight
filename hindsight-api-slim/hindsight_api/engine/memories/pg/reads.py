@@ -40,7 +40,7 @@ from ...search.tags import (
     build_tags_where_clause_simple,
     tag_clause_is_index_only,
 )
-from ..base import MemoryScopeWatermark, ScanPage, StoredMemory
+from ..base import MemoryScopeWatermark, MemoryUpdateCursor, ScanPage, StoredMemory
 
 # The `memory_units` projection every read here shares. Superset of the by-id
 # SELECT the recall source-facts path used (text/fact_type/context/timestamps/
@@ -641,6 +641,7 @@ async def memories_updated_between(
     until: datetime,
     since: datetime,
     limit: int,
+    after: MemoryUpdateCursor | None = None,
     fact_types: list[str] | None = None,
     tags: list[str] | None = None,
     tags_match: TagsMatch = "any",
@@ -648,10 +649,17 @@ async def memories_updated_between(
 ) -> list[StoredMemory]:
     """The memories :func:`newest_memory_updated_at` takes the max over, oldest first, at most ``limit``."""
     scope = _refresh_scope_where(bank_id, until, since, fact_types, tags, tags_match, tag_groups)
+    cursor_sql = ""
+    params = list(scope.params)
+    if after is not None:
+        params.extend([after.updated_at, uuid.UUID(after.unit_id)])
+        cursor_sql = (
+            f" AND (updated_at > ${len(params) - 1} OR (updated_at = ${len(params) - 1} AND id > ${len(params)}))"
+        )
     rows = await conn.fetch(
-        f"SELECT {_MEMORY_COLUMNS} FROM {fq_table('memory_units')} WHERE {scope.sql} "
-        f"ORDER BY updated_at, id LIMIT ${len(scope.params) + 1}",
-        *scope.params,
+        f"SELECT {_MEMORY_COLUMNS} FROM {fq_table('memory_units')} WHERE {scope.sql}{cursor_sql} "
+        f"ORDER BY updated_at, id LIMIT ${len(params) + 1}",
+        *params,
         limit,
     )
     return [_stored_from_row(row) for row in rows]

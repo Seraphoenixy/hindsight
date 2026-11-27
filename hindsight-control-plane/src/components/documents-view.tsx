@@ -529,6 +529,7 @@ function InvalidatedFactsSection({ bankId, documentId }: { bankId: string; docum
   const [rows, setRows] = useState<any[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!bankId || !documentId) return;
@@ -558,6 +559,17 @@ function InvalidatedFactsSection({ bankId, documentId }: { bankId: string; docum
       await load();
     } finally {
       setRestoringId(null);
+    }
+  };
+
+  const remove = async (id: string) => {
+    setDeletingId(id);
+    try {
+      await client.deleteMemory(id, bankId);
+      invalidateGraphCache(bankId);
+      await load();
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -613,16 +625,28 @@ function InvalidatedFactsSection({ bankId, documentId }: { bankId: string; docum
                 </div>
               )}
             </div>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={restoringId === row.id}
-              onClick={() => restore(row.id)}
-              className="shrink-0 h-7 px-2 text-xs gap-1"
-            >
-              <RotateCcw className="w-3 h-3" />
-              {tCuration("curationRevert")}
-            </Button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={restoringId === row.id || deletingId === row.id}
+                onClick={() => restore(row.id)}
+                className="h-7 px-2 text-xs gap-1"
+              >
+                <RotateCcw className="w-3 h-3" />
+                {tCuration("curationRevert")}
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={restoringId === row.id || deletingId === row.id}
+                onClick={() => remove(row.id)}
+                className="h-7 px-2 text-xs gap-1"
+              >
+                <Trash2 className="w-3 h-3" />
+                {tCuration("curationDelete")}
+              </Button>
+            </div>
           </div>
         ))}
       </div>

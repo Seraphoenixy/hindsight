@@ -665,6 +665,7 @@ async def _apply_incoming_item(
     prefer: ConflictSide | None,
     blobs: dict[str, tuple[str, bytes]],
     file_storage: FileStorage | None = None,
+    preserve_unit_ids: set[str] | None = None,
 ) -> tuple[int, int]:
     """Apply one incoming item with causal conflict detection. Returns ``(db_writes, conflicts_created)``."""
     state: SyncObjectStateRecord | None = await get_object_state(
@@ -747,7 +748,9 @@ async def _apply_incoming_item(
         )
 
         if decision == "remote":
-            await _write_item_to_db(conn, item, schema=schema, blobs=blobs, file_storage=file_storage)
+            await _write_item_to_db(
+                conn, item, schema=schema, blobs=blobs, file_storage=file_storage, preserve_unit_ids=preserve_unit_ids
+            )
             await mark_object_synced(
                 conn,
                 object_type=item.object_type,
@@ -793,7 +796,9 @@ async def _apply_incoming_item(
             return 1, 1
 
     # Non-conflicting apply.
-    await _write_item_to_db(conn, item, schema=schema, blobs=blobs, file_storage=file_storage)
+    await _write_item_to_db(
+        conn, item, schema=schema, blobs=blobs, file_storage=file_storage, preserve_unit_ids=preserve_unit_ids
+    )
     await mark_object_synced(
         conn,
         object_type=item.object_type,
@@ -810,6 +815,20 @@ async def _apply_incoming_item(
     return 1, 0
 
 
+_ENTITY_INDEX_OBJECT_TYPES = frozenset({"document", "memory_unit", "observation"})
+
+
+async def _rebuild_entity_indexes(conn: Any, *, schema: str | None, bank_ids: set[str]) -> None:
+    """One derived-index rebuild per bank per apply batch, never per object."""
+    from ..schema_context import get_current_schema
+    from .memories import sql_memories
+
+    for bank_id in sorted(bank_ids):
+        await sql_memories().sync_rebuild_entity_indexes(
+            conn=conn, schema=schema or get_current_schema(), bank_id=bank_id
+        )
+
+
 async def _write_item_to_db(
     conn: Any,
     item: RelayChangeItem,
@@ -817,6 +836,7 @@ async def _write_item_to_db(
     schema: str,
     blobs: dict[str, tuple[str, bytes]],
     file_storage: FileStorage | None = None,
+    preserve_unit_ids: set[str] | None = None,
 ) -> None:
     if item.deleted or item.op == "delete" or item.payload is None:
         await delete_object_payload(
@@ -825,6 +845,7 @@ async def _write_item_to_db(
             bank_id=item.bank_id,
             object_id=item.object_id,
             schema=schema,
+            preserve_unit_ids=preserve_unit_ids,
         )
         return
     for ref in extract_blob_refs(item.payload):
@@ -1266,6 +1287,12 @@ async def _synchronize_v3_inner(
 
                 async with conn.transaction():
                     await mark_sync_applying(conn)
+                    surviving_unit_ids = {
+                        it.object_id
+                        for it in ordered
+                        if it.object_type == "memory_unit" and not (it.deleted or it.op == "delete")
+                    }
+                    entity_banks: set[str] = set()
                     for item in ordered:
                         w_cnt, c_cnt = await _apply_incoming_item(
                             conn,
@@ -1277,10 +1304,14 @@ async def _synchronize_v3_inner(
                             prefer=prefer,
                             blobs=blobs,
                             file_storage=file_storage,
+                            preserve_unit_ids=surviving_unit_ids,
                         )
                         db_writes += w_cnt
                         conflicts_created += c_cnt
                         pulled_count += 1
+                        if w_cnt and item.object_type in _ENTITY_INDEX_OBJECT_TYPES:
+                            entity_banks.add(item.bank_id)
+                    await _rebuild_entity_indexes(conn, schema=schema, bank_ids=entity_banks)
                     cursor = cursor.model_copy(
                         update={
                             "relay_epoch": pull_page.epoch,
@@ -1418,6 +1449,7 @@ async def _synchronize_v3_inner(
                                 db_writes += 1
                             # Any race conflict detected at push time resolves through the exact same
                             # SyncObjectConflictRecord flow.
+                            entity_banks = set()
                             for conf in push_res.conflicts:
                                 remote_equiv = RelayChangeItem(
                                     seq=conf.relay_seq,
@@ -1448,6 +1480,9 @@ async def _synchronize_v3_inner(
                                 )
                                 db_writes += w_c
                                 conflicts_created += c_c
+                                if w_c and remote_equiv.object_type in _ENTITY_INDEX_OBJECT_TYPES:
+                                    entity_banks.add(remote_equiv.bank_id)
+                            await _rebuild_entity_indexes(conn, schema=schema, bank_ids=entity_banks)
 
                             # Advance in_seq only if no concurrent foreign edits sit below last_seq.
                             next_in_seq = (
@@ -1559,6 +1594,7 @@ async def _apply_rebaseline(
     writes = 0
     async with conn.transaction():
         await mark_sync_applying(conn)
+        entity_banks: set[str] = set()
         for item in ordered:
             w_c, c_c = await _apply_incoming_item(
                 conn,
@@ -1574,6 +1610,9 @@ async def _apply_rebaseline(
             writes += w_c
             conflicts += c_c
             pulled += 1
+            if w_c and item.object_type in _ENTITY_INDEX_OBJECT_TYPES:
+                entity_banks.add(item.bank_id)
+        await _rebuild_entity_indexes(conn, schema=schema, bank_ids=entity_banks)
     return pulled, conflicts, dl_blobs, writes, last_seq
 
 
@@ -1654,6 +1693,8 @@ async def restore_sync_conflict_object(
                 schema=schema,
             )
 
+        if conflict.object_type in _ENTITY_INDEX_OBJECT_TYPES:
+            await _rebuild_entity_indexes(conn, schema=schema, bank_ids={conflict.bank_id})
         restored_ver = recorded.version if recorded is not None else current_version + 1
         updated = await mark_sync_conflict_restored(
             conn,

@@ -300,7 +300,133 @@ async def _oracle_observation_scope_counts(
     }
 
 
+async def bank_storage_bytes(*, conn, fq_table: Callable[[str], str], bank_id: str) -> dict[str, int]:
+    """Approximate stored byte size of a bank's rows across its core tables.
+
+    Returns ``{"total": int, "memories": int, "documents": int, "chunks": int,
+    "links": int, "entities": int, "mental_models": int, "operations": int,
+    "audit_logs": int}``.
+    Sums ``pg_column_size(t)`` for each row belonging to ``bank_id``, plus the
+    compressed/external size of TOASTed large columns (embeddings, document text,
+    chunk text, mental model content, audit log payloads) when they exceed the
+    inline threshold so TOASTed data is not undercounted as an 18-byte pointer.
+    """
+    from ...schema import _is_oracle  # noqa: PLC0415
+
+    empty = {
+        "total": 0,
+        "memories": 0,
+        "invalidated_memories": 0,
+        "documents": 0,
+        "chunks": 0,
+        "links": 0,
+        "entities": 0,
+        "mental_models": 0,
+        "operations": 0,
+        "audit_logs": 0,
+    }
+    if _is_oracle():
+        return empty
+
+    row = await conn.fetchrow(
+        f"""
+        SELECT
+            COALESCE((
+                SELECT SUM(
+                    pg_column_size(t)
+                    + CASE WHEN COALESCE(pg_column_size(t.embedding), 0) > 2000
+                           THEN pg_column_size(t.embedding) ELSE 0 END
+                    + CASE WHEN COALESCE(pg_column_size(t.text), 0) > 2000
+                           THEN pg_column_size(t.text) ELSE 0 END
+                )
+                FROM {fq_table("memory_units")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS memories,
+            COALESCE((
+                SELECT SUM(
+                    pg_column_size(t)
+                    + CASE WHEN COALESCE(pg_column_size(t.text), 0) > 2000
+                           THEN pg_column_size(t.text) ELSE 0 END
+                )
+                FROM {fq_table("invalidated_memory_units")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS invalidated_memories,
+            COALESCE((
+                SELECT SUM(
+                    pg_column_size(t)
+                    + CASE WHEN COALESCE(pg_column_size(t.original_text), 0) > 2000
+                           THEN pg_column_size(t.original_text) ELSE 0 END
+                )
+                FROM {fq_table("documents")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS documents,
+            COALESCE((
+                SELECT SUM(
+                    pg_column_size(t)
+                    + CASE WHEN COALESCE(pg_column_size(t.chunk_text), 0) > 2000
+                           THEN pg_column_size(t.chunk_text) ELSE 0 END
+                )
+                FROM {fq_table("chunks")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS chunks,
+            COALESCE((
+                SELECT SUM(pg_column_size(t))
+                FROM {fq_table("memory_links")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS links,
+            COALESCE((
+                SELECT SUM(pg_column_size(t))
+                FROM {fq_table("entities")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS entities,
+            COALESCE((
+                SELECT SUM(
+                    pg_column_size(t)
+                    + CASE WHEN COALESCE(pg_column_size(t.content), 0) > 2000
+                           THEN pg_column_size(t.content) ELSE 0 END
+                )
+                FROM {fq_table("mental_models")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS mental_models,
+            COALESCE((
+                SELECT SUM(pg_column_size(t))
+                FROM {fq_table("async_operations")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS operations,
+            COALESCE((
+                SELECT SUM(
+                    pg_column_size(t)
+                    + CASE WHEN COALESCE(pg_column_size(t.request), 0) > 2000
+                           THEN pg_column_size(t.request) ELSE 0 END
+                    + CASE WHEN COALESCE(pg_column_size(t.response), 0) > 2000
+                           THEN pg_column_size(t.response) ELSE 0 END
+                    + CASE WHEN COALESCE(pg_column_size(t.metadata), 0) > 2000
+                           THEN pg_column_size(t.metadata) ELSE 0 END
+                )
+                FROM {fq_table("audit_log")} t
+                WHERE t.bank_id = $1
+            ), 0)::bigint AS audit_logs
+        """,
+        bank_id,
+    )
+    if not row:
+        return empty
+    by_category = {
+        "memories": int(row["memories"] or 0),
+        "invalidated_memories": int(row["invalidated_memories"] or 0),
+        "documents": int(row["documents"] or 0),
+        "chunks": int(row["chunks"] or 0),
+        "links": int(row["links"] or 0),
+        "entities": int(row["entities"] or 0),
+        "mental_models": int(row["mental_models"] or 0),
+        "operations": int(row["operations"] or 0),
+        "audit_logs": int(row["audit_logs"] or 0),
+    }
+    return {"total": sum(by_category.values()), **by_category}
+
+
 __all__ = [
+    "bank_storage_bytes",
     "consolidation_freshness",
     "document_memory_counts",
     "has_pending_consolidation",

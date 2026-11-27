@@ -893,8 +893,16 @@ async def _apply_document(conn: Any, schema: str, bank_id: str, object_id: str, 
     )
 
 
-async def _delete_document(conn: Any, schema: str, bank_id: str, object_id: str) -> None:
-    await sql_memories().sync_delete_document(conn=conn, schema=schema, bank_id=bank_id, document_id=object_id)
+async def _delete_document(
+    conn: Any, schema: str, bank_id: str, object_id: str, *, preserve_unit_ids: set[str] | None = None
+) -> None:
+    await sql_memories().sync_delete_document(
+        conn=conn,
+        schema=schema,
+        bank_id=bank_id,
+        document_id=object_id,
+        preserve_unit_ids=preserve_unit_ids,
+    )
 
 
 async def _export_memory_unit(conn: Any, schema: str, bank_id: str, object_id: str) -> dict[str, Any] | None:
@@ -1010,13 +1018,17 @@ async def delete_object_payload(
     bank_id: str,
     object_id: str,
     schema: str | None = None,
+    preserve_unit_ids: set[str] | None = None,
 ) -> None:
     """Delete one object cleanly inside the caller's transaction."""
     entry = _CODEC_TABLE.get(object_type)
     if entry is None:
         raise ValueError(f"Unsupported sync object_type: {object_type!r}")
     _, _, _, deleter = entry
-    await deleter(conn, _resolve_schema(schema), bank_id, object_id)
+    if object_type == "document":
+        await deleter(conn, _resolve_schema(schema), bank_id, object_id, preserve_unit_ids=preserve_unit_ids)
+    else:
+        await deleter(conn, _resolve_schema(schema), bank_id, object_id)
 
 
 def order_changes_for_apply(items: list[Any]) -> list[Any]:

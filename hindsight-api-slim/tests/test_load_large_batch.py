@@ -16,8 +16,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 import pytest_asyncio
 
-from hindsight_api import MemoryEngine, LLMConfig, LocalSTEmbeddings, RequestContext
-from hindsight_api.engine.cross_encoder import LocalSTCrossEncoder
+from hindsight_api import MemoryEngine, LLMConfig, RequestContext
 from hindsight_api.engine.query_analyzer import DateparserQueryAnalyzer
 from hindsight_api.engine.task_backend import SyncTaskBackend
 from hindsight_api.engine.retain.fact_extraction import FactExtractionResponse, ExtractedFact

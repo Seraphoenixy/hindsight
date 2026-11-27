@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, text
 from hindsight_api import MemoryEngine, RequestContext
 from hindsight_api.engine.cross_encoder import (
     CohereCrossEncoder,
-    LocalSTCrossEncoder,
+    CrossEncoderModel,
     SiliconFlowCrossEncoder,
     ZeroEntropyCrossEncoder,
 )
@@ -487,10 +487,24 @@ def openai_test_schema(pg0_db_url, worker_id, openai_embeddings):
     drop_schema(pg0_db_url, schema_name)
 
 
+class _StubCrossEncoder(CrossEncoderModel):
+    """Lightweight cross-encoder stub for custom embedding dimension tests."""
+
+    @property
+    def provider_name(self) -> str:
+        return "stub"
+
+    async def initialize(self) -> None:
+        return None
+
+    async def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        return [0.5] * len(pairs)
+
+
 @pytest.fixture
 def cross_encoder():
     """Provide a cross encoder for tests."""
-    return LocalSTCrossEncoder()
+    return _StubCrossEncoder()
 
 
 @pytest.fixture

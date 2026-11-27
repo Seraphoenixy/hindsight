@@ -88,6 +88,21 @@ describe("ensureControlPlaneStarted", () => {
     expect(second.running).toBe(true);
   });
 
+  it("probes /api/liveness and falls back to /api/health only on 404", async () => {
+    const { isControlPlaneHealthy } = await freshModule();
+    const probe = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+    vi.stubGlobal("fetch", probe);
+
+    await expect(isControlPlaneHealthy(EXPECTED_PORT)).resolves.toBe(true);
+    expect(probe.mock.calls.map((c) => c[0])).toEqual([
+      `http://127.0.0.1:${EXPECTED_PORT}/api/liveness`,
+      `http://127.0.0.1:${EXPECTED_PORT}/api/health`,
+    ]);
+  });
+
   it("collapses a burst of concurrent callers onto one start", async () => {
     const { ensureControlPlaneStarted } = await freshModule();
     stubHealth([false, true]);

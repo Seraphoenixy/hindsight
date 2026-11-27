@@ -27,7 +27,6 @@ from ...search.tags import (
     build_tag_filter_clause,
     build_tag_groups_where_clause,
     build_tags_where_clause,
-    tag_filter_active,
 )
 from ...time_filter import MEMORY_TIME_FIELDS, build_time_clause
 from .graph import _entity_rows_for_units_sql, _ops_for
@@ -135,12 +134,17 @@ async def list_memory_units(
         query_params.append(document_id)
 
     if entity_id:
-        # Reverse lookup via the stored entity links. Entity links reference live memory units, so
-        # this yields nothing against the invalidated archive (documented on the method).
         param_count += 1
-        query_conditions.append(
-            f"id IN (SELECT unit_id FROM {fq_table('unit_entities')} WHERE entity_id = ${param_count}::uuid)"
-        )
+        entity_param = f"${param_count}::uuid"
+        if is_archived:
+            # The archive has no live postings; retain the existing empty result.
+            mentions = f"SELECT unit_id FROM {fq_table('unit_entities')} WHERE entity_id = {entity_param}"
+        else:
+            # Use the same direct+inherited mentions as entity counts and graph
+            # reads. Otherwise the count includes observations the timeline omits.
+            visible = visible_entity_mentions_sql(fq_table, ops, "", entity_param)
+            mentions = f"SELECT unit_id FROM ({visible}) vm WHERE entity_id = {entity_param}"
+        query_conditions.append(f"id IN ({mentions})")
         query_params.append(entity_id)
 
     if search_query:
@@ -459,59 +463,19 @@ async def list_entities(
     Returns:
         Dict with items, total, limit, offset
     """
-    if tag_filter_active(tags, tags_match, tag_groups):
-        return await _list_entities_tag_filtered(
-            conn=conn,
-            fq_table=fq_table,
-            bank_id=bank_id,
-            search=search,
-            tags=tags,
-            tags_match=tags_match,
-            tag_groups=tag_groups,
-            limit=limit,
-            offset=offset,
-        )
-
-    conditions = ["bank_id = $1"]
-    params: list[Any] = [bank_id]
-    if search:
-        # Substring match, same ILIKE shape entity lookup uses elsewhere. Applied
-        # to the count too, so the UI pages over the filtered set.
-        params.append(f"%{search}%")
-        conditions.append(f"canonical_name ILIKE ${len(params)}")
-    where_clause = " AND ".join(conditions)
-
-    # Get total count
-    total_row = await conn.fetchrow(
-        f"""
-        SELECT COUNT(*) as total
-        FROM {fq_table("entities")}
-        WHERE {where_clause}
-        """,
-        *params,
+    # Cached entity counters can drift after sync/import. Count the same visible
+    # memories with or without tags, including inherited observation entities.
+    return await _list_entities_from_memories(
+        conn=conn,
+        fq_table=fq_table,
+        bank_id=bank_id,
+        search=search,
+        tags=tags,
+        tags_match=tags_match,
+        tag_groups=tag_groups,
+        limit=limit,
+        offset=offset,
     )
-    total = total_row["total"] if total_row else 0
-
-    # Get paginated entities
-    rows = await conn.fetch(
-        f"""
-        SELECT id, canonical_name, entity_kind, mention_count, first_seen, last_seen, metadata
-        FROM {fq_table("entities")}
-        WHERE {where_clause}
-        ORDER BY mention_count DESC, last_seen DESC, id ASC
-        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-        """,
-        *params,
-        limit,
-        offset,
-    )
-
-    return {
-        "items": [_entity_list_item(row) for row in rows],
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    }
 
 
 def _entity_list_item(row: Any) -> dict[str, Any]:
@@ -637,10 +601,10 @@ def visible_entity_mentions_sql(fq_table, ops, tag_clause_sql: str, few_entities
 def visible_entity_stats_sql(fq_table, ops, tag_clause_sql: str, few_entities_sql: str | None = None) -> str:
     """``SELECT entity_id, mention_count, first_seen, last_seen`` over the memories a tag filter lets through.
 
-    The stored ``entities.mention_count`` / ``first_seen`` / ``last_seen`` count every
-    memory in the bank, so a tag-filtered read that returned them would tell the
-    reader how much out-of-scope memories mention an entity (#5031). These are
-    recomputed from :func:`visible_entity_mentions_sql` instead. An entity with no
+    Stored entity counters can drift after import and do not include inherited
+    observation mentions. Both scoped and unfiltered reads therefore derive counts
+    and dates from :func:`visible_entity_mentions_sql`. Scoped reads also avoid
+    leaking out-of-scope mention counts (#5031). An entity with no
     visible mention has no row, which is what hides it. ``few_entities_sql`` is the
     speed hint described on :func:`visible_entity_mentions_sql`.
     """
@@ -654,7 +618,7 @@ def visible_entity_stats_sql(fq_table, ops, tag_clause_sql: str, few_entities_sq
     """
 
 
-async def _list_entities_tag_filtered(
+async def _list_entities_from_memories(
     *,
     conn,
     fq_table,
@@ -668,10 +632,9 @@ async def _list_entities_tag_filtered(
 ) -> dict[str, Any]:
     """:func:`list_entities` restricted to entities a tag-matching memory mentions.
 
-    Counts, dates and the ordering all come from the matching memories, never from
-    the stored totals. This is a GROUP BY over the bank's postings rather than a
-    read of the materialised counters, so it costs more — the unfiltered list keeps
-    the fast path. A name search counts only the entities it matches.
+    Counts, dates and ordering come from live memories, never materialized counters.
+    An entity without a visible mention is omitted. A name search counts only the
+    entities it matches.
     """
     built = build_tag_filter_clause(tags, tags_match, tag_groups, param_offset=2)
     params: list[Any] = [bank_id, *built.params]

@@ -44,14 +44,15 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Union, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from hindsight_api.config import get_config
 from hindsight_api.engine.llm_wrapper import ConfiguredLLMProvider, OutputTooLongError, parse_llm_json, reask_messages
-from hindsight_api.engine.response_models import LLMCallResult
+from hindsight_api.engine.response_models import LLMCallResult, LLMCallTrace, TokenUsage
 
 from .structured_doc import (
     Block,
@@ -498,8 +499,21 @@ def _unreachable_correction_prompt(
     return "\n".join(lines)
 
 
+@dataclass
+class DeltaCallAccounting:
+    """Include edit/retraction calls and correction retries in the refresh report."""
+
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    calls: list[LLMCallTrace] = field(default_factory=list)
+    usage_complete: bool = True
+
+
 async def _call_resampling_a_runaway(
-    llm: ConfiguredLLMProvider, messages: list[dict[str, Any]], scope: str, **call_kwargs: Any
+    llm: ConfiguredLLMProvider,
+    messages: list[dict[str, Any]],
+    scope: str,
+    accounting: DeltaCallAccounting | None = None,
+    **call_kwargs: Any,
 ) -> LLMCallResult:
     """``llm.call``, sampled once more when the reply runs to the output cap.
 
@@ -508,11 +522,36 @@ async def _call_resampling_a_runaway(
     accident — about 1 in 120 identical requests — so the same request, once more,
     comes back whole. A second runaway raises, so the refresh fails as before.
     """
+
+    async def call() -> LLMCallResult:
+        started_at_ms = int(time.time() * 1000)  # noqa: TID251 — wall-clock trace timestamp
+        started = time.perf_counter()
+        try:
+            result = await llm.call(messages=messages, scope=scope, **call_kwargs)
+            if accounting is not None:
+                accounting.usage = accounting.usage + result.usage
+            return result
+        except BaseException:
+            # Failed calls may be billed without returning provider usage. A sum
+            # of the successful replies must not be presented as the full cost.
+            if accounting is not None:
+                accounting.usage_complete = False
+            raise
+        finally:
+            if accounting is not None:
+                accounting.calls.append(
+                    LLMCallTrace(
+                        scope=scope,
+                        started_at_ms=started_at_ms,
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                )
+
     try:
-        return await llm.call(messages=messages, scope=scope, **call_kwargs)
+        return await call()
     except OutputTooLongError:
         logger.warning("[STRUCTURED_DELTA] %s reply hit the token cap; sampling once more", scope)
-        return await llm.call(messages=messages, scope=scope, **call_kwargs)
+        return await call()
 
 
 async def request_delta_operations(
@@ -538,8 +577,7 @@ async def request_delta_operations(
 
     Exactly one retry. A third ask would repeat the second's input and so its
     output; past that the caller's own failure path takes over — the document is
-    preserved and the task retries with a fresh reflect behind it, a better use
-    of the next attempt.
+    preserved and a retry reads the same change window again.
 
     A reply that runs to the output cap is a different failure and is answered
     differently: the same request, sampled once more (``_call_resampling_a_runaway``),

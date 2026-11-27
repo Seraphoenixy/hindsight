@@ -31,9 +31,16 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ._http_probe import ProbeResponse, probe_first, probe_get
-from ._ui_broker import UiLaunch, in_windows_job, launch_independent_ui
+from ._ui_broker import UiLaunch, in_windows_job, launch_independent_process, launch_independent_ui
 from .embed_manager import EmbedManager
-from .profile_manager import ProfileLockTimeout, ProfileManager, ProfilePaths, lock_file, unlock_file
+from .profile_manager import (
+    ProfileLockTimeout,
+    ProfileManager,
+    ProfilePaths,
+    lock_file,
+    unlock_file,
+    write_daemon_log_offset,
+)
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
@@ -981,6 +988,35 @@ class DaemonEmbedManager(EmbedManager):
             kernel.CloseHandle(handle)
 
     @staticmethod
+    def _windows_process_exit_code(pid: int) -> int | None:
+        """Return exit code if a Windows process has exited, or None if still running."""
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        # SYNCHRONIZE (0x00100000) | PROCESS_QUERY_LIMITED_INFORMATION (0x1000)
+        handle = kernel.OpenProcess(0x00101000, False, pid)
+        if not handle:
+            return 1 if ctypes.get_last_error() == 87 else None
+        try:
+            if kernel.WaitForSingleObject(handle, 0) != 0:  # not WAIT_OBJECT_0
+                return None
+            code = wintypes.DWORD()
+            if kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return int(code.value)
+            return 1
+        finally:
+            kernel.CloseHandle(handle)
+
+    @staticmethod
     def _kill_process(pid: int) -> bool:
         """Kill a process by PID and wait for it to exit. Returns True if process is gone."""
         import signal
@@ -1266,6 +1302,8 @@ class DaemonEmbedManager(EmbedManager):
             self._rotate_daemon_log(daemon_log, max_bytes=max_bytes, backup_count=backup_count)
         except OSError as exc:
             logger.warning("Could not rotate daemon log %s: %s", daemon_log, exc)
+        start_offset = daemon_log.stat().st_size if daemon_log.exists() else 0
+        write_daemon_log_offset(daemon_log, start_offset)
         env["HINDSIGHT_API_DAEMON_LOG"] = str(daemon_log)
 
         # Build command
@@ -1293,10 +1331,27 @@ class DaemonEmbedManager(EmbedManager):
             # HINDSIGHT_API_DAEMON_LOG) will append to the same path.
             # Popen dups the fd into the child during spawn, so the parent
             # can close its handle as soon as Popen returns.
-            with open(daemon_log, "ab") as daemon_log_handle:
-                daemon_process = subprocess.Popen(cmd, env=env, **_detach_popen_kwargs(daemon_log_handle))
+            daemon_process: subprocess.Popen | None = None
+            daemon_pid: int | None = None
+            if in_windows_job():
+                daemon_pid = launch_independent_process(
+                    UiLaunch(
+                        command=cmd,
+                        env=env,
+                        log_path=str(daemon_log),
+                        cwd=os.getcwd(),
+                        append=True,
+                    )
+                )
+                if daemon_pid is None:
+                    logger.error(f"Failed to launch independent daemon process for {profile_label}")
+                    return False
+            else:
+                with open(daemon_log, "ab") as daemon_log_handle:
+                    daemon_process = subprocess.Popen(cmd, env=env, **_detach_popen_kwargs(daemon_log_handle))
+                    daemon_pid = daemon_process.pid
             try:
-                self._daemon_pid_file(paths).write_text(str(daemon_process.pid))
+                self._daemon_pid_file(paths).write_text(str(daemon_pid))
             except OSError:
                 logger.debug("Could not record daemon PID for %s", profile_label, exc_info=True)
 
@@ -1318,7 +1373,11 @@ class DaemonEmbedManager(EmbedManager):
                     # Polling keeps going through a missed health probe (below),
                     # so a child that actually died is detected here instead of
                     # waiting out the whole startup deadline.
-                    exit_code = daemon_process.poll()
+                    exit_code = (
+                        daemon_process.poll()
+                        if daemon_process is not None
+                        else self._windows_process_exit_code(daemon_pid)
+                    )
                     if exit_code is not None:
                         log_lines.append("")
                         log_lines.append(f"✗ Daemon exited during initialization (exit code {exit_code})")
@@ -1420,7 +1479,10 @@ class DaemonEmbedManager(EmbedManager):
             # the detached child initializing. A supervisor retry could then
             # accumulate overlapping daemons that had not bound the port yet, so
             # port-based cleanup could not see them.
-            _terminate_startup_process(daemon_process)
+            if daemon_process is not None:
+                _terminate_startup_process(daemon_process)
+            elif daemon_pid is not None:
+                self._kill_process(daemon_pid)
             return False
 
         except FileNotFoundError:

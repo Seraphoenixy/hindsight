@@ -74,6 +74,7 @@ export function ThinkView() {
   const { currentBank } = useBank();
   const [query, setQuery] = useState("");
   const [budget, setBudget] = useState<"low" | "mid" | "high">("mid");
+  const [reasoningEnabled, setReasoningEnabled] = useState(false);
   const [maxTokens, setMaxTokens] = useState<number>(4096);
   const [includeFacts, setIncludeFacts] = useState(true);
   const [includeToolCalls, setIncludeToolCalls] = useState(true);
@@ -191,6 +192,7 @@ export function ThinkView() {
         bank_id: currentBank,
         query,
         budget,
+        reasoning_effort: reasoningEnabled ? "medium" : "none",
         max_tokens: maxTokens,
         include_facts: includeFacts,
         include_tool_calls: includeToolCalls,
@@ -261,6 +263,20 @@ export function ThinkView() {
             <div className="flex items-center gap-1.5">
               <FactTypeFilter value={factTypes} onChange={setFactTypes} />
               <Hint text={t("helpFactTypes")} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="reflect-reasoning-toggle"
+                checked={reasoningEnabled}
+                onCheckedChange={setReasoningEnabled}
+              />
+              <label
+                htmlFor="reflect-reasoning-toggle"
+                className="text-sm text-muted-foreground cursor-pointer select-none"
+              >
+                {t("reasoningLabel")}
+              </label>
+              <Hint text={t("helpReasoning")} />
             </div>
             <div className="ml-auto">
               <DisclosureButton

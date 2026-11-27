@@ -35,6 +35,7 @@ const client = new HindsightClient({
   projectScope: resolved0.cfg.projectScope,
   apiUrl: arg("api-url") ?? cfg.apiUrl,
   apiToken: arg("api-token") ?? cfg.apiToken,
+  headers: cfg.apiHeaders,
   bank: FINAL_BANK!,
   maxParallelRetains: cfg.maxParallelRetains,
   observationScopes: cfg.observationScopes,

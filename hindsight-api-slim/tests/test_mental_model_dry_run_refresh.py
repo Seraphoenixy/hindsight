@@ -26,6 +26,7 @@ import pytest_asyncio
 from hindsight_api import MemoryEngine, RequestContext
 from hindsight_api.engine.response_models import ReflectResult
 from tests.conftest import stub_refresh_has_sources
+from tests.refresh_support import cross_encoder, embeddings  # noqa: F401 — module fixtures avoid optional ML
 
 
 def _reflect_result(
@@ -82,6 +83,9 @@ def patch_reflect(monkeypatch):
             return _reflect_result(text, facts=facts, retrieved=retrieved)
 
         monkeypatch.setattr(memory, "reflect_async", fake_reflect_async)
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(memory, "_read_delta_refresh", AsyncMock(return_value=None))
         stub_refresh_has_sources(monkeypatch, memory)
         return calls
 

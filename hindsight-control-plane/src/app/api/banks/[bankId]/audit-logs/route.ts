@@ -50,3 +50,54 @@ export async function GET(request: Request, { params }: { params: Promise<{ bank
     );
   }
 }
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ bankId: string }> }
+) {
+  try {
+    const { bankId } = await params;
+
+    if (!bankId) {
+      return NextResponse.json(
+        localizeApiErrorPayload(request, {
+          error: "bank_id is required",
+          errorKey: "api.errors.validation.bankIdRequired",
+        }),
+        { status: 400 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const query = searchParams.toString();
+
+    const url = dataplaneBankUrl(bankId, `/audit-logs${query ? `?${query}` : ""}`);
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: getDataplaneHeaders(),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return NextResponse.json(
+        localizeApiErrorPayload(request, {
+          error: data.detail || "Failed to clear audit logs",
+          errorKey: "api.errors.auditLogs.clear",
+        }),
+        { status: response.status }
+      );
+    }
+
+    return NextResponse.json(data, { status: 200 });
+  } catch (error) {
+    console.error("Error clearing audit logs:", error);
+    return NextResponse.json(
+      localizeApiErrorPayload(request, {
+        error: "Failed to clear audit logs",
+        errorKey: "api.errors.auditLogs.clear",
+      }),
+      { status: 500 }
+    );
+  }
+}

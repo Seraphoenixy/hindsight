@@ -1,0 +1,108 @@
+name: Private CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - private
+  pull_request:
+    branches:
+      - private
+
+concurrency:
+  group: private-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python-lint-and-type:
+    name: Python Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Sync Python workspace
+        run: uv sync --frozen --package hindsight-api-slim --package hindsight-embed
+      - name: Ruff check & format (hindsight-api-slim)
+        working-directory: hindsight-api-slim
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Typecheck (hindsight-api-slim)
+        working-directory: hindsight-api-slim
+        run: uv run ty check hindsight_api/
+      - name: Ruff check & format (hindsight-embed)
+        working-directory: hindsight-embed
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+  python-api-tests:
+    name: Python API Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Sync hindsight-api-slim
+        run: uv sync --frozen --package hindsight-api-slim --extra embedded-db
+      - name: Run targeted API regression tests
+        working-directory: hindsight-api-slim
+        env:
+          HINDSIGHT_API_LLM_API_KEY: test-key
+        run: |
+          uv run pytest \
+            tests/test_migration_shape.py \
+            tests/test_maintenance_loop.py \
+            tests/test_audit_log.py \
+            tests/test_audit_per_bank.py \
+            tests/test_hierarchical_config.py \
+            tests/test_bank_template_configurable_fields.py \
+            tests/test_sync_audit_log_codec.py \
+            -q
+
+  python-embed-tests:
+    name: Python Embed Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Sync hindsight-embed
+        run: uv sync --frozen --package hindsight-embed
+      - name: Run hindsight-embed tests
+        working-directory: hindsight-embed
+        run: uv run pytest tests/ -q
+
+  node-build-and-check:
+    name: Node Build & Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install root workspace dependencies
+        run: npm ci
+      - name: Build @vectorize-io/hindsight-client
+        run: npm run build -w @vectorize-io/hindsight-client
+      - name: Typecheck, lint, test & build Control Plane
+        working-directory: hindsight-control-plane
+        run: |
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run build
+      - name: Install, build & check coding-agents + magpie
+        working-directory: hindsight-integrations/coding-agents
+        run: |
+          npm ci
+          npm run prepublishOnly
+          node --check ../magpie/page/boot.js

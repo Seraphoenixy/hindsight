@@ -15,6 +15,7 @@ import { MEDIA_TYPES, knowledgeBankRoute, type KnowledgeBank } from "@/lib/knowl
 import { formatRelativeTime } from "@/lib/relative-time";
 import { KindIcon } from "@/components/knowledge-passage";
 import { BankKindSwitch } from "@/components/bank-kind-switch";
+import { MemoryPageHeader, MemoryPageStat } from "@/components/memory-page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -291,26 +292,40 @@ export function KnowledgeBanksList() {
   }, [anyPending, load]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
-      <BankKindSwitch
-        value="knowledge"
-        onChange={(kind) => kind === "memory" && router.push("/dashboard")}
-      />
-      <div className="mb-6 mt-4 flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-bold text-foreground">{t("title")}</h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("subtitle")}</p>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button variant="ghost" size="sm" onClick={load} title={t("refresh")}>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Plus className="mr-1.5 h-4 w-4" />
-            {t("create")}
-          </Button>
-        </div>
+    <div className="mx-auto w-full max-w-[1024px] xl:max-w-[1280px] 2xl:max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mb-4">
+        <BankKindSwitch
+          value="knowledge"
+          onChange={(kind) => kind === "memory" && router.push("/dashboard")}
+        />
       </div>
+      <MemoryPageHeader
+        icon={Library}
+        title={t("title")}
+        description={t("subtitle")}
+        className="mb-4"
+        actions={
+          <>
+            <Button variant="outline" size="sm" onClick={load} title={t("refresh")}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+            <Button variant="gradient" size="sm" onClick={() => setCreating(true)}>
+              <Plus className="mr-1.5 h-4 w-4" />
+              {t("create")}
+            </Button>
+          </>
+        }
+      >
+        {banks !== null && (
+          <div className="flex flex-wrap gap-2">
+            <MemoryPageStat
+              icon={Library}
+              label={t("title")}
+              value={banks.length.toLocaleString()}
+            />
+          </div>
+        )}
+      </MemoryPageHeader>
 
       {banks === null ? (
         <ListSkeleton />

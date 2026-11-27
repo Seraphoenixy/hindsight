@@ -184,6 +184,9 @@ export interface ClientOpts {
    *  the key mid-session 401'd every call until the host restarted (#3600). Consulted only on a
    *  401, so the happy path never touches the filesystem. See `core/host-client.ts`. */
   tokenProvider?: () => string | undefined;
+  /** Extra headers sent with every request (config `apiHeaders`, e.g. a Cloudflare Access service
+   *  token, #6651). The plugin's own `Authorization` wins over one set here when a token is set. */
+  headers?: Record<string, string>;
   /** How long one request may spend waiting out rate limits (HTTP 429) before it throws
    *  `RateLimitedError`. Default 0: a hook answers to its host's deadline and must fail fast.
    *  Background work that has nobody waiting on it (deepen) sets this, because a 429 it does not
@@ -433,7 +436,9 @@ const GLOBAL_DISPATCHER = Symbol.for("undici.globalDispatcher.1");
  * UND_ERR_HEADERS_TIMEOUT before the server could answer (#5504). Composing over the CURRENT
  * global dispatcher, instead of building a new undici `Agent`, needs no `undici` dependency (the
  * bundled one is not importable) and keeps any proxy dispatcher the host installed. Hosts whose
- * fetch is not undici's (Bun, DSH's own) have no such dispatcher and ignore the option.
+ * fetch is not undici's have no such dispatcher and ignore the option — which is why this alone left
+ * Bun hosts (opencode) cut off at 300s: Bun has its own idle timeout, switched off in
+ * `fetchWithAuth` (#6431).
  */
 function signalOnlyDispatcher(): unknown {
   // Node loads undici — which installs the global dispatcher — lazily. Touching the `Headers`
@@ -456,6 +461,7 @@ export class HindsightClient {
    *  diverge exactly when #3600 bites, which is why `hindsight_diagnose` reports both. */
   private token: string | undefined;
   private readonly tokenProvider?: () => string | undefined;
+  private readonly extraHeaders: Record<string, string>;
   readonly bank: string;
   readonly project?: string;
   readonly projectScope?: ProjectScope;
@@ -477,6 +483,7 @@ export class HindsightClient {
     this.apiUrl = o.apiUrl.replace(/\/$/, "");
     this.token = o.apiToken;
     this.tokenProvider = o.tokenProvider;
+    this.extraHeaders = o.headers ?? {};
     this.bank = o.bank;
     this.projectScope = o.projectScope;
     this.project = o.projectScope?.name ?? o.project;
@@ -541,8 +548,14 @@ export class HindsightClient {
       "Content-Type": "application/json",
       "Accept-Encoding": "identity",
       "User-Agent": USER_AGENT,
+      ...this.extraHeaders,
     };
-    if (this.token) h["Authorization"] = `Bearer ${this.token}`;
+    if (this.token) {
+      // Header names are case-insensitive: a configured `authorization` would otherwise travel
+      // alongside ours and reach the server as one comma-joined value.
+      for (const k of Object.keys(h)) if (k.toLowerCase() === "authorization") delete h[k];
+      h["Authorization"] = `Bearer ${this.token}`;
+    }
     return h;
   }
 
@@ -576,8 +589,19 @@ export class HindsightClient {
   private async fetchWithAuth(url: string, init: RequestInit): Promise<Response> {
     // Only a request with its own deadline drops undici's timeouts; the drain poll has none.
     const dispatcher = init.signal ? signalOnlyDispatcher() : undefined;
+    // Bun has its own 300s socket-idle timeout below fetch, and ignores the undici dispatcher, so
+    // a reflect configured above 300s still died there under opencode (#6431). A request with an
+    // AbortSignal already has the caller's deadline, so disable that lower timeout just as the
+    // dispatcher does for undici; the signal still aborts on time. `timeout` is a Bun RequestInit
+    // extension; other runtimes ignore the extra field.
+    const bunTimeout = init.signal && "Bun" in globalThis ? { timeout: false as const } : {};
     const send = () =>
-      fetch(url, { ...init, headers: this.headers(), ...(dispatcher ? { dispatcher } : {}) });
+      fetch(url, {
+        ...init,
+        headers: this.headers(),
+        ...bunTimeout,
+        ...(dispatcher ? { dispatcher } : {}),
+      } as RequestInit);
     const r = await send();
     if (r.status !== 401 || !this.refreshToken()) return r;
     return send();

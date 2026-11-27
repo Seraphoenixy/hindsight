@@ -26,7 +26,19 @@ def cap_per_source(results: list[RetrievalResult], cap: int) -> list[RetrievalRe
     return results[:cap]
 
 
-def reciprocal_rank_fusion(result_lists: list[list[RetrievalResult]], k: int = 60) -> list[MergedCandidate]:
+_DEFAULT_ARM_WEIGHTS: dict[str, float] = {
+    "semantic": 1.0,
+    "bm25": 1.0,
+    "graph": 0.4,
+    "temporal": 0.8,
+}
+
+
+def reciprocal_rank_fusion(
+    result_lists: list[list[RetrievalResult]],
+    k: int = 60,
+    arm_weights: dict[str, float] | None = None,
+) -> list[MergedCandidate]:
     """
     Merge multiple ranked result lists using Reciprocal Rank Fusion.
 
@@ -54,9 +66,11 @@ def reciprocal_rank_fusion(result_lists: list[list[RetrievalResult]], k: int = 6
     arm_scores: dict[str, ArmScores] = {}  # doc_id -> raw per-strategy scores across arms
 
     source_names = ["semantic", "bm25", "graph", "temporal"]
+    weights = arm_weights if arm_weights is not None else _DEFAULT_ARM_WEIGHTS
 
     for source_idx, results in enumerate(result_lists):
         source_name = source_names[source_idx] if source_idx < len(source_names) else f"source_{source_idx}"
+        arm_weight = weights.get(source_name, 1.0)
 
         for rank, retrieval in enumerate(results, start=1):
             # Type check to catch tuple issues
@@ -82,7 +96,7 @@ def reciprocal_rank_fusion(result_lists: list[list[RetrievalResult]], k: int = 6
                 source_ranks[doc_id] = {}
                 arm_scores[doc_id] = ArmScores()
 
-            rrf_scores[doc_id] += 1.0 / (k + rank)
+            rrf_scores[doc_id] += arm_weight / (k + rank)
             source_ranks[doc_id][f"{source_name}_rank"] = rank
 
             # Capture this arm's raw score for the doc (the merged RetrievalResult

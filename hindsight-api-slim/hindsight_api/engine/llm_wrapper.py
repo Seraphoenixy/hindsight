@@ -1913,6 +1913,7 @@ class LLMProvider:
         bank_id: str | None = None,
         operation: str | None = None,
         metadata: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> "ConfiguredLLMProvider":
         """
         Return a configured wrapper for a specific bank operation.
@@ -1935,7 +1936,12 @@ class LLMProvider:
         from .llm_trace import operation_trace_context
 
         trace_ctx = operation_trace_context(bank_id, operation, metadata)
-        return ConfiguredLLMProvider(self, config.llm_gemini_safety_settings, trace_ctx)
+        return ConfiguredLLMProvider(
+            self,
+            config.llm_gemini_safety_settings,
+            trace_ctx,
+            reasoning_effort=reasoning_effort,
+        )
 
     async def cleanup(self) -> None:
         """Clean up resources (e.g. stop llamacpp subprocess)."""
@@ -2014,11 +2020,13 @@ class ConfiguredLLMProvider:
         provider: "AnyLLMProvider",
         gemini_safety_settings: list | None,
         trace_ctx: Any | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         # Use object.__setattr__ to avoid triggering __getattr__
         object.__setattr__(self, "_provider", provider)
         object.__setattr__(self, "_gemini_safety_settings", gemini_safety_settings)
         object.__setattr__(self, "_trace_ctx", trace_ctx)
+        object.__setattr__(self, "_reasoning_effort", reasoning_effort)
 
     # ── attribute passthrough ──────────────────────────────────────────────────
 
@@ -2028,13 +2036,18 @@ class ConfiguredLLMProvider:
     # ── overridden call methods ────────────────────────────────────────────────
 
     async def call(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMCallResult:
+        from .llm_interface import reset_reasoning_effort_override, set_reasoning_effort_override
         from .providers.gemini_llm import _safety_settings_ctx
 
         token = _safety_settings_ctx.set(object.__getattribute__(self, "_gemini_safety_settings"))
         trace_token = self._bind_trace_context()
+        effort = object.__getattribute__(self, "_reasoning_effort")
+        effort_token = set_reasoning_effort_override(effort) if effort is not None else None
         try:
             return await object.__getattribute__(self, "_provider").call(messages=messages, **kwargs)
         finally:
+            if effort_token is not None:
+                reset_reasoning_effort_override(effort_token)
             _safety_settings_ctx.reset(token)
             self._reset_trace_context(trace_token)
 
@@ -2044,15 +2057,20 @@ class ConfiguredLLMProvider:
         tools: list[dict[str, Any]],
         **kwargs: Any,
     ) -> "LLMToolCallResult":
+        from .llm_interface import reset_reasoning_effort_override, set_reasoning_effort_override
         from .providers.gemini_llm import _safety_settings_ctx
 
         token = _safety_settings_ctx.set(object.__getattribute__(self, "_gemini_safety_settings"))
         trace_token = self._bind_trace_context()
+        effort = object.__getattribute__(self, "_reasoning_effort")
+        effort_token = set_reasoning_effort_override(effort) if effort is not None else None
         try:
             return await object.__getattribute__(self, "_provider").call_with_tools(
                 messages=messages, tools=tools, **kwargs
             )
         finally:
+            if effort_token is not None:
+                reset_reasoning_effort_override(effort_token)
             _safety_settings_ctx.reset(token)
             self._reset_trace_context(trace_token)
 
@@ -2076,6 +2094,7 @@ class ConfiguredLLMProvider:
             member,
             object.__getattribute__(self, "_gemini_safety_settings"),
             object.__getattribute__(self, "_trace_ctx"),
+            reasoning_effort=object.__getattribute__(self, "_reasoning_effort"),
         )
 
     def trace_context(self) -> Any | None:

@@ -46,7 +46,9 @@ from hindsight_api.engine.providers.oauth_store_lock import oauth_store_lock
 
 # Root defeats every permission-based setup below (it opens 0444 files and
 # creates files in 0500 directories), so those tests would pass for free.
-requires_nonroot = pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses the permission bits these tests rely on")
+requires_nonroot = pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0, reason="root bypasses the permission bits these tests rely on"
+)
 
 
 @pytest.fixture

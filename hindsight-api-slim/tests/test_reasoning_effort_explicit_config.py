@@ -175,3 +175,38 @@ class TestConfiguredEffortReachesTheEndpoint:
         assert params["max_tokens"] == 2000
         assert "max_completion_tokens" not in params
         assert params["temperature"] == 0.3
+
+    @pytest.mark.asyncio
+    async def test_configured_wrapper_overrides_reasoning_effort_per_request(self):
+        from types import SimpleNamespace
+
+        from hindsight_api.engine.llm_wrapper import LLMProvider
+
+        config = SimpleNamespace(llm_gemini_safety_settings=None)
+        provider = LLMProvider(
+            provider="openai",
+            api_key="test",
+            base_url=VLLM_BASE_URL,
+            model=VLLM_MODEL,
+            reasoning_effort="none",
+        )
+        response = MagicMock()
+        response.error = None
+        response.model_dump.return_value = {}
+        response.usage.prompt_tokens = 10
+        response.usage.completion_tokens = 5
+        response.usage.total_tokens = 15
+        response.usage.completion_tokens_details = None
+        response.choices[0].finish_reason = "stop"
+        response.choices[0].message.content = "ok"
+        response.choices[0].message.tool_calls = None
+
+        with patch.object(provider._provider_impl._client.chat.completions, "create", new_callable=AsyncMock) as create:
+            create.return_value = response
+            wrapped = provider.with_config(config, bank_id="b", operation="reflect", reasoning_effort="medium")
+            await wrapped.call(messages=[{"role": "user", "content": "hi"}], max_retries=0)
+            assert create.await_args.kwargs["reasoning_effort"] == "medium"
+
+            # Subsequent direct call on the underlying provider keeps its original default.
+            await provider.call(messages=[{"role": "user", "content": "hi"}], max_retries=0)
+            assert create.await_args.kwargs["reasoning_effort"] == "none"

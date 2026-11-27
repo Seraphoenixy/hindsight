@@ -31,8 +31,9 @@ it("observes on host load without undoing a previous stop", async () => {
   await vi.advanceTimersByTimeAsync(3000);
   expect(publishProcessState).toHaveBeenCalledTimes(2);
 });
-it("forwards explicit lifecycle requests to the controller", async () => {
+it("forwards explicit lifecycle requests to the controller without pre-refresh blocking", async () => {
   const request = { id: "1795380000000-abcdefghij", action: "stop" as const };
+  vi.mocked(executeProcessRequest).mockResolvedValue(true);
   await plugin.server({}, { port: 19077, processRequest: request });
   expect(executeProcessRequest).toHaveBeenCalledWith(
     expect.anything(),
@@ -40,6 +41,7 @@ it("forwards explicit lifecycle requests to the controller", async () => {
     request,
     expect.stringContaining("state.js")
   );
+  expect(publishProcessState).not.toHaveBeenCalled();
 });
 it("rejects invalid ports before probing or managing processes", async () => {
   await expect(plugin.server({}, { port: 0 })).rejects.toThrow("Invalid");
@@ -124,10 +126,13 @@ it("renders live status and submits controls through the sandbox bridge", async 
     },
   };
   const script = readFileSync(new URL("../../magpie/page/boot.js", import.meta.url), "utf8");
+  const schedulePoll = vi.fn(() => 1);
   await runInNewContext(script, {
     window,
     location: { hostname: "localhost" },
     setInterval: vi.fn(),
+    setTimeout: schedulePoll,
+    clearTimeout: vi.fn(),
     document: {
       getElementById: (id: string) => elements.get(id),
       createElement: () => ({ src: "", remove: vi.fn() }),
@@ -146,6 +151,7 @@ it("renders live status and submits controls through the sandbox bridge", async 
     processRequest: { action: "stop", id: expect.stringMatching(/^\d{13}-[a-z0-9]{10}$/) },
   });
   expect(elements.get("open")?.disabled).toBe(true);
+  expect(schedulePoll).toHaveBeenCalledWith(expect.any(Function), 350);
   elements.get("llmModel")!.value = "codearts/glm-5.3-flash";
   await handlers.get("syncLlm")!();
   expect(setOptions).toHaveBeenLastCalledWith({
@@ -160,7 +166,13 @@ it("renders live status and submits controls through the sandbox bridge", async 
 it("renders and toggles host injection on the standalone injection page", async () => {
   const { readFileSync } = await import("node:fs");
   const { runInNewContext } = await import("node:vm");
-  const handlers = new Map<string, () => Promise<void>>();
+  type ClickEvent = {
+    target: {
+      closest: (selector: string) => Pick<HTMLButtonElement, "disabled" | "dataset"> | null;
+    };
+  };
+  type EventHandler = (event?: ClickEvent) => void | Promise<void>;
+  const handlers = new Map<string, EventHandler>();
   const elements = new Map<
     string,
     {
@@ -169,7 +181,7 @@ it("renders and toggles host injection on the standalone injection page", async 
       dataset: Record<string, string>;
       value: string;
       innerHTML: string;
-      addEventListener: (event: string, fn: () => Promise<void>) => void;
+      addEventListener: (event: string, fn: EventHandler) => void;
     }
   >();
   for (const id of [
@@ -237,6 +249,8 @@ it("renders and toggles host injection on the standalone injection page", async 
     window,
     location: { hostname: "localhost" },
     setInterval: vi.fn(),
+    setTimeout: vi.fn(() => 1),
+    clearTimeout: vi.fn(),
     document: {
       getElementById: (id: string) => elements.get(id),
       createElement: () => ({ src: "", remove: vi.fn() }),
@@ -268,7 +282,7 @@ it("renders and toggles host injection on the standalone injection page", async 
         dataset: { hostAction: "host-uninstall", host: "antigravity-cli" },
       }),
     },
-  } as never);
+  });
   expect(setOptions).toHaveBeenLastCalledWith({
     port: 19100,
     processRequest: {

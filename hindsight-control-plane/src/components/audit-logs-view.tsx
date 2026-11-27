@@ -15,7 +15,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { JsonViewer } from "@/components/ui/json-viewer";
 import {
   Select,
@@ -24,7 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
+import { RefreshCw, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { LineChart, Line, XAxis, Tooltip, ResponsiveContainer } from "recharts";
 
@@ -163,7 +170,7 @@ function TransportBadge({ transport }: { transport: string }) {
 
 // ---- Chart Section ----
 
-function AuditChart({ bankId }: { bankId: string }) {
+function AuditChart({ bankId, refreshKey = 0 }: { bankId: string; refreshKey?: number }) {
   const t = useTranslations("auditLogsView");
   const actionOptions = getActionOptions(t);
   const periodOptions = getPeriodOptions(t);
@@ -194,7 +201,7 @@ function AuditChart({ bankId }: { bankId: string }) {
 
   useEffect(() => {
     loadStats();
-  }, [bankId]);
+  }, [bankId, refreshKey]);
 
   const chartData = buckets.map((b) => ({
     time: formatChartLabel(b.time, trunc),
@@ -305,6 +312,10 @@ export function AuditLogsView() {
   const [loading, setLoading] = useState(false);
   const [selectedLog, setSelectedLog] = useState<AuditLogEntry | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
+  const [clearScope, setClearScope] = useState<"all" | "7d" | "30d">("all");
+  const [clearing, setClearing] = useState(false);
+  const [chartRefreshKey, setChartRefreshKey] = useState(0);
 
   const loadLogs = useCallback(
     async (
@@ -375,6 +386,28 @@ export function AuditLogsView() {
     }
   };
 
+  const handleClearLogs = async () => {
+    if (!currentBank) return;
+    setClearing(true);
+    try {
+      let before: string | undefined;
+      if (clearScope === "7d") {
+        before = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      } else if (clearScope === "30d") {
+        before = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      }
+      await client.clearAuditLogs(currentBank, before ? { before } : undefined);
+      setClearDialogOpen(false);
+      setOffset(0);
+      setChartRefreshKey((k) => k + 1);
+      await loadLogs(actionFilter, transportFilter, dateRange, 0);
+    } catch (error) {
+      console.error("Error clearing audit logs:", error);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   useEffect(() => {
     if (currentBank) {
       loadLogs(actionFilter, transportFilter, dateRange, offset);
@@ -389,7 +422,7 @@ export function AuditLogsView() {
   return (
     <div className="space-y-6">
       {/* Chart */}
-      <AuditChart bankId={currentBank} />
+      <AuditChart bankId={currentBank} refreshKey={chartRefreshKey} />
 
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -440,6 +473,16 @@ export function AuditLogsView() {
         >
           <RefreshCw className={`w-4 h-4 mr-1 ${loading ? "animate-spin" : ""}`} />
           {t("refresh")}
+        </Button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setClearDialogOpen(true)}
+          disabled={loading || clearing || total === 0}
+        >
+          <Trash2 className="w-4 h-4 mr-1" />
+          {t("clearButton")}
         </Button>
 
         <span className="text-sm text-muted-foreground ml-auto">
@@ -575,6 +618,39 @@ export function AuditLogsView() {
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("clearDialogTitle")}</DialogTitle>
+            <DialogDescription>{t("clearDialogDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Select
+              value={clearScope}
+              onValueChange={(v) => setClearScope(v as "all" | "7d" | "30d")}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value="all">{t("clearScopeAll")}</SelectItem>
+                <SelectItem value="7d">{t("clearScope7d")}</SelectItem>
+                <SelectItem value="30d">{t("clearScope30d")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClearDialogOpen(false)} disabled={clearing}>
+              {t("clearCancel")}
+            </Button>
+            <Button variant="destructive" onClick={handleClearLogs} disabled={clearing}>
+              {clearing && <Spinner className="w-4 h-4 mr-1" />}
+              {t("clearConfirm")}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

@@ -589,7 +589,10 @@ async def test_dual_replica_disjoint_merge_tombstones_conflicts_and_revocation(
         assert r0 is not None
         await mem_a.retain_batch_async(
             bank_id=bank_id,
-            contents=[{"content": "Kyoto trip notes version 1.", "document_id": "doc-kyoto"}],
+            contents=[
+                {"content": "Kyoto trip notes version 1.", "document_id": "doc-kyoto"},
+                {"content": "Alice works with Bob. Alice mentors Bob.", "document_id": "doc-entities"},
+            ],
             request_context=rc_a,
         )
         res_boot = await synchronize_v3(
@@ -600,6 +603,43 @@ async def test_dual_replica_disjoint_merge_tombstones_conflicts_and_revocation(
             database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
         )
         assert res_b_join.pulled_count >= 2
+
+        # A synced document carries several postings for the same entity. The
+        # receiver must rebuild counters and co-occurrences, not initialize each
+        # entity to 1 and leave its graph empty.
+        entities_b = await mem_b.list_entities(bank_id, request_context=rc_b)
+        alice_b = next(e for e in entities_b["items"] if e["canonical_name"] == "Alice")
+        bob_b = next(e for e in entities_b["items"] if e["canonical_name"] == "Bob")
+        assert alice_b["mention_count"] >= 2
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            alice_id = uuid.UUID(alice_b["id"])
+            bob_id = uuid.UUID(bob_b["id"])
+            actual = await conn_b.fetchval(
+                f'SELECT COUNT(*) FROM "{schema_b}".unit_entities WHERE entity_id=$1', alice_id
+            )
+            cached = await conn_b.fetchval(f'SELECT mention_count FROM "{schema_b}".entities WHERE id=$1', alice_id)
+            assert actual >= 2 and cached == actual
+            first_id, second_id = sorted([alice_id, bob_id])
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT cooccurrence_count FROM "{schema_b}".entity_cooccurrences '
+                    "WHERE entity_id_1=$1 AND entity_id_2=$2",
+                    first_id,
+                    second_id,
+                )
+                >= 2
+            )
+            # Temporal and semantic links created on A are also synced directly to B.
+            temporal_cnt_b = await conn_b.fetchval(
+                f"SELECT COUNT(*) FROM \"{schema_b}\".memory_links WHERE bank_id=$1 AND link_type='temporal'",
+                bank_id,
+            )
+            semantic_cnt_b = await conn_b.fetchval(
+                f"SELECT COUNT(*) FROM \"{schema_b}\".memory_links WHERE bank_id=$1 AND link_type='semantic'",
+                bank_id,
+            )
+            assert temporal_cnt_b >= 2
+            assert semantic_cnt_b >= 2
 
         # 2. Disjoint offline edits: A updates document, B adds a new working rule.
         await mem_a.update_document("doc-kyoto", bank_id=bank_id, tags=["travel", "japan"], request_context=rc_a)
@@ -840,6 +880,453 @@ async def test_dual_replica_disjoint_merge_tombstones_conflicts_and_revocation(
         )
         assert cli_out.exit_code == 0
         assert "[object]" in cli_out.output
+    finally:
+        conn = await asyncpg.connect(pg0_db_url)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_a}" CASCADE')
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_b}" CASCADE')
+        finally:
+            await conn.close()
+        await mem_a.close()
+        await mem_b.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_invalidation_revert_and_retention_sync(pg0_db_url: str, relay_server, tmp_path: Path):
+    """Verify invalidation, revert, document partial invalidation, and retention pruning sync cleanly."""
+    from datetime import datetime, timedelta, timezone
+
+    from hindsight_api.engine.memories import get_memories
+    from hindsight_api.engine.sync_journal import fetch_pending_changes, get_local_high_water, get_object_state
+
+    relay_url, admin_token, _relay_state = relay_server
+    mem_a, schema_a = await _create_replica(pg0_db_url)
+    mem_b, schema_b = await _create_replica(pg0_db_url)
+    try:
+        rc_a = RequestContext()
+        state_a = tmp_path / "state_a"
+        state_b = tmp_path / "state_b"
+        bank_id = "inval-sync-bank"
+
+        # 1. Create one standalone fact (document_id=NULL) and retain one document with two facts.
+        await mem_a.retain_batch_async(
+            bank_id=bank_id,
+            contents=[
+                {
+                    "content": "Bob lives in Berlin. Bob works at Acme.",
+                    "document_id": "doc-inval",
+                }
+            ],
+            request_context=rc_a,
+        )
+
+        async with acquire_with_retry(await mem_a._get_backend()) as conn_a:
+            standalone_uuid = uuid.uuid4()
+            standalone_id = str(standalone_uuid)
+            await conn_a.execute(
+                f"""
+                INSERT INTO "{schema_a}".memory_units (
+                    id, bank_id, text, fact_type, event_date, embedding
+                )
+                VALUES ($1, $2, $3, 'world', now(), $4::vector)
+                """,
+                standalone_uuid,
+                bank_id,
+                "Standalone fact: Alice prefers green tea.",
+                "[" + ",".join(["0.01"] * 384) + "]",
+            )
+            doc_units = await conn_a.fetch(
+                f'SELECT id::text AS id, text FROM "{schema_a}".memory_units '
+                "WHERE bank_id = $1 AND document_id = $2 AND fact_type <> 'observation' ORDER BY created_at, id",
+                bank_id,
+                "doc-inval",
+            )
+            assert standalone_id is not None
+            assert len(doc_units) >= 2
+            doc_fact_1 = doc_units[0]["id"]
+            doc_fact_2 = doc_units[1]["id"]
+
+            # Create an observation derived solely from doc_fact_2 so we can verify
+            # invalidating doc_fact_1 does not wipe doc_fact_2's observation on replica B.
+            obs_2_id = uuid.uuid4()
+            await conn_a.execute(
+                f"""
+                INSERT INTO "{schema_a}".memory_units (
+                    id, bank_id, text, fact_type, source_memory_ids, event_date, embedding
+                )
+                VALUES ($1, $2, $3, 'observation', $4::uuid[], now(), $5::vector)
+                """,
+                obs_2_id,
+                bank_id,
+                "Observation derived from doc_fact_2",
+                [uuid.UUID(doc_fact_2)],
+                "[" + ",".join(["0.01"] * 384) + "]",
+            )
+
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(standalone_id),
+                    bank_id,
+                )
+                == 1
+            )
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    obs_2_id,
+                    bank_id,
+                )
+                == 1
+            )
+
+        # 2. Invalidate standalone unit on A -> check single clean changelog entry & sync to B.
+        async with acquire_with_retry(await mem_a._get_backend()) as conn_a:
+            hwm_before_inval = await get_local_high_water(conn_a, schema=schema_a)
+
+        await mem_a.update_memory_unit(
+            bank_id=bank_id,
+            memory_id=standalone_id,
+            state="invalidated",
+            reason="outdated preference",
+            request_context=rc_a,
+        )
+
+        async with acquire_with_retry(await mem_a._get_backend()) as conn_a:
+            changes = await fetch_pending_changes(conn_a, after_seq=hwm_before_inval, limit=50, schema=schema_a)
+            standalone_changes = [c for c in changes if c.object_type == "memory_unit" and c.object_id == standalone_id]
+            assert len(standalone_changes) == 1
+            assert standalone_changes[0].op == "upsert"
+            st_a = await get_object_state(
+                conn_a, object_type="memory_unit", bank_id=bank_id, object_id=standalone_id, schema=schema_a
+            )
+            assert st_a is not None and st_a.deleted is False
+
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(standalone_id),
+                    bank_id,
+                )
+                == 0
+            )
+            arch_b = await conn_b.fetchrow(
+                f'SELECT invalidation_reason FROM "{schema_b}".invalidated_memory_units WHERE id = $1 AND bank_id = $2',
+                uuid.UUID(standalone_id),
+                bank_id,
+            )
+            assert arch_b is not None and arch_b["invalidation_reason"] == "outdated preference"
+
+        # 3. Revert standalone unit on A -> verify B restores it to memory_units.
+        await mem_a.update_memory_unit(
+            bank_id=bank_id,
+            memory_id=standalone_id,
+            state="valid",
+            request_context=rc_a,
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(standalone_id),
+                    bank_id,
+                )
+                == 1
+            )
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".invalidated_memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(standalone_id),
+                    bank_id,
+                )
+                == 0
+            )
+
+        # 4. Invalidate one fact of doc-inval on A -> verify B archives doc_fact_1 and keeps doc_fact_2 + obs_2_id.
+        await mem_a.update_memory_unit(
+            bank_id=bank_id,
+            memory_id=doc_fact_1,
+            state="invalidated",
+            reason="wrong city",
+            request_context=rc_a,
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(doc_fact_1),
+                    bank_id,
+                )
+                == 0
+            )
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT invalidation_reason FROM "{schema_b}".invalidated_memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(doc_fact_1),
+                    bank_id,
+                )
+                == "wrong city"
+            )
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(doc_fact_2),
+                    bank_id,
+                )
+                == 1
+            )
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    obs_2_id,
+                    bank_id,
+                )
+                == 1
+            )
+
+        # 5. Invalidate standalone unit again and expire both standalone & document-owned archived units -> verify B deletes both.
+        await mem_a.update_memory_unit(
+            bank_id=bank_id,
+            memory_id=standalone_id,
+            state="invalidated",
+            reason="expired",
+            request_context=rc_a,
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_a._get_backend()) as conn_a:
+            old_ts = datetime.now(timezone.utc) - timedelta(days=90)
+            await conn_a.execute(
+                f'UPDATE "{schema_a}".invalidated_memory_units SET invalidated_at = $1 WHERE id = ANY($2::uuid[]) AND bank_id = $3',
+                old_ts,
+                [uuid.UUID(standalone_id), uuid.UUID(doc_fact_1)],
+                bank_id,
+            )
+            async with conn_a.transaction():
+                pruned = await get_memories().prune_expired_invalidated_memories(
+                    conn=conn_a,
+                    cutoff=datetime.now(timezone.utc) - timedelta(days=30),
+                    batch_size=100,
+                )
+            assert pruned >= 2
+            st_pruned = await get_object_state(
+                conn_a, object_type="memory_unit", bank_id=bank_id, object_id=standalone_id, schema=schema_a
+            )
+            assert st_pruned is not None and st_pruned.deleted is True
+
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".invalidated_memory_units WHERE id = ANY($1::uuid[]) AND bank_id = $2',
+                    [uuid.UUID(standalone_id), uuid.UUID(doc_fact_1)],
+                    bank_id,
+                )
+                == 0
+            )
+
+        # 6. HTTP DELETE endpoint for invalidated memory unit: rejects live memory (400),
+        #    deletes invalidated memory (200), syncs deletion to B, and returns 404 on missing.
+        app_a = create_app(mem_a, initialize_memory=False)
+        async with AsyncClient(transport=ASGITransport(app=app_a), base_url="http://test") as api_a:
+            live_del = await api_a.delete(f"/v1/default/banks/{bank_id}/memories/{doc_fact_2}")
+            assert live_del.status_code == 400
+
+            await mem_a.update_memory_unit(
+                bank_id=bank_id,
+                memory_id=doc_fact_2,
+                state="invalidated",
+                reason="manual cleanup",
+                request_context=rc_a,
+            )
+            arch_del = await api_a.delete(f"/v1/default/banks/{bank_id}/memories/{doc_fact_2}")
+            assert arch_del.status_code == 200
+            assert arch_del.json() == {"deleted": True, "memory_id": doc_fact_2}
+
+            missing_del = await api_a.delete(f"/v1/default/banks/{bank_id}/memories/{doc_fact_2}")
+            assert missing_del.status_code == 404
+
+            # 7. Bulk clear invalidated memories via DELETE /memories/invalidated -> syncs to B.
+            bulk_uuid = uuid.uuid4()
+            bulk_id = str(bulk_uuid)
+            async with acquire_with_retry(await mem_a._get_backend()) as conn_a:
+                await conn_a.execute(
+                    f"""
+                    INSERT INTO "{schema_a}".memory_units (
+                        id, bank_id, text, fact_type, event_date, embedding
+                    )
+                    VALUES ($1, $2, $3, 'world', now(), $4::vector)
+                    """,
+                    bulk_uuid,
+                    bank_id,
+                    "Standalone fact for bulk clear",
+                    "[" + ",".join(["0.01"] * 384) + "]",
+                )
+            await mem_a.update_memory_unit(
+                bank_id=bank_id,
+                memory_id=bulk_id,
+                state="invalidated",
+                reason="bulk test",
+                request_context=rc_a,
+            )
+            await synchronize_v3(
+                database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+            )
+            await synchronize_v3(
+                database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+            )
+            clear_resp = await api_a.delete(f"/v1/default/banks/{bank_id}/memories/invalidated")
+            assert clear_resp.status_code == 200
+            assert clear_resp.json()["deleted"] >= 1
+
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".invalidated_memory_units WHERE bank_id = $1',
+                    bank_id,
+                )
+                == 0
+            )
+
+        # 8. Document aging: detaches facts (live & archived) to standalone memory_units and deletes document;
+        #    syncs cleanly to B without deleting observations derived from those facts.
+        await mem_a.retain_batch_async(
+            bank_id=bank_id,
+            contents=[{"content": "Carol plays violin in Vienna.", "document_id": "doc-age-sync"}],
+            request_context=rc_a,
+        )
+        async with acquire_with_retry(await mem_a._get_backend()) as conn_a:
+            aged_fact_id = await conn_a.fetchval(
+                f'SELECT id::text FROM "{schema_a}".memory_units '
+                "WHERE bank_id = $1 AND document_id = 'doc-age-sync' AND fact_type <> 'observation'",
+                bank_id,
+            )
+            assert aged_fact_id is not None
+            aged_obs_id = uuid.uuid4()
+            await conn_a.execute(
+                f"""
+                INSERT INTO "{schema_a}".memory_units (
+                    id, bank_id, text, fact_type, source_memory_ids, event_date, embedding
+                )
+                VALUES ($1, $2, $3, 'observation', $4::uuid[], now(), $5::vector)
+                """,
+                aged_obs_id,
+                bank_id,
+                "Observation for aged document fact",
+                [uuid.UUID(aged_fact_id)],
+                "[" + ",".join(["0.01"] * 384) + "]",
+            )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_a._get_backend()) as conn_a:
+            async with conn_a.transaction():
+                pruned_docs = await get_memories().prune_expired_document_text(
+                    conn=conn_a,
+                    cutoff=datetime.now(timezone.utc) + timedelta(days=1),
+                    batch_size=50,
+                )
+            assert pruned_docs >= 1
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".documents WHERE id = $1 AND bank_id = $2',
+                    "doc-age-sync",
+                    bank_id,
+                )
+                == 0
+            )
+            detached_b = await conn_b.fetchrow(
+                f'SELECT document_id, chunk_id FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                uuid.UUID(aged_fact_id),
+                bank_id,
+            )
+            assert detached_b is not None
+            assert detached_b["document_id"] is None and detached_b["chunk_id"] is None
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    aged_obs_id,
+                    bank_id,
+                )
+                == 1
+            )
+
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_a, relay_url=relay_url, token=admin_token, state_dir=state_a
+        )
+        await synchronize_v3(
+            database_url=pg0_db_url, schema=schema_b, relay_url=relay_url, token=admin_token, state_dir=state_b
+        )
+        async with acquire_with_retry(await mem_b._get_backend()) as conn_b:
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(doc_fact_2),
+                    bank_id,
+                )
+                == 0
+            )
+            assert (
+                await conn_b.fetchval(
+                    f'SELECT count(*) FROM "{schema_b}".invalidated_memory_units WHERE id = $1 AND bank_id = $2',
+                    uuid.UUID(doc_fact_2),
+                    bank_id,
+                )
+                == 0
+            )
     finally:
         conn = await asyncpg.connect(pg0_db_url)
         try:

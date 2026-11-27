@@ -2069,28 +2069,12 @@ class PageTagFilter:
         )
 
 
-#: Questions one delta refresh keeps in flight. The decision model's own cap
-#: (HINDSIGHT_API_DECISION_MODEL_MAX_CONCURRENT) is per process and shared with recall and
-#: consolidation; without this a 200-memory refresh fills it alone, and on a rate-limited
-#: endpoint half its requests came back 429 (#6103).
-# ponytail: one question per memory, not batched: asked in one request the model blurs the
-# memories together and drops on-topic ones (1-13 of 20 kept, against 20 of 20 alone).
-_DELTA_GATE_MAX_CONCURRENT = 8
-
-
 @dataclass(frozen=True)
-class _DeltaGate:
-    """What the decision model kept of the memories new since a page's last refresh."""
+class _DeltaRefreshInput:
+    """Complete changed facts, read in stable pages and edited in bounded batches."""
 
     listed: dict[str, int]
-    """New memories in the page's scope and window, per fact type."""
-    kept: dict[str, list[MemoryFact]]
-    """The ones it said could change the page, plus the bank's directives when any were
-    kept, shaped like reflect's ``based_on``."""
-
-    @property
-    def memories_kept(self) -> int:
-        return sum(len(v) for k, v in self.kept.items() if k != "directives")
+    facts: dict[str, list[MemoryFact]]
 
 
 @dataclass(frozen=True)
@@ -6092,6 +6076,7 @@ class MemoryEngine(MemoryEngineInterface):
         stripped = content.strip()
         reflect_response = refreshed.get("reflect_response") or {}
         based_on = reflect_response.get("based_on") or {}
+        usage = TokenUsage.model_validate(reflect_response.get("usage") or {})
         outcome = RefreshMentalModelOutcomeMetadata(
             content_len=len(content),
             # Whitespace-only is not synthesis, and neither is the legacy placeholder
@@ -6107,6 +6092,15 @@ class MemoryEngine(MemoryEngineInterface):
             # Persisted by the refresh itself; copied here because the mental
             # model row keeps only the latest one (#3274).
             outcome=reflect_response.get("outcome"),
+            refresh_mode=reflect_response.get("effective_mode"),
+            mode_fallback_reason=reflect_response.get("mode_fallback_reason"),
+            refresh_duration_ms=reflect_response.get("duration_ms", 0),
+            llm_call_count=reflect_response.get("llm_call_count", 0),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            thoughts_tokens=usage.thoughts_tokens,
+            delta_batches=reflect_response.get("delta_batches", 0),
+            usage_complete=reflect_response.get("usage_complete"),
         )
         try:
             backend = await self._get_backend()
@@ -11085,6 +11079,26 @@ class MemoryEngine(MemoryEngineInterface):
                     f"  [4.9] min_scores(reranker={min_reranker}, final={min_final}): "
                     f"{before_min_score}->{len(scored_results)} results"
                 )
+            elif scored_results and request.reranking == "rrf" and min_final is None and len(scored_results) > 1:
+                # Without a neural cross-encoder, RRF-passthrough otherwise fills the
+                # entire token budget with low-similarity tail candidates. Prune tail
+                # items that have neither a lexical (BM25) hit, nor a strong semantic
+                # hit, nor a competitive RRF score relative to the top candidate.
+                top_rrf = max(sr.candidate.rrf_score for sr in scored_results)
+                rrf_floor = top_rrf * 0.65
+                before_tail = len(scored_results)
+                scored_results = [
+                    sr
+                    for sr in scored_results
+                    if "bm25_rank" in sr.candidate.source_ranks
+                    or (sr.candidate.arm_scores.semantic is not None and sr.candidate.arm_scores.semantic >= 0.58)
+                    or sr.candidate.rrf_score >= rrf_floor
+                ]
+                if len(scored_results) < before_tail:
+                    log_buffer.append(
+                        f"  [4.9] passthrough relevance gate(rrf>={rrf_floor:.4f}): "
+                        f"{before_tail}->{len(scored_results)} results"
+                    )
 
             # Add reranked results to tracer AFTER combined scoring (so normalized values are included)
             # `enable_trace`, NOT `if tracer`: see the retrieval-results guard above.
@@ -13595,6 +13609,10 @@ class MemoryEngine(MemoryEngineInterface):
                         if live2 is None and archived2 is None:
                             return None
 
+                        from .sync_journal import mark_sync_tx_managed
+
+                        await mark_sync_tx_managed(conn)
+
                         # --- Apply edit (live rows only) ---
                         if edit_plan is not None and live2:
                             # Sweep first, before the entity postings below are released: the
@@ -13766,9 +13784,6 @@ class MemoryEngine(MemoryEngineInterface):
                     phase2_committed = True
                     curated_row = live2 or archived2
                     if curated_row is not None:
-                        from .sync_journal import mark_sync_tx_managed
-
-                        await mark_sync_tx_managed(conn)
                         if curated_row.fact_type == "observation":
                             await self._record_sync_aggregate_change(
                                 conn,
@@ -13822,6 +13837,9 @@ class MemoryEngine(MemoryEngineInterface):
                     )
                 except Exception as e:
                     logger.warning(f"Failed to submit orphan-entity cleanup after a failed edit in bank {bank_id}: {e}")
+
+        if phase2_committed:
+            self.notify_sync_local_write()
 
         # Built (and so timestamped) now, before the consolidation it is recorded on can run.
         curated = live2 or archived2
@@ -13882,6 +13900,133 @@ class MemoryEngine(MemoryEngineInterface):
                 logger.warning(f"Post-memory-update hook error (non-fatal): {hook_err}")
 
         return await self.get_memory_unit(bank_id=bank_id, memory_id=memory_id, request_context=request_context)
+
+    @_bind_bank_id()
+    async def delete_invalidated_memory_unit(
+        self,
+        bank_id: str,
+        memory_id: str,
+        *,
+        request_context: "RequestContext",
+    ) -> bool:
+        """Permanently delete an invalidated memory unit from the curation archive.
+
+        Only memories in ``invalidated_memory_units`` may be deleted; live memories in
+        ``memory_units`` raise ``ValueError`` so callers must invalidate first.
+        Returns ``True`` if deleted, ``False`` if not found.
+        """
+        try:
+            memory_uuid = uuid.UUID(memory_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid memory ID '{memory_id}': must be a valid UUID") from e
+
+        await self._authenticate_tenant(request_context)
+        await self._require_writable(bank_id, request_context, memory_id=memory_id)
+
+        backend = await self._get_backend()
+        from .memories import get_memories
+        from .sync_journal import mark_sync_tx_managed
+
+        store = get_memories()
+        found_archived = False
+
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                await mark_sync_tx_managed(conn)
+                archived = await store.get_archived_memory(
+                    conn=conn, fq_table=fq_table, bank_id=bank_id, unit_id=str(memory_uuid)
+                )
+                if archived is None:
+                    live_batch = await store.get_memories(
+                        conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(memory_uuid)]
+                    )
+                    if live_batch:
+                        raise ValueError("Only invalidated memories can be permanently deleted; invalidate it first.")
+                    return False
+
+                found_archived = await store.delete_archived_memory(
+                    conn=conn, fq_table=fq_table, bank_id=bank_id, unit_id=str(memory_uuid)
+                )
+                if not found_archived:
+                    return False
+                if archived.document_id:
+                    await self._record_sync_aggregate_change(
+                        conn,
+                        object_type="document",
+                        bank_id=bank_id,
+                        object_id=archived.document_id,
+                        op="upsert",
+                    )
+                else:
+                    await self._record_sync_aggregate_change(
+                        conn,
+                        object_type="memory_unit",
+                        bank_id=bank_id,
+                        object_id=str(memory_uuid),
+                        op="delete",
+                    )
+
+        if found_archived:
+            self.notify_sync_local_write()
+        return found_archived
+
+    @_bind_bank_id()
+    async def clear_invalidated_memories(
+        self,
+        bank_id: str,
+        *,
+        before: datetime | None = None,
+        fact_type: str | None = None,
+        request_context: "RequestContext",
+    ) -> dict[str, int]:
+        """Permanently delete invalidated memory units for a bank (optionally filtered by cutoff/fact_type)."""
+        if fact_type is not None and fact_type not in ("world", "experience"):
+            raise ValueError(f"Invalid fact_type '{fact_type}': must be 'world' or 'experience'")
+
+        await self._authenticate_tenant(request_context)
+        await self._require_writable(bank_id, request_context)
+
+        backend = await self._get_backend()
+        from .memories import get_memories
+        from .sync_journal import mark_sync_tx_managed
+
+        store = get_memories()
+        deleted_rows: list[tuple[str, str | None]] = []
+
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                await mark_sync_tx_managed(conn)
+                deleted_rows = await store.clear_archived_memories(
+                    conn=conn,
+                    fq_table=fq_table,
+                    bank_id=bank_id,
+                    before=before,
+                    fact_type=fact_type,
+                )
+                seen_docs: set[str] = set()
+                for uid, doc_id in deleted_rows:
+                    if doc_id:
+                        if doc_id not in seen_docs:
+                            seen_docs.add(doc_id)
+                            await self._record_sync_aggregate_change(
+                                conn,
+                                object_type="document",
+                                bank_id=bank_id,
+                                object_id=doc_id,
+                                op="upsert",
+                            )
+                    else:
+                        await self._record_sync_aggregate_change(
+                            conn,
+                            object_type="memory_unit",
+                            bank_id=bank_id,
+                            object_id=uid,
+                            op="delete",
+                        )
+
+        if deleted_rows:
+            self.notify_sync_local_write()
+        return {"deleted": len(deleted_rows)}
 
     async def run_consolidation(
         self,
@@ -15369,6 +15514,39 @@ class MemoryEngine(MemoryEngineInterface):
             ],
         )
 
+    async def clear_audit_logs(
+        self,
+        bank_id: str,
+        *,
+        request_context: "RequestContext",
+        before: datetime | None = None,
+    ) -> dict[str, int] | None:
+        """Delete audit log entries for a bank, optionally restricted to entries before ``before``.
+
+        Returns None when the bank does not exist (mapped to 404 by the HTTP layer).
+        """
+        if await self.get_bank_profile(bank_id, request_context=request_context) is None:
+            return None
+        await self._refuse_bank_wide_if_scoped(bank_id, request_context, "clear the bank's audit log")
+
+        table = fq_table("audit_log")
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            if before is not None:
+                result = await conn.execute(
+                    f"DELETE FROM {table} WHERE bank_id = $1 AND started_at < $2",
+                    bank_id,
+                    before,
+                )
+            else:
+                result = await conn.execute(
+                    f"DELETE FROM {table} WHERE bank_id = $1",
+                    bank_id,
+                )
+        deleted_count = int(result.split()[-1]) if result and result.split()[-1].isdigit() else 0
+        await self._bank_stats_cache.invalidate(get_current_schema(), bank_id)
+        return {"deleted_count": deleted_count}
+
     # ==================== bank profile Methods ====================
 
     async def get_bank_profile(
@@ -16441,6 +16619,7 @@ class MemoryEngine(MemoryEngineInterface):
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         answer_as_document: bool = False,
+        reasoning_effort: str | None = None,
         _skip_span: bool = False,
         _operation_label: str = "reflect",
     ) -> ReflectResult:
@@ -16818,7 +16997,10 @@ class MemoryEngine(MemoryEngineInterface):
         # Built before the span opens: nothing between the span's __enter__ and the try that
         # closes it may raise, or the span is left open.
         reflect_llm = self._llm_for_reflect_operation(_operation_label).with_config(
-            resolved_reflect_config, bank_id=bank_id, operation=_operation_label
+            resolved_reflect_config,
+            bank_id=bank_id,
+            operation=_operation_label,
+            reasoning_effort=reasoning_effort,
         )
         # The pictures behind knowledge-bank hits go to a model known to read images, never to one
         # that might not (None: a gateway that cannot tell), and never into a page refresh. Server
@@ -17610,6 +17792,13 @@ class MemoryEngine(MemoryEngineInterface):
                 f"SELECT COUNT(*) FROM {fq_table('mental_models')} WHERE bank_id = $1 AND {_MM_REFRESH_PAUSED_SQL}",
                 bank_id,
             )
+            storage_info = await store.bank_storage_bytes(conn=conn, fq_table=fq_table, bank_id=bank_id)
+            if isinstance(storage_info, dict):
+                storage_bytes = int(storage_info.get("total", 0))
+                storage_by_category = {k: int(v) for k, v in storage_info.items() if k != "total"}
+            else:
+                storage_bytes = int(storage_info or 0)
+                storage_by_category = {}
 
             ops_by_status = {row["status"]: row["count"] for row in ops_stats}
             last_consolidated_at = consolidation_row["last_consolidated_at"] if consolidation_row else None
@@ -17641,6 +17830,8 @@ class MemoryEngine(MemoryEngineInterface):
                 "failed_consolidation": consolidation_row["failed"] if consolidation_row else 0,
                 "total_observations": node_counts.get("observation", 0),
                 "paused_mental_models": int(paused_mental_models),
+                "storage_bytes": storage_bytes,
+                "storage_by_category": storage_by_category,
             }
 
     async def get_bank_freshness(
@@ -18739,104 +18930,61 @@ class MemoryEngine(MemoryEngineInterface):
             )
         return _MentalModelScopeWatermark(newest_in_scope=newest_in_scope, watermark=newest_in_scope)
 
-    async def _gate_delta_refresh(
+    async def _read_delta_refresh(
         self,
         bank_id: str,
         *,
-        source_query: str,
-        current_content: str,
         tag_filtering: RefreshTagFiltering,
         fact_types: list[str] | None,
         created_after: datetime,
         refresh_cutoff: datetime,
         request_context: "RequestContext",
-    ) -> _DeltaGate | None:
-        """Pick the new memories that could change a page, without running reflect.
+    ) -> _DeltaRefreshInput | None:
+        """Read the change window directly instead of paying for a reflect synthesis.
 
-        A delta refresh only needs the memories written since its last run, and those are
-        one read away: the scope and window are the ones the watermark is taken over. The
-        decision model is asked, per memory, whether it could change the page, and only
-        those reach the delta LLM call. None of them means no LLM call at all.
-
-        None when the gate does not apply (the bank opted out, no decision model, a store
-        that cannot list, more memories than HINDSIGHT_API_MENTAL_MODEL_DELTA_GATE_MAX_MEMORIES)
-        or a question failed before any answered: the refresh then runs reflect as it always
-        has. A question failing after that keeps its memory.
-
-        Sibling pages are not offered, as reflect would: a sibling changes only when its
-        own memories do, and the memories in this page's scope are already here.
+        The old decision gate required a special provider and fell back to reflect
+        above 200 rows. Page by (updated_at, id) instead; the edit call decides which
+        facts affect the topic. No per-fact LLM classification is needed. A store
+        without window enumeration retains the legacy reflect fallback.
         """
-        decision_model = self._reflect_decision_model()
-        if decision_model is None:
-            return None
-        resolved = await self._config_resolver.resolve_full_config(bank_id, request_context)
-        if not resolved.mental_model_delta_use_decision_model:
-            return None
-        max_memories = get_config().mental_model_delta_gate_max_memories
         from .memories import get_memories
+        from .memories.base import MemoryUpdateCursor
 
-        backend = await self._get_backend()
-        async with acquire_with_retry(backend) as conn:
-            memories = await get_memories().memories_updated_between(
-                conn=conn,
-                fq_table=fq_table,
-                bank_id=bank_id,
-                until=refresh_cutoff,
-                since=created_after,
-                limit=max_memories + 1,
-                fact_types=fact_types,
-                tags=tag_filtering.tags,
-                tags_match=tag_filtering.tags_match,
-                tag_groups=tag_filtering.tag_groups,
-            )
-        if memories is None or len(memories) > max_memories:
-            return None
-        slots = asyncio.Semaphore(_DELTA_GATE_MAX_CONCURRENT)
-        answered = False
-        failed = 0
-
-        async def ask(text: str) -> bool:
-            nonlocal answered, failed
-            async with slots:
-                try:
-                    verdict = await decision_model.could_change_page(source_query, current_content, text)
-                except Exception:
-                    # Nothing answered yet reads as the model being down: cancel the rest
-                    # and search. Once it has answered, a question that ran out of retries
-                    # is a "yes", as a doubt is: the memory goes to the LLM, the other
-                    # verdicts are kept.
-                    if not answered:
-                        raise
-                    failed += 1
-                    return True
-            answered = True
-            return verdict
-
-        try:
-            # ponytail: these calls are not added to the refresh's usage or llm_calls, like
-            # every other decision-model call; count them there if their cost needs watching.
-            async with asyncio.TaskGroup() as group:
-                questions = [group.create_task(ask(m.text)) for m in memories]
-            verdicts = [q.result() for q in questions]
-        except Exception as exc:
-            cause = exc.exceptions[0] if isinstance(exc, ExceptionGroup) else exc
-            logger.warning(f"[MENTAL_MODELS] Delta gate failed ({cause!r}); searching instead")
-            return None
-        if failed:
-            logger.warning(
-                f"[MENTAL_MODELS] Delta gate: {failed} of {len(memories)} questions failed; kept their memories"
-            )
+        store = get_memories()
+        page_size = get_config().mental_model_delta_gate_max_memories
+        after: MemoryUpdateCursor | None = None
         listed: dict[str, int] = {}
-        kept: dict[str, list[MemoryFact]] = {}
-        for memory, could_change in zip(memories, verdicts):
-            listed[memory.fact_type] = listed.get(memory.fact_type, 0) + 1
-            if could_change:
-                kept.setdefault(memory.fact_type, []).append(
+        facts: dict[str, list[MemoryFact]] = {}
+        backend = await self._get_backend()
+        while True:
+            async with acquire_with_retry(backend) as conn:
+                memories = await store.memories_updated_between(
+                    conn=conn,
+                    fq_table=fq_table,
+                    bank_id=bank_id,
+                    until=refresh_cutoff,
+                    since=created_after,
+                    limit=page_size,
+                    after=after,
+                    fact_types=fact_types,
+                    tags=tag_filtering.tags,
+                    tags_match=tag_filtering.tags_match,
+                    tag_groups=tag_filtering.tag_groups,
+                )
+            if memories is None:
+                return None
+            for memory in memories:
+                listed[memory.fact_type] = listed.get(memory.fact_type, 0) + 1
+                facts.setdefault(memory.fact_type, []).append(
                     MemoryFact(id=memory.unit_id, text=memory.text, fact_type=memory.fact_type, context=memory.context)
                 )
-        if kept:
-            # Reflect hands the delta edit the bank's directives too, scoped like the
-            # memories; without them a gated edit would stop following them.
+            if len(memories) < page_size:
+                break
+            last = memories[-1]
+            if last.updated_at is None:
+                raise ValueError("Delta enumeration must return each memory's updated_at")
+            after = MemoryUpdateCursor(updated_at=last.updated_at, unit_id=last.unit_id)
+        if facts:
             directives = await self.list_directives(
                 bank_id=bank_id,
                 tags=tag_filtering.tags,
@@ -18847,10 +18995,10 @@ class MemoryEngine(MemoryEngineInterface):
                 isolation_mode=True,
             )
             if directives.items:
-                kept["directives"] = [
+                facts["directives"] = [
                     MemoryFact(id=str(d["id"]), text=d["content"], fact_type="directives") for d in directives.items
                 ]
-        return _DeltaGate(listed=listed, kept=kept)
+        return _DeltaRefreshInput(listed=listed, facts=facts)
 
     async def _siblings_are_a_source(
         self,
@@ -18979,7 +19127,7 @@ class MemoryEngine(MemoryEngineInterface):
         # the loop out before the raw facts are read) — see #4856.
         raw_budget = trigger_data.get("budget")
         refresh_budget = Budget(raw_budget) if raw_budget else DEFAULT_MENTAL_MODEL_REFRESH_BUDGET
-        requested_mode: RefreshMode = mode or trigger_data.get("mode") or "full"
+        requested_mode: RefreshMode = mode or trigger_data.get("mode") or "delta"
 
         current_content = (mental_model.get("content") or "").strip()
         source_query = mental_model["source_query"]
@@ -19225,25 +19373,22 @@ class MemoryEngine(MemoryEngineInterface):
                 has_content=has_delta_baseline,
                 has_read_memories=mental_model.get("last_memory_seen_at") is not None,
             )
-        gate: _DeltaGate | None = None
+        delta_input: _DeltaRefreshInput | None = None
         if created_after is not None and scope_watermark.newest_in_scope is not None:
-            gate = await self._gate_delta_refresh(
+            delta_input = await self._read_delta_refresh(
                 bank_id,
-                source_query=source_query,
-                current_content=current_content,
                 tag_filtering=tag_filtering,
                 fact_types=fact_types,
                 created_after=created_after,
                 refresh_cutoff=refresh_cutoff,
                 request_context=request_context,
             )
-        if gate is not None:
+        if delta_input is not None:
             logger.info(
-                f"[MENTAL_MODELS] Refresh for {mental_model_id}: delta gate kept "
-                f"{gate.memories_kept} of {sum(gate.listed.values())} new memories; "
-                f"skipping the reflect loop"
+                f"[MENTAL_MODELS] Refresh for {mental_model_id}: directly read "
+                f"{sum(delta_input.listed.values())} changed memories; skipping reflect"
             )
-            reflect_result = ReflectResult(text="", based_on=gate.kept)
+            reflect_result = ReflectResult(text="", based_on=delta_input.facts)
         elif has_sources:
             reflect_result = await self.reflect_async(**reflect_kwargs)
         else:
@@ -19291,7 +19436,7 @@ class MemoryEngine(MemoryEngineInterface):
         # Counted before the delta merge below, which folds in facts from
         # *previous* refreshes — those would misreport this run's evidence.
         facts = MentalModelFactCounts(
-            retrieved=gate.listed if gate else _count_retrieved_facts(reflect_result.tool_trace),
+            retrieved=delta_input.listed if delta_input else _count_retrieved_facts(reflect_result.tool_trace),
             used={
                 fact_type: len(serialized)
                 for fact_type, serialized in based_on_serialized_payload.items()
@@ -19330,12 +19475,12 @@ class MemoryEngine(MemoryEngineInterface):
             # Recorded on the model so a refresh that did nothing says why it did
             # nothing — distinct from a reflect that ran and came back empty-handed.
             reflect_response_payload["reflect_skipped"] = "no_sources_in_scope"
-        if gate is not None:
-            reflect_response_payload["delta_gate"] = {
-                "memories": sum(gate.listed.values()),
-                "kept": gate.memories_kept,
-            }
+        if delta_input is not None:
+            reflect_response_payload["delta_read"] = {"memories": sum(delta_input.listed.values())}
 
+        from .reflect.delta_ops import DeltaCallAccounting
+
+        edit_accounting = DeltaCallAccounting()
         warnings: list[str] = []
         retrieved_total = sum(facts.retrieved.values())
         used_total = sum(facts.used.values())
@@ -19359,7 +19504,7 @@ class MemoryEngine(MemoryEngineInterface):
                 "Retrieval returned no facts at all. Check the resolved scope and the time window — "
                 "in delta mode nothing created after the last refresh is in range."
             )
-        elif used_total == 0 and gate is None:
+        elif used_total == 0 and delta_input is None:
             warnings.append(
                 f"Retrieval returned {retrieved_total} fact(s) but the reflect agent used none of them, "
                 "so the document was written from an empty evidence set. The source query may not match "
@@ -19386,6 +19531,15 @@ class MemoryEngine(MemoryEngineInterface):
                 if retracted
                 else None
             )
+            # Reflect used to be the only usage reported: edit and retraction calls
+            # (including schema-correction retries) were invisible on the page trace.
+            usage = (reflect_result.usage or TokenUsage()) + edit_accounting.usage
+            reflect_response_payload["usage"] = usage.model_dump()
+            reflect_response_payload["usage_complete"] = edit_accounting.usage_complete
+            reflect_response_payload["llm_call_count"] = len(reflect_result.llm_trace) + len(edit_accounting.calls)
+            reflect_response_payload["effective_mode"] = effective_mode
+            reflect_response_payload["mode_fallback_reason"] = mode_fallback_reason
+            reflect_response_payload["duration_ms"] = int((time.perf_counter() - started) * 1000)
             return _MentalModelRefreshRun(
                 mental_model_id=mental_model_id,
                 name=mm_name,
@@ -19406,8 +19560,8 @@ class MemoryEngine(MemoryEngineInterface):
                 outcome=outcome,
                 retraction=retraction_record,
                 tool_calls=_summarize_refresh_tool_calls(reflect_result.tool_trace, created_after),
-                llm_calls=list(reflect_result.llm_trace),
-                usage=reflect_result.usage or TokenUsage(),
+                llm_calls=[*reflect_result.llm_trace, *edit_accounting.calls],
+                usage=usage,
                 duration_ms=int((time.perf_counter() - started) * 1000),
                 warnings=warnings,
             )
@@ -19492,6 +19646,8 @@ class MemoryEngine(MemoryEngineInterface):
                             surviving_facts=supporting_facts,
                             source_query=source_query,
                             max_output_tokens=max(2048, int(doc_max_tokens * 1.5)),
+                            max_input_tokens=get_config().reflect_max_context_tokens,
+                            require_complete=True,
                         )
                         unsay_llm = await _op_llm()
                         unsay_ops = await request_delta_operations(
@@ -19499,6 +19655,7 @@ class MemoryEngine(MemoryEngineInterface):
                             system_prompt=STRUCTURED_RETRACTION_SYSTEM_PROMPT,
                             user_prompt=unsay_prompt,
                             scope="mental_model_retraction_ops",
+                            accounting=edit_accounting,
                             max_completion_tokens=get_config().reflect_max_completion_tokens,
                             temperature=get_config().llm_temperature_mental_model_refresh,
                         )
@@ -19582,107 +19739,120 @@ class MemoryEngine(MemoryEngineInterface):
                 # which crosses the 4096 default after a couple of hundred refreshes).
                 # The model is told where it stands so it can reclaim space from
                 # stale content; truncating here would delete knowledge instead.
+                from .mental_model_delta import DeltaFact, batch_delta_facts
                 from .reflect.tokenization import count_prompt_tokens
 
-                document_tokens = count_prompt_tokens(current_content)
-                user_prompt = build_structured_delta_prompt(
-                    current_document_json=current_doc.model_dump_json(),
-                    supporting_facts=supporting_facts,
-                    source_query=source_query,
-                    max_output_tokens=delta_max_tokens,
-                    document_tokens=document_tokens,
-                    document_budget=doc_max_tokens,
+                batches = batch_delta_facts(
+                    [DeltaFact.model_validate(f) for f in supporting_facts],
+                    max_memories=get_config().mental_model_delta_gate_max_memories,
                 )
-                # Trace the delta call. Unlike the synthesis, this runs on the raw
-                # ``_reflect_llm_config`` outside ``reflect_async``'s trace context,
-                # so its LLM calls were never written to the trace table — the exact
-                # blind spot that made #3421's failures impossible to diagnose after
-                # the fact. Wrapping it here attributes them to the refresh (bank +
-                # operation + mental_model_id), same as every other pipeline call.
-                delta_llm = await _op_llm()
+                reflect_response_payload["delta_batches"] = len(batches)
                 try:
-                    # Structured-output call, following the retain extraction path:
-                    # ``request_delta_operations`` sends the schema, resolves
-                    # ``strict_schema`` from reflect's own flag, and sets
-                    # ``skip_validation`` so the op-by-op parser sees the raw JSON —
-                    # for this call and the retraction pass alike (the retraction pass
-                    # once ran without a schema, #6569). A reply that misses the schema is
-                    # refused whole and asked for again with the errors attached —
-                    # ``request_delta_operations`` owns that, for this call and the
-                    # retraction pass alike. It also samples once more a reply that
-                    # runs to the output cap, a repetition loop rather than a long
-                    # answer (#6265).
-                    #
-                    # This was a text-mode call until #3901: pydantic renders the
-                    # eight-op discriminated union as ``oneOf`` + ``discriminator``,
-                    # which OpenAI's strict subset rejects and the Gemini SDK refuses
-                    # to even serialize, so no schema could be sent and the prompt was
-                    # the only description of the payload the model got. Providers are
-                    # now handed the union as ``anyOf`` (``provider_json_schema``),
-                    # which both accept.
-                    #
-                    # The transport cap is the decoupled ``reflect_max_completion_tokens``
-                    # (uncapped by default), NOT ``delta_max_tokens``. On thinking models
-                    # the provider's output budget is spent on reasoning tokens first, so
-                    # capping at the document-sized ``delta_max_tokens`` truncates the ops
-                    # JSON mid-string; at temperature 0 that malformed output is
-                    # deterministic, so ``parse_delta_operation_list`` then fails
-                    # identically on every retry and the model wedges (#3421). This is the
-                    # same decoupling reflect's synthesis got in #3365/#3389 — the
-                    # document-length budget lives in the prompt (``max_output_tokens``
-                    # above), never in the transport cap.
-                    op_list = await request_delta_operations(
-                        delta_llm,
-                        system_prompt=STRUCTURED_DELTA_SYSTEM_PROMPT,
-                        user_prompt=user_prompt,
-                        scope="mental_model_delta_ops",
-                        document=current_doc,
-                        max_completion_tokens=get_config().reflect_max_completion_tokens,
-                        temperature=get_config().llm_temperature_mental_model_refresh,
-                    )
-                    apply_outcome = apply_operations(current_doc, op_list.operations)
-                    delta_operations = MentalModelDeltaOperations(
-                        applied=apply_outcome.applied, skipped=apply_outcome.skipped
-                    )
-                    if op_list.operations and not apply_outcome.applied:
-                        # Every op the model emitted was rejected (unknown section_id,
-                        # index out of range, name collision), so the document is
-                        # unchanged. Persisting it would look like a clean refresh
-                        # while advancing the watermark past facts that never landed —
-                        # they would fall outside every future delta window. Treat it
-                        # as a failed delta, same as an outright error.
-                        logger.warning(
-                            f"[MENTAL_MODELS] Delta refresh for {mental_model_id}: all "
-                            f"{len(apply_outcome.skipped)} op(s) were skipped, nothing applied"
+                    for batch in batches:
+                        document_tokens = count_prompt_tokens(render_document(current_doc))
+                        user_prompt = build_structured_delta_prompt(
+                            current_document_json=current_doc.model_dump_json(),
+                            supporting_facts=[f.model_dump() for f in batch],
+                            source_query=source_query,
+                            max_output_tokens=delta_max_tokens,
+                            max_input_tokens=get_config().reflect_max_context_tokens,
+                            require_complete=True,
+                            document_tokens=document_tokens,
+                            document_budget=doc_max_tokens,
                         )
-                        mode_fallback_reason = "delta_ops_all_skipped"
-                    else:
-                        final_structured = apply_outcome.document
-                        final_content = render_document(apply_outcome.document)
-                        delta_applied = True
-                        # Surfaced rather than enforced: a page that keeps growing past
-                        # its budget is a page whose content needs a decision, and that
-                        # is visible here instead of only in the byte count.
-                        final_tokens = count_prompt_tokens(final_content)
-                        reflect_response_payload["document_tokens"] = final_tokens
-                        reflect_response_payload["document_budget"] = doc_max_tokens
-                        if final_tokens > doc_max_tokens:
-                            warnings.append(
-                                f"The document is ~{final_tokens} tokens, over its {doc_max_tokens}-token "
-                                "budget. Delta refreshes were asked to reclaim space from superseded "
-                                "content; if it keeps growing, raise max_tokens or narrow the source query."
-                            )
-                        logger.info(
-                            f"[MENTAL_MODELS] Delta refresh for {mental_model_id}: "
-                            f"applied {len(apply_outcome.applied)} op(s), "
-                            f"skipped {len(apply_outcome.skipped)}"
+                        # Trace the delta call. Unlike the synthesis, this runs on the raw
+                        # ``_reflect_llm_config`` outside ``reflect_async``'s trace context,
+                        # so its LLM calls were never written to the trace table — the exact
+                        # blind spot that made #3421's failures impossible to diagnose after
+                        # the fact. Wrapping it here attributes them to the refresh (bank +
+                        # operation + mental_model_id), same as every other pipeline call.
+                        delta_llm = await _op_llm()
+                        # Structured-output call, following the retain extraction path:
+                        # ``request_delta_operations`` sends the schema, resolves
+                        # ``strict_schema`` from reflect's own flag, and sets
+                        # ``skip_validation`` so the op-by-op parser sees the raw JSON —
+                        # for this call and the retraction pass alike (the retraction pass
+                        # once ran without a schema, #6569). A reply that misses the schema is
+                        # refused whole and asked for again with the errors attached —
+                        # ``request_delta_operations`` owns that, for this call and the
+                        # retraction pass alike. It also samples once more a reply that
+                        # runs to the output cap, a repetition loop rather than a long
+                        # answer (#6265).
+                        #
+                        # This was a text-mode call until #3901: pydantic renders the
+                        # eight-op discriminated union as ``oneOf`` + ``discriminator``,
+                        # which OpenAI's strict subset rejects and the Gemini SDK refuses
+                        # to even serialize, so no schema could be sent and the prompt was
+                        # the only description of the payload the model got. Providers are
+                        # now handed the union as ``anyOf`` (``provider_json_schema``),
+                        # which both accept.
+                        #
+                        # The transport cap is the decoupled ``reflect_max_completion_tokens``
+                        # (uncapped by default), NOT ``delta_max_tokens``. On thinking models
+                        # the provider's output budget is spent on reasoning tokens first, so
+                        # capping at the document-sized ``delta_max_tokens`` truncates the ops
+                        # JSON mid-string; at temperature 0 that malformed output is
+                        # deterministic, so ``parse_delta_operation_list`` then fails
+                        # identically on every retry and the model wedges (#3421). This is the
+                        # same decoupling reflect's synthesis got in #3365/#3389 — the
+                        # document-length budget lives in the prompt (``max_output_tokens``
+                        # above), never in the transport cap.
+                        op_list = await request_delta_operations(
+                            delta_llm,
+                            system_prompt=STRUCTURED_DELTA_SYSTEM_PROMPT,
+                            user_prompt=user_prompt,
+                            scope="mental_model_delta_ops",
+                            accounting=edit_accounting,
+                            document=current_doc,
+                            max_completion_tokens=get_config().reflect_max_completion_tokens,
+                            temperature=get_config().llm_temperature_mental_model_refresh,
                         )
-                        if apply_outcome.skipped:
-                            warnings.append(
-                                f"{len(apply_outcome.skipped)} of {len(op_list.operations)} delta operation(s) "
-                                "were rejected and their content did not reach the document. See the skipped "
-                                "operations for the reason each was dropped."
+                        apply_outcome = apply_operations(current_doc, op_list.operations)
+                        delta_operations = MentalModelDeltaOperations(
+                            applied=[*(delta_operations.applied if delta_operations else []), *apply_outcome.applied],
+                            skipped=[*(delta_operations.skipped if delta_operations else []), *apply_outcome.skipped],
+                        )
+                        if op_list.operations and not apply_outcome.applied:
+                            # Every op the model emitted was rejected (unknown section_id,
+                            # index out of range, name collision), so the document is
+                            # unchanged. Persisting it would look like a clean refresh
+                            # while advancing the watermark past facts that never landed —
+                            # they would fall outside every future delta window. Treat it
+                            # as a failed delta, same as an outright error.
+                            logger.warning(
+                                f"[MENTAL_MODELS] Delta refresh for {mental_model_id}: all "
+                                f"{len(apply_outcome.skipped)} op(s) were skipped, nothing applied"
                             )
+                            mode_fallback_reason = "delta_ops_all_skipped"
+                            raise ValueError("No delta operations could be applied")
+                        else:
+                            current_doc = apply_outcome.document
+                            final_structured = current_doc
+                            final_content = render_document(apply_outcome.document)
+                            delta_applied = True
+                            # Surfaced rather than enforced: a page that keeps growing past
+                            # its budget is a page whose content needs a decision, and that
+                            # is visible here instead of only in the byte count.
+                            final_tokens = count_prompt_tokens(final_content)
+                            reflect_response_payload["document_tokens"] = final_tokens
+                            reflect_response_payload["document_budget"] = doc_max_tokens
+                            if final_tokens > doc_max_tokens:
+                                warnings.append(
+                                    f"The document is ~{final_tokens} tokens, over its {doc_max_tokens}-token "
+                                    "budget. Delta refreshes were asked to reclaim space from superseded "
+                                    "content; if it keeps growing, raise max_tokens or narrow the source query."
+                                )
+                            logger.info(
+                                f"[MENTAL_MODELS] Delta refresh for {mental_model_id}: "
+                                f"applied {len(apply_outcome.applied)} op(s), "
+                                f"skipped {len(apply_outcome.skipped)}"
+                            )
+                            if apply_outcome.skipped:
+                                warnings.append(
+                                    f"{len(apply_outcome.skipped)} of {len(op_list.operations)} delta operation(s) "
+                                    "were rejected and their content did not reach the document. See the skipped "
+                                    "operations for the reason each was dropped."
+                                )
                 except Exception as exc:
                     # A provider that is rate-limited or down answers later: let it escape
                     # as itself, so the refresh fails as temporary and does not pause
@@ -19694,7 +19864,8 @@ class MemoryEngine(MemoryEngineInterface):
                         f"[MENTAL_MODELS] Structured delta failed for {mental_model_id} "
                         f"({exc}); delta operations were not applied"
                     )
-                    mode_fallback_reason = "delta_ops_failed"
+                    mode_fallback_reason = mode_fallback_reason or "delta_ops_failed"
+                    delta_applied = False
 
             # The unsay ops edited the same document, in the same refresh, before the
             # new-facts ops did — so they belong in the same log, in that order.
@@ -19773,7 +19944,7 @@ class MemoryEngine(MemoryEngineInterface):
         # existing content and raises, rather than persisting the empty render.
         # A gated delta has no reflect candidate at all, so its empty text says nothing
         # about the LLM: a failed edit there is reported by the delta guard below.
-        if not final_content.strip() and gate is None and not write_empty:
+        if not final_content.strip() and delta_input is None and not write_empty:
             warnings.append(
                 "The refresh produced empty content, which usually means an upstream LLM failure. "
                 "A real refresh would preserve the existing content and fail."
@@ -21757,104 +21928,118 @@ class MemoryEngine(MemoryEngineInterface):
             # Moving a node into a folder changes that folder too: its pages must be writable.
             await self._require_page_subtree_writable(bank_id, request_context, new_parent)
         backend = await self._get_backend()
-        async with acquire_with_retry(backend) as conn:
-            async with conn.transaction():
-                if moving:
-                    # Structural tree writers lock this bank row before reading or
-                    # changing the hierarchy, serializing moves with creates/deletes.
-                    # A patch that only renames or only edits page options changes no
-                    # parent link and so takes no tree lock.
-                    await self._kp_lock_bank(conn, bank_id)
-                row = await conn.fetchrow(
-                    f"SELECT kind, mental_model_id FROM {fq_table('knowledge_pages')} WHERE bank_id = $1 AND id = $2",
-                    bank_id,
-                    node_id,
-                )
-                if row is None:
-                    return None
-                mental_model_id = row["mental_model_id"]
-                # Page options only exist on a page's backing model. Reporting this
-                # as "not found" is what the dedicated endpoint always did; the part
-                # that changes here is that the rename alongside it rolls back too.
-                if page_options and (row["kind"] != "page" or mental_model_id is None):
-                    return None
-
-                if moving:
-                    await self._kp_assert_folder_parent(conn, bank_id, new_parent)
-                    # Cycle guard: walk up from the new parent; if we reach node_id,
-                    # the move would create a loop. Done in Python so the check stays
-                    # dialect-agnostic (no recursive CTE).
-                    if new_parent is not None:
-                        parents = {
-                            r["id"]: r["parent_id"]
-                            for r in await conn.fetch(
-                                f"SELECT id, parent_id FROM {fq_table('knowledge_pages')} WHERE bank_id = $1",
-                                bank_id,
-                            )
-                        }
-                        # `seen` bounds the walk. The lock above stops this process
-                        # from creating a loop, but a tree corrupted before the lock
-                        # existed (or restored from such an export) would otherwise
-                        # spin here forever, holding a connection and an open
-                        # transaction. Refuse the move instead of hanging.
-                        seen: set[str] = set()
-                        cursor: str | None = new_parent
-                        while cursor is not None:
-                            if cursor == node_id:
-                                raise ValueError("Cannot move a node into its own subtree")
-                            if cursor in seen:
-                                raise ValueError(f"Page tree for bank '{bank_id}' contains a parent cycle")
-                            seen.add(cursor)
-                            cursor = parents.get(cursor)
-
-                node_updates: list[str] = []
-                node_params: list[Any] = [bank_id, node_id]
-                if name is not None:
-                    node_updates.append(f"name = ${len(node_params) + 1}")
-                    node_params.append(name)
-                if moving:
-                    node_updates.append(f"parent_id = ${len(node_params) + 1}")
-                    node_params.append(new_parent)
-                if node_updates:
-                    await conn.execute(
-                        f"UPDATE {fq_table('knowledge_pages')} "
-                        f"SET {', '.join(node_updates)}, updated_at = now() "
-                        f"WHERE bank_id = $1 AND id = $2",
-                        *node_params,
+        # The name the node ends up with, for the conflict message below.
+        target_name = name
+        try:
+            async with acquire_with_retry(backend) as conn:
+                async with conn.transaction():
+                    if moving:
+                        # Structural tree writers lock this bank row before reading or
+                        # changing the hierarchy, serializing moves with creates/deletes.
+                        # A patch that only renames or only edits page options changes no
+                        # parent link and so takes no tree lock.
+                        await self._kp_lock_bank(conn, bank_id)
+                    row = await conn.fetchrow(
+                        f"SELECT kind, name, mental_model_id FROM {fq_table('knowledge_pages')} "
+                        "WHERE bank_id = $1 AND id = $2",
+                        bank_id,
+                        node_id,
                     )
+                    if row is None:
+                        return None
+                    target_name = name if name is not None else row["name"]
+                    mental_model_id = row["mental_model_id"]
+                    # Page options only exist on a page's backing model. Reporting this
+                    # as "not found" is what the dedicated endpoint always did; the part
+                    # that changes here is that the rename alongside it rolls back too.
+                    if page_options and (row["kind"] != "page" or mental_model_id is None):
+                        return None
 
-                if mental_model_id is not None and (name is not None or page_options):
-                    # A page's searchable document is its backing mental model's name +
-                    # content, so a rename has to reach the model too (which also
-                    # re-tokenizes its search_vector). Written on the SAME connection
-                    # and transaction as the node row, so a knowledge_pages
-                    # name-uniqueness violation rolls this back with it. Folders carry
-                    # no backing model (mental_model_id is NULL) and skip this.
-                    #
-                    # update_mental_model owns these columns — including patching a
-                    # partial trigger over the stored one — so this reuses it rather
-                    # than restating its SQL, which would be free to drift.
-                    #
-                    # Already authorized above; the nested write must not re-invoke
-                    # the validator.
-                    with _authorize_nested_operations():
-                        await self.update_mental_model(
-                            bank_id=bank_id,
-                            mental_model_id=mental_model_id,
-                            name=name,
-                            source_query=source_query,
-                            tags=tags,
-                            max_tokens=max_tokens,
-                            trigger=trigger,
-                            conn=conn,
-                            request_context=request_context,
+                    if moving:
+                        await self._kp_assert_folder_parent(conn, bank_id, new_parent)
+                        # Cycle guard: walk up from the new parent; if we reach node_id,
+                        # the move would create a loop. Done in Python so the check stays
+                        # dialect-agnostic (no recursive CTE).
+                        if new_parent is not None:
+                            parents = {
+                                r["id"]: r["parent_id"]
+                                for r in await conn.fetch(
+                                    f"SELECT id, parent_id FROM {fq_table('knowledge_pages')} WHERE bank_id = $1",
+                                    bank_id,
+                                )
+                            }
+                            # `seen` bounds the walk. The lock above stops this process
+                            # from creating a loop, but a tree corrupted before the lock
+                            # existed (or restored from such an export) would otherwise
+                            # spin here forever, holding a connection and an open
+                            # transaction. Refuse the move instead of hanging.
+                            seen: set[str] = set()
+                            cursor: str | None = new_parent
+                            while cursor is not None:
+                                if cursor == node_id:
+                                    raise ValueError("Cannot move a node into its own subtree")
+                                if cursor in seen:
+                                    raise ValueError(f"Page tree for bank '{bank_id}' contains a parent cycle")
+                                seen.add(cursor)
+                                cursor = parents.get(cursor)
+
+                    node_updates: list[str] = []
+                    node_params: list[Any] = [bank_id, node_id]
+                    if name is not None:
+                        node_updates.append(f"name = ${len(node_params) + 1}")
+                        node_params.append(name)
+                    if moving:
+                        node_updates.append(f"parent_id = ${len(node_params) + 1}")
+                        node_params.append(new_parent)
+                    if node_updates:
+                        await conn.execute(
+                            f"UPDATE {fq_table('knowledge_pages')} "
+                            f"SET {', '.join(node_updates)}, updated_at = now() "
+                            f"WHERE bank_id = $1 AND id = $2",
+                            *node_params,
                         )
 
-                node_row = await conn.fetchrow(
-                    f"SELECT {self._KP_PAGE_SELECT} FROM {self._kp_join()} WHERE kp.bank_id = $1 AND kp.id = $2",
-                    bank_id,
-                    node_id,
-                )
+                    if mental_model_id is not None and (name is not None or page_options):
+                        # A page's searchable document is its backing mental model's name +
+                        # content, so a rename has to reach the model too (which also
+                        # re-tokenizes its search_vector). Written on the SAME connection
+                        # and transaction as the node row, so a knowledge_pages
+                        # name-uniqueness violation rolls this back with it. Folders carry
+                        # no backing model (mental_model_id is NULL) and skip this.
+                        #
+                        # update_mental_model owns these columns — including patching a
+                        # partial trigger over the stored one — so this reuses it rather
+                        # than restating its SQL, which would be free to drift.
+                        #
+                        # Already authorized above; the nested write must not re-invoke
+                        # the validator.
+                        with _authorize_nested_operations():
+                            await self.update_mental_model(
+                                bank_id=bank_id,
+                                mental_model_id=mental_model_id,
+                                name=name,
+                                source_query=source_query,
+                                tags=tags,
+                                max_tokens=max_tokens,
+                                trigger=trigger,
+                                conn=conn,
+                                request_context=request_context,
+                            )
+
+                    node_row = await conn.fetchrow(
+                        f"SELECT {self._KP_PAGE_SELECT} FROM {self._kp_join()} WHERE kp.bank_id = $1 AND kp.id = $2",
+                        bank_id,
+                        node_id,
+                    )
+        except asyncpg.UniqueViolationError as exc:
+            if getattr(exc, "constraint_name", None) != "uq_kp_folder_pagename":
+                raise
+            # The transaction rolled the whole patch back. A taken name is the
+            # caller's conflict, answered with the same 409 a create into that
+            # folder gets, not a server fault a client retries forever (#6920).
+            raise OperationValidationError(
+                f"A page named '{target_name}' already exists in this folder", status_code=409
+            ) from exc
         return self._row_to_page_node(node_row) if node_row else None
 
     async def delete_page_node(self, bank_id: str, node_id: str, *, request_context: "RequestContext") -> bool:

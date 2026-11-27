@@ -278,6 +278,11 @@
     "memories": "Memories",
     "documents": "Documents",
     "links": "Links",
+    "storageSize": "Storage",
+    "storageBreakdown": "Storage breakdown",
+    "storageChunks": "Chunks",
+    "storageAuditLogs": "Audit logs",
+    "noStorageYet": "No storage used yet",
     "memoryComposition": "Memory composition",
     "world": "World",
     "experience": "Experience",
@@ -351,7 +356,8 @@
     "hintPagesInSync": "Pages that have read every new memory in their scope.",
     "hintPagesStale": "Pages with new memories in their scope since their last refresh. They catch up the next time they are refreshed.",
     "hintPagesFailed": "Pages whose last refresh failed. Automatic refreshes stay paused until you refresh them by hand.",
-    "hintPagesLast": "The most recent refresh of any page."
+    "hintPagesLast": "The most recent refresh of any page.",
+    "storageInvalidatedMemories": "Invalidated memories"
   },
   "bankConfig": {
     "noBankSelected": "No bank selected",
@@ -876,6 +882,14 @@
     "scopeNoResults": "No scopes found",
     "filterActive": "Active",
     "filterInvalidated": "Invalidated",
+    "clearInvalidatedButton": "Clear All",
+    "clearInvalidatedDialogTitle": "Clear Invalidated Memories",
+    "clearInvalidatedDialogDescription": "Permanently delete invalidated memories from the archive. This action cannot be undone.",
+    "clearInvalidatedScopeAll": "All invalidated memories",
+    "clearInvalidatedScope7d": "Older than 7 days",
+    "clearInvalidatedScope30d": "Older than 30 days",
+    "clearInvalidatedCancel": "Cancel",
+    "clearInvalidatedConfirm": "Delete Permanently",
     "invalidatedHint": "Invalidated memories are archived — hidden from recall and reflect, but kept for audit."
   },
   "documentsView": {
@@ -1202,6 +1216,8 @@
     "budgetLow": "Low",
     "budgetMid": "Mid",
     "budgetHigh": "High",
+    "reasoningLabel": "Reasoning",
+    "helpReasoning": "Enable model reasoning for deeper synthesis (off by default for faster responses).",
     "includeSource": "Include Source",
     "includeTools": "Include Tools",
     "tagsPlaceholder": "Filter by tags (comma-separated)",
@@ -1332,6 +1348,8 @@
     "budgetLow": "Low",
     "budgetMid": "Mid",
     "budgetHigh": "High",
+    "reasoningLabel": "Reasoning",
+    "helpReasoning": "Enable model reasoning for deeper synthesis (off by default for faster responses).",
     "searchingMemories": "Searching memories...",
     "resultsLabel": "Results:",
     "durationLabel": "Duration:",
@@ -1565,7 +1583,15 @@
     "detailRequest": "Request",
     "detailResponse": "Response",
     "detailMetadata": "Metadata",
-    "entryCount": "{count, plural, one {# entry} other {# entries}}"
+    "entryCount": "{count, plural, one {# entry} other {# entries}}",
+    "clearButton": "Clear logs",
+    "clearDialogTitle": "Clear Audit Logs",
+    "clearDialogDescription": "Delete audit log entries for this memory bank. This action cannot be undone.",
+    "clearScopeAll": "All audit logs",
+    "clearScope7d": "Older than 7 days",
+    "clearScope30d": "Older than 30 days",
+    "clearCancel": "Cancel",
+    "clearConfirm": "Delete"
   },
   "llmRequestsView": {
     "metricCalls": "Calls",
@@ -1800,6 +1826,7 @@
     "curationEdit": "Edit",
     "curationReasonLabel": "Reason",
     "curationRevert": "Restore",
+    "curationDelete": "Delete",
     "curationSave": "Save",
     "curationStateInvalidated": "Invalidated",
     "editFieldContext": "Context",
@@ -2221,7 +2248,8 @@
       "auditLogs": {
         "list": "Failed to list audit logs",
         "stats": "Failed to get audit log stats",
-        "get": "Failed to get audit log entry"
+        "get": "Failed to get audit log entry",
+        "clear": "Failed to clear audit logs"
       },
       "llmRequests": {
         "list": "Failed to list LLM requests",

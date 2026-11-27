@@ -278,6 +278,11 @@
     "memories": "记忆",
     "documents": "文档",
     "links": "链接",
+    "storageSize": "占用空间",
+    "storageBreakdown": "占用空间分布",
+    "storageChunks": "文档分块",
+    "storageAuditLogs": "审计日志",
+    "noStorageYet": "暂无存储占用",
     "memoryComposition": "记忆构成",
     "world": "世界",
     "experience": "经历",
@@ -351,7 +356,8 @@
     "hintPagesInSync": "已读完其范围内所有新记忆的页面。",
     "hintPagesStale": "自上次刷新以来范围内有新记忆的页面。下次刷新时会补上。",
     "hintPagesFailed": "上次刷新失败的页面。在手动刷新之前，自动刷新会一直暂停。",
-    "hintPagesLast": "所有页面中最近一次刷新的时间。"
+    "hintPagesLast": "所有页面中最近一次刷新的时间。",
+    "storageInvalidatedMemories": "已失效记忆"
   },
   "bankConfig": {
     "noBankSelected": "未选择记忆库",
@@ -876,6 +882,14 @@
     "scopeNoResults": "未找到范围",
     "filterActive": "有效",
     "filterInvalidated": "已失效",
+    "clearInvalidatedButton": "一键清空",
+    "clearInvalidatedDialogTitle": "清空已失效记忆",
+    "clearInvalidatedDialogDescription": "永久删除归档中的已失效记忆，此操作不可撤销。",
+    "clearInvalidatedScopeAll": "全部已失效记忆",
+    "clearInvalidatedScope7d": "7 天前失效的记忆",
+    "clearInvalidatedScope30d": "30 天前失效的记忆",
+    "clearInvalidatedCancel": "取消",
+    "clearInvalidatedConfirm": "确认永久删除",
     "invalidatedHint": "失效的记忆会被归档——不会出现在 recall 和 reflect 中，但会保留以供审计。"
   },
   "documentsView": {
@@ -1202,6 +1216,8 @@
     "budgetLow": "低",
     "budgetMid": "中",
     "budgetHigh": "高",
+    "reasoningLabel": "推理模式",
+    "helpReasoning": "开启模型深度推理以进行更充分的归纳（默认关闭以降低响应延时）。",
     "includeSource": "包含来源",
     "includeTools": "包含工具",
     "tagsPlaceholder": "按标签过滤（逗号分隔）",
@@ -1332,6 +1348,8 @@
     "budgetLow": "低",
     "budgetMid": "中",
     "budgetHigh": "高",
+    "reasoningLabel": "推理模式",
+    "helpReasoning": "开启模型深度推理以进行更充分的归纳（默认关闭以降低响应延时）。",
     "searchingMemories": "正在搜索记忆...",
     "resultsLabel": "结果：",
     "durationLabel": "耗时：",
@@ -1565,7 +1583,15 @@
     "detailRequest": "请求",
     "detailResponse": "响应",
     "detailMetadata": "元数据",
-    "entryCount": "{count, plural, other {# 条记录}}"
+    "entryCount": "{count, plural, other {# 条记录}}",
+    "clearButton": "清理日志",
+    "clearDialogTitle": "清理审计日志",
+    "clearDialogDescription": "删除当前记忆库的审计日志记录，此操作不可撤销。",
+    "clearScopeAll": "全部审计日志",
+    "clearScope7d": "7 天前的日志",
+    "clearScope30d": "30 天前的日志",
+    "clearCancel": "取消",
+    "clearConfirm": "确认删除"
   },
   "llmRequestsView": {
     "metricCalls": "调用",
@@ -1800,6 +1826,7 @@
     "curationEdit": "编辑",
     "curationReasonLabel": "原因",
     "curationRevert": "恢复",
+    "curationDelete": "永久删除",
     "curationSave": "保存",
     "curationStateInvalidated": "已失效",
     "editFieldContext": "上下文",
@@ -2221,7 +2248,8 @@
       "auditLogs": {
         "list": "列出审计日志失败",
         "stats": "获取审计日志统计失败",
-        "get": "获取审计日志条目失败"
+        "get": "获取审计日志条目失败",
+        "clear": "清理审计日志失败"
       },
       "llmRequests": {
         "list": "列出 LLM 请求失败",

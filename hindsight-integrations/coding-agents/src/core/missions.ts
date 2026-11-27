@@ -28,7 +28,12 @@ export const GITLOG_MISSION =
   "(#123, GH-123) VERBATIM and emit each as an ENTITY — they are how future sessions will ask about " +
   "this work.";
 
-export const CONVERSATION_MISSION =
+const PRE_REUSABLE_EXPERIENCE_MISSION_RULE =
+  'Never emit both a "world" fact and an "assistant" (experience) fact for the same underlying decision or change; ' +
+  'prefer "world" for settled rules, constraints, and facts, and use "assistant" only for distinct ' +
+  "reusable troubleshooting procedures not already captured as a world fact.";
+
+const PRE_REUSABLE_EXPERIENCE_MISSION =
   "You are ingesting a developer conversation excerpt. Text may contain EARLIER CONTEXT for " +
   "interpretation and a NEW EXCHANGE that ended the turn. Only the NEW EXCHANGE can establish a " +
   "memory. Extract durable engineering knowledge that would change a future decision or action: " +
@@ -37,19 +42,38 @@ export const CONVERSATION_MISSION =
   "verified cause or effective method. Return the FEWEST facts, at most three. An ordinary " +
   "implementation task should return [] even when it changed several files. Do not record routine " +
   "refactors, file-by-file changes, status reports, tool activity, passing tests, one-off task state, " +
-  "single-session operational tweaks, proposed work, or unverified assistant guesses. Never emit both " +
-  'a "world" fact and an "assistant" (experience) fact for the same underlying decision or change; ' +
-  'prefer "world" for settled rules, constraints, and facts, and use "assistant" only for distinct ' +
-  "reusable troubleshooting procedures not already captured as a world fact. If a decision was revised, " +
+  "single-session operational tweaks, proposed work, or unverified assistant guesses. " +
+  PRE_REUSABLE_EXPERIENCE_MISSION_RULE +
+  " If a decision was revised, " +
   "keep only the final state and explain that it superseded the earlier choice. Each fact's what field " +
   "must state the conclusion, its applicability, and its reason. Preserve applicable versions, literal " +
   "values, and issue references verbatim. Never invent a decision or claim.";
 
+const REUSABLE_EXPERIENCE_RULE =
+  'Use "world" for settled rules, decisions, system behavior, and incident-specific fixes. ' +
+  'Use "assistant" for a distinct, verified troubleshooting lesson that tells a future agent ' +
+  "what to check first, how to distinguish likely causes or verify a fix, or when to switch to a proven fallback. " +
+  "Include the triggering conditions, the method, and the evidence that made it useful. " +
+  "One incident can support both types when the method adds guidance beyond the world fact. " +
+  "Do not restate a fix as an experience or infer a method the exchange did not verify.";
+
+export const CONVERSATION_MISSION = PRE_REUSABLE_EXPERIENCE_MISSION.replace(
+  PRE_REUSABLE_EXPERIENCE_MISSION_RULE,
+  REUSABLE_EXPERIENCE_RULE +
+    " For example, the fix for a slow button is a world fact. A verified method that isolates " +
+    "request, health-check, and polling delays can be an experience from the same incident."
+);
+
+const PRE_REUSABLE_EXPERIENCE_INSTRUCTION_RULE =
+  "Never emit both a world fact and an assistant fact for the same " +
+  "conclusion or change; prefer world for rules and decisions, and use assistant only for distinct " +
+  "troubleshooting experience.";
+
 const PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS =
   "Return [] unless the completed exchange established durable engineering knowledge. " +
-  "Use no more than three facts. Never emit both a world fact and an assistant fact for the same " +
-  "conclusion or change; prefer world for rules and decisions, and use assistant only for distinct " +
-  "troubleshooting experience. Put the complete conclusion, applicability, and rationale into each " +
+  "Use no more than three facts. " +
+  PRE_REUSABLE_EXPERIENCE_INSTRUCTION_RULE +
+  " Put the complete conclusion, applicability, and rationale into each " +
   "fact's what field. When the content has a PROJECT header or project/project_id metadata, begin " +
   "every fact with that exact project label followed by a colon, so the conclusion remains " +
   "attributable after synthesis. " +
@@ -57,7 +81,7 @@ const PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS =
   "change or a successful test run. Do not treat a " +
   "proposal as a decision unless the user confirmed it or the exchange verified it.";
 
-export const CONVERSATION_INSTRUCTIONS = PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS.replace(
+const PRE_REUSABLE_EXPERIENCE_INSTRUCTIONS = PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS.replace(
   "Leave optional dimension fields empty.",
   "Leave unrelated descriptive dimensions empty. Treat confirmed decisions, configuration changes, " +
     "deployments and verification events as fact_kind='event' when the source establishes when they happened. " +
@@ -68,6 +92,11 @@ export const CONVERSATION_INSTRUCTIONS = PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS.
     "For an explicitly confirmed replacement, state the old value, new value, affected scope and known " +
     "change time in what; distinguish a requested change from verified deployment. Do not infer a " +
     "replacement or a validity interval from recency alone."
+);
+
+export const CONVERSATION_INSTRUCTIONS = PRE_REUSABLE_EXPERIENCE_INSTRUCTIONS.replace(
+  PRE_REUSABLE_EXPERIENCE_INSTRUCTION_RULE,
+  REUSABLE_EXPERIENCE_RULE
 );
 
 export const REFLECT_MISSION =
@@ -844,15 +873,20 @@ export function codingBankManifest(
     else if (
       name === "conversation" &&
       def.retain_extraction_mode === "custom" &&
-      have.retain_mission === def.retain_mission &&
+      have.retain_mission === PRE_REUSABLE_EXPERIENCE_MISSION &&
       have.retain_extraction_mode === def.retain_extraction_mode &&
       have.retain_chunk_size === def.retain_chunk_size &&
       (have.retain_custom_instructions === LEGACY_CONVERSATION_INSTRUCTIONS ||
-        have.retain_custom_instructions === PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS)
+        have.retain_custom_instructions === PRE_TEMPORAL_CONVERSATION_INSTRUCTIONS ||
+        have.retain_custom_instructions === PRE_REUSABLE_EXPERIENCE_INSTRUCTIONS)
     ) {
       // Upgrade only exact prompts previously emitted by this plugin. An owner-edited mission,
       // mode, chunk size or instruction set remains unchanged.
-      updates[name] = { ...have, retain_custom_instructions: def.retain_custom_instructions };
+      updates[name] = {
+        ...have,
+        retain_mission: CONVERSATION_MISSION,
+        retain_custom_instructions: def.retain_custom_instructions,
+      };
     } else if (
       name === "conversation" &&
       def.retain_extraction_mode === "custom" &&

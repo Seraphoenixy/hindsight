@@ -8,6 +8,9 @@ snapshot never breaks the scrape.
 import os
 import time
 
+import pytest
+
+pytest.importorskip("fcntl", reason="POSIX only (fcntl)")
 from prometheus_client import CollectorRegistry, Counter, Histogram
 from prometheus_client.parser import text_string_to_metric_families
 

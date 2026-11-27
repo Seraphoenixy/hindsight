@@ -351,7 +351,13 @@
     "hintPagesInSync": "Seiten, die jede neue Erinnerung in ihrem Bereich gelesen haben.",
     "hintPagesStale": "Seiten mit neuen Erinnerungen in ihrem Bereich seit der letzten Aktualisierung. Sie holen bei der nächsten Aktualisierung auf.",
     "hintPagesFailed": "Seiten, deren letzte Aktualisierung fehlgeschlagen ist. Automatische Aktualisierungen bleiben pausiert, bis du sie manuell aktualisierst.",
-    "hintPagesLast": "Die jüngste Aktualisierung einer beliebigen Seite."
+    "hintPagesLast": "Die jüngste Aktualisierung einer beliebigen Seite.",
+    "noStorageYet": "Noch kein Speicherplatz belegt",
+    "storageAuditLogs": "Audit-Protokolle",
+    "storageBreakdown": "Speicheraufschlüsselung",
+    "storageChunks": "Chunks",
+    "storageSize": "Speicher",
+    "storageInvalidatedMemories": "Ungültige Erinnerungen"
   },
   "bankConfig": {
     "noBankSelected": "Keine Bank ausgewählt",
@@ -876,7 +882,15 @@
     "scopeNoResults": "Keine Bereiche gefunden",
     "filterActive": "Aktiv",
     "filterInvalidated": "Ungültig",
-    "invalidatedHint": "Ungültig gemachte Erinnerungen werden archiviert – aus Recall und Reflect ausgeblendet, aber zu Prüfzwecken aufbewahrt."
+    "invalidatedHint": "Ungültig gemachte Erinnerungen werden archiviert – aus Recall und Reflect ausgeblendet, aber zu Prüfzwecken aufbewahrt.",
+    "clearInvalidatedButton": "Alle leeren",
+    "clearInvalidatedCancel": "Abbrechen",
+    "clearInvalidatedConfirm": "Dauerhaft löschen",
+    "clearInvalidatedDialogDescription": "Ungültige Erinnerungen dauerhaft aus dem Archiv löschen. Diese Aktion kann nicht rückgängig gemacht werden.",
+    "clearInvalidatedDialogTitle": "Ungültige Erinnerungen löschen",
+    "clearInvalidatedScope30d": "Älter als 30 Tage",
+    "clearInvalidatedScope7d": "Älter als 7 Tage",
+    "clearInvalidatedScopeAll": "Alle ungültigen Erinnerungen"
   },
   "documentsView": {
     "loadingDocuments": "Dokumente werden geladen...",
@@ -1308,7 +1322,9 @@
     "observationTagsField": "Tags",
     "observationSourceMemoriesField": "Quellerinnerungen ({count})",
     "observationIdField": "ID",
-    "structuredOutputTitle": "Strukturierte Ausgabe"
+    "structuredOutputTitle": "Strukturierte Ausgabe",
+    "helpReasoning": "Modell-Reasoning für tiefere Synthese aktivieren (standardmäßig deaktiviert für schnellere Antworten).",
+    "reasoningLabel": "Reasoning"
   },
   "searchDebug": {
     "noBankSelected": "Keine Bank ausgewählt",
@@ -1390,7 +1406,9 @@
     "temporalWindowTo": "bis",
     "temporalWindowClear": "Leeren",
     "temporalWindowHint": "Überspringt die Datumserkennung in der Abfrage und stuft Erinnerungen aus diesem Zeitraum höher ein. Erinnerungen außerhalb werden nicht ausgeblendet. Zeiten gelten als UTC; beide Enden setzen, damit es wirkt.",
-    "temporalWindowReversed": "Das Ende des Zeitfensters liegt vor seinem Beginn."
+    "temporalWindowReversed": "Das Ende des Zeitfensters liegt vor seinem Beginn.",
+    "helpReasoning": "Modell-Reasoning für tiefere Synthese aktivieren (standardmäßig deaktiviert für schnellere Antworten).",
+    "reasoningLabel": "Reasoning"
   },
   "webhooksView": {
     "title": "Webhooks",
@@ -1565,7 +1583,15 @@
     "detailRequest": "Anfrage",
     "detailResponse": "Antwort",
     "detailMetadata": "Metadaten",
-    "entryCount": "{count, plural, one {# Eintrag} other {# Einträge}}"
+    "entryCount": "{count, plural, one {# Eintrag} other {# Einträge}}",
+    "clearButton": "Protokolle löschen",
+    "clearCancel": "Abbrechen",
+    "clearConfirm": "Löschen",
+    "clearDialogDescription": "Audit-Protokolleinträge für diese Speicherbank löschen. Diese Aktion kann nicht rückgängig gemacht werden.",
+    "clearDialogTitle": "Audit-Protokolle löschen",
+    "clearScope30d": "Älter als 30 Tage",
+    "clearScope7d": "Älter als 7 Tage",
+    "clearScopeAll": "Alle Audit-Protokolle"
   },
   "llmRequestsView": {
     "metricCalls": "Aufrufe",
@@ -1806,7 +1832,8 @@
     "editFieldMentionedAt": "Erwähnt",
     "editFieldOccurredEnd": "Enddatum",
     "editFieldOccurredStart": "Startdatum",
-    "editFieldType": "Typ"
+    "editFieldType": "Typ",
+    "curationDelete": "Löschen"
   },
   "documentChunkModal": {
     "documentTitle": "Dokumentdetails",
@@ -2221,7 +2248,8 @@
       "auditLogs": {
         "list": "Audit-Protokolle konnten nicht aufgelistet werden",
         "stats": "Audit-Protokollstatistiken konnten nicht abgerufen werden",
-        "get": "Audit-Protokolleintrag konnte nicht abgerufen werden"
+        "get": "Audit-Protokolleintrag konnte nicht abgerufen werden",
+        "clear": "Fehler beim Löschen der Audit-Protokolle"
       },
       "llmRequests": {
         "list": "LLM Requests konnten nicht aufgelistet werden",

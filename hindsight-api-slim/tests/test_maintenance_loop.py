@@ -31,6 +31,7 @@ def _tick_cfg(**overrides):
         "audit_log_retention_days": 0,
         "llm_trace_enabled": False,
         "llm_trace_retention_days": 0,
+        "document_text_retention_days": 0,
         "mental_model_refresh_tick_seconds": 0,
         "retention_sweep_interval_seconds": 3600,
         "operation_retention_days": 0,
@@ -73,6 +74,149 @@ async def test_retention_sweep_cadence_is_configurable(monkeypatch):
     cfg.retention_sweep_interval_seconds = 3600
     await loop._tick()
     loop._run_retention.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_document_text_aging_gating_and_retention_call(monkeypatch):
+    """document_text_retention_days > 0 enables _any_job_enabled() and runs _run_document_text_aging."""
+    from unittest.mock import AsyncMock
+
+    import hindsight_api.engine.maintenance as maintenance_mod
+
+    cfg = _tick_cfg(document_text_retention_days=0, retention_sweep_interval_seconds=3600)
+    monkeypatch.setattr(maintenance_mod, "get_config", lambda: cfg)
+    assert MaintenanceLoop._any_job_enabled() is False
+
+    cfg.document_text_retention_days = 30
+    assert MaintenanceLoop._any_job_enabled() is True
+
+    loop = MaintenanceLoop(engine=None)
+    loop._run_document_text_aging = AsyncMock(return_value=0)
+    await loop._run_retention(cfg)
+    loop._run_document_text_aging.assert_awaited_once_with(30)
+
+
+@pytest.mark.asyncio
+async def test_document_text_aging_executes_expected_sql_order(monkeypatch):
+    """PostgresMemories.prune_expired_document_text clears chunk_id before deleting chunks and nulling original_text."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import hindsight_api.engine.maintenance as maintenance_mod
+    from hindsight_api.engine.memories.postgres import PostgresMemories
+
+    monkeypatch.setattr(maintenance_mod, "get_config", lambda: SimpleNamespace(database_schema="public"))
+
+    executed_sql: list[str] = []
+
+    class _FakeConn:
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        async def fetch(self, sql, *args):
+            executed_sql.append(sql)
+            return [{"id": "doc-1", "bank_id": "bank-a"}]
+
+        async def execute(self, sql, *args):
+            executed_sql.append(sql)
+
+    @asynccontextmanager
+    async def _fake_acquire(_backend, max_retries=1):
+        yield _FakeConn()
+
+    monkeypatch.setattr(maintenance_mod, "acquire_with_retry", _fake_acquire)
+    pg_store = PostgresMemories({})
+    monkeypatch.setattr("hindsight_api.engine.memories.get_memories", lambda: pg_store)
+
+    engine = SimpleNamespace(
+        _backend=object(),
+        _tenant_extension=SimpleNamespace(list_tenants=AsyncMock(return_value=[])),
+    )
+    loop = MaintenanceLoop(engine=engine)
+    pruned = await loop._run_document_text_aging(days=30, batch_size=50)
+
+    assert pruned == 1
+    assert len(executed_sql) == 5
+    assert "FROM" in executed_sql[0] and "FOR UPDATE SKIP LOCKED" in executed_sql[0]
+    assert "SET document_id = NULL" in executed_sql[1] and "chunk_id = NULL" in executed_sql[1]
+    assert "SET document_id = NULL" in executed_sql[2] and "invalidated_memory_units" in executed_sql[2]
+    assert "DELETE FROM" in executed_sql[3] and "chunks" in executed_sql[3]
+    assert "DELETE FROM" in executed_sql[4] and "documents" in executed_sql[4]
+
+
+@pytest.mark.asyncio
+async def test_document_text_aging_prunes_expired_text_and_chunks_keeps_facts(memory, request_context, monkeypatch):
+    """Expired documents detach live/archived facts to standalone units and delete documents + chunks."""
+    from datetime import datetime, timedelta, timezone
+
+    from hindsight_api.engine.db_utils import acquire_with_retry
+    from hindsight_api.engine.memory_engine import fq_table
+
+    bank_id = f"doc_aging_{uuid.uuid4().hex[:8]}"
+    await memory.retain_async(
+        bank_id=bank_id,
+        content="Old raw document body for aging test.",
+        document_id="old-doc",
+        request_context=request_context,
+    )
+    await memory.retain_async(
+        bank_id=bank_id,
+        content="Fresh raw document body for aging test.",
+        document_id="fresh-doc",
+        request_context=request_context,
+    )
+
+    old_ts = datetime.now(timezone.utc) - timedelta(days=35)
+    async with acquire_with_retry(memory._backend) as conn:
+        old_unit_ids = [
+            r["id"]
+            for r in await conn.fetch(
+                f"SELECT id FROM {fq_table('memory_units')} WHERE bank_id = $1 AND document_id = 'old-doc'",
+                bank_id,
+            )
+        ]
+        assert len(old_unit_ids) >= 1
+        await conn.execute(
+            f"UPDATE {fq_table('documents')} SET updated_at = $1, created_at = $1 WHERE bank_id = $2 AND id = 'old-doc'",
+            old_ts,
+            bank_id,
+        )
+
+    loop = MaintenanceLoop(engine=memory)
+    pruned = await loop._run_document_text_aging(days=30, batch_size=50)
+    assert pruned >= 1
+
+    async with acquire_with_retry(memory._backend) as conn:
+        old_doc = await conn.fetchrow(
+            f"SELECT id FROM {fq_table('documents')} WHERE bank_id = $1 AND id = 'old-doc'",
+            bank_id,
+        )
+        fresh_doc = await conn.fetchrow(
+            f"SELECT original_text FROM {fq_table('documents')} WHERE bank_id = $1 AND id = 'fresh-doc'",
+            bank_id,
+        )
+        old_chunks = await conn.fetchval(
+            f"SELECT count(*) FROM {fq_table('chunks')} WHERE bank_id = $1 AND document_id = 'old-doc'",
+            bank_id,
+        )
+        fresh_chunks = await conn.fetchval(
+            f"SELECT count(*) FROM {fq_table('chunks')} WHERE bank_id = $1 AND document_id = 'fresh-doc'",
+            bank_id,
+        )
+        detached_units = await conn.fetch(
+            f"SELECT id, document_id, chunk_id FROM {fq_table('memory_units')} WHERE bank_id = $1 AND id = ANY($2::uuid[])",
+            bank_id,
+            old_unit_ids,
+        )
+
+    assert old_doc is None
+    assert old_chunks == 0
+    assert len(detached_units) == len(old_unit_ids)
+    assert all(row["document_id"] is None and row["chunk_id"] is None for row in detached_units)
+    assert fresh_doc is not None and fresh_doc["original_text"] is not None
+    assert fresh_chunks >= 1
 
 
 class TestStartJitter:

@@ -351,7 +351,13 @@
     "hintPagesInSync": "対象範囲の新しいメモリをすべて読み込んだページ。",
     "hintPagesStale": "前回の更新以降、対象範囲に新しいメモリがあるページ。次回の更新で追いつきます。",
     "hintPagesFailed": "前回の更新に失敗したページ。手動で更新するまで自動更新は停止します。",
-    "hintPagesLast": "いずれかのページの最新の更新日時。"
+    "hintPagesLast": "いずれかのページの最新の更新日時。",
+    "noStorageYet": "使用中のストレージはまだありません",
+    "storageAuditLogs": "監査ログ",
+    "storageBreakdown": "ストレージ内訳",
+    "storageChunks": "チャンク",
+    "storageSize": "ストレージ",
+    "storageInvalidatedMemories": "無効化されたメモリ"
   },
   "bankConfig": {
     "noBankSelected": "バンクが選択されていません",
@@ -876,7 +882,15 @@
     "scopeNoResults": "スコープが見つかりません",
     "filterActive": "有効",
     "filterInvalidated": "無効化済み",
-    "invalidatedHint": "無効化されたメモリはアーカイブされ、recall と reflect には表示されませんが、監査のために保持されます。"
+    "invalidatedHint": "無効化されたメモリはアーカイブされ、recall と reflect には表示されませんが、監査のために保持されます。",
+    "clearInvalidatedButton": "すべて消去",
+    "clearInvalidatedCancel": "キャンセル",
+    "clearInvalidatedConfirm": "完全に削除",
+    "clearInvalidatedDialogDescription": "アーカイブから無効化されたメモリを完全に削除します。この操作は取り消せません。",
+    "clearInvalidatedDialogTitle": "無効化されたメモリを消去",
+    "clearInvalidatedScope30d": "30日以上前",
+    "clearInvalidatedScope7d": "7日以上前",
+    "clearInvalidatedScopeAll": "すべての無効化されたメモリ"
   },
   "documentsView": {
     "loadingDocuments": "ドキュメントを読み込み中...",
@@ -1308,7 +1322,9 @@
     "observationTagsField": "タグ",
     "observationSourceMemoriesField": "ソースメモリ（{count}件）",
     "observationIdField": "ID",
-    "structuredOutputTitle": "構造化出力"
+    "structuredOutputTitle": "構造化出力",
+    "helpReasoning": "より深い統合のためにモデル推論を有効にします（高速応答のためデフォルトではオフ）。",
+    "reasoningLabel": "推論"
   },
   "searchDebug": {
     "noBankSelected": "バンクが選択されていません",
@@ -1390,7 +1406,9 @@
     "temporalWindowTo": "〜",
     "temporalWindowClear": "クリア",
     "temporalWindowHint": "クエリからの日付抽出を省略し、この期間の記憶を上位に表示します。期間外の記憶が隠れることはありません。時刻は UTC として扱われ、両端を指定すると適用されます。",
-    "temporalWindowReversed": "期間の終了が開始より前になっています。"
+    "temporalWindowReversed": "期間の終了が開始より前になっています。",
+    "helpReasoning": "より深い統合のためにモデル推論を有効にします（高速応答のためデフォルトではオフ）。",
+    "reasoningLabel": "推論"
   },
   "webhooksView": {
     "title": "Webhooks",
@@ -1565,7 +1583,15 @@
     "detailRequest": "リクエスト",
     "detailResponse": "レスポンス",
     "detailMetadata": "メタデータ",
-    "entryCount": "{count, plural, other {#件のエントリ}}"
+    "entryCount": "{count, plural, other {#件のエントリ}}",
+    "clearButton": "ログを消去",
+    "clearCancel": "キャンセル",
+    "clearConfirm": "削除",
+    "clearDialogDescription": "このメモリバンクの監査ログエントリを削除します。この操作は取り消せません。",
+    "clearDialogTitle": "監査ログを消去",
+    "clearScope30d": "30日以上前",
+    "clearScope7d": "7日以上前",
+    "clearScopeAll": "すべての監査ログ"
   },
   "llmRequestsView": {
     "metricCalls": "呼び出し数",
@@ -1806,7 +1832,8 @@
     "editFieldMentionedAt": "言及日",
     "editFieldOccurredEnd": "終了日",
     "editFieldOccurredStart": "開始日",
-    "editFieldType": "タイプ"
+    "editFieldType": "タイプ",
+    "curationDelete": "削除"
   },
   "documentChunkModal": {
     "documentTitle": "ドキュメント詳細",
@@ -2221,7 +2248,8 @@
       "auditLogs": {
         "list": "監査ログの一覧取得に失敗しました",
         "stats": "監査ログ統計の取得に失敗しました",
-        "get": "監査ログエントリの取得に失敗しました"
+        "get": "監査ログエントリの取得に失敗しました",
+        "clear": "監査ログの消去に失敗しました"
       },
       "llmRequests": {
         "list": "LLMリクエストの一覧取得に失敗しました",

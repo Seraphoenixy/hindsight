@@ -48,6 +48,7 @@ from .base import (
     MemoryLocation,
     MemoryPatch,
     MemoryScopeWatermark,
+    MemoryUpdateCursor,
     ObservationChunkIds,
     RecallArms,
     RelabelResult,
@@ -528,6 +529,7 @@ class PostgresMemories(MemoriesExtension):
         until: datetime,
         since: datetime,
         limit: int,
+        after: MemoryUpdateCursor | None = None,
         fact_types: list[str] | None = None,
         tags: list[str] | None = None,
         tags_match: TagsMatch = "any",
@@ -540,6 +542,7 @@ class PostgresMemories(MemoriesExtension):
             until=until,
             since=since,
             limit=limit,
+            after=after,
             fact_types=fact_types,
             tags=tags,
             tags_match=tags_match,
@@ -689,6 +692,22 @@ class PostgresMemories(MemoriesExtension):
 
     async def restore_memory(self, *, conn, fq_table, bank_id: str, unit_id: str) -> StoredMemory | None:
         return await writes.restore_memory(conn=conn, fq_table=fq_store_table, bank_id=bank_id, unit_id=unit_id)
+
+    async def delete_archived_memory(self, *, conn, fq_table, bank_id: str, unit_id: str) -> bool:
+        return await writes.delete_archived_memory(conn=conn, fq_table=fq_store_table, bank_id=bank_id, unit_id=unit_id)
+
+    async def clear_archived_memories(
+        self,
+        *,
+        conn,
+        fq_table,
+        bank_id: str,
+        before: datetime | None = None,
+        fact_type: str | None = None,
+    ) -> list[tuple[str, str | None]]:
+        return await writes.clear_archived_memories(
+            conn=conn, fq_table=fq_store_table, bank_id=bank_id, before=before, fact_type=fact_type
+        )
 
     async def set_memory_embedding(self, *, conn, fq_table, bank_id: str, unit_id: str, embedding) -> None:
         await writes.set_memory_embedding(
@@ -1158,6 +1177,9 @@ class PostgresMemories(MemoriesExtension):
     async def count_bank_documents(self, *, conn, fq_table, bank_id: str) -> int:
         return await engine_curation.count_bank_documents(conn=conn, fq_table=fq_store_table, bank_id=bank_id)
 
+    async def bank_storage_bytes(self, *, conn, fq_table, bank_id: str) -> dict[str, int]:
+        return await counts.bank_storage_bytes(conn=conn, fq_table=fq_store_table, bank_id=bank_id)
+
     async def get_entity_detail(
         self,
         *,
@@ -1286,6 +1308,118 @@ class PostgresMemories(MemoriesExtension):
             document_tags=document_tags,
             preserved_created_at=preserved_created_at,
         )
+
+    async def prune_expired_document_text(
+        self,
+        *,
+        conn,
+        cutoff: datetime,
+        batch_size: int = 200,
+    ) -> int:
+        """Detach extracted memories from expired documents and delete the document + chunks.
+
+        Clears ``document_id`` and ``chunk_id`` on both ``memory_units`` and
+        ``invalidated_memory_units`` so extracted/archived facts become standalone
+        memories before deleting ``chunks`` and ``documents`` (letting sync triggers
+        emit standalone ``memory_unit`` upserts and a ``document`` delete).
+        """
+        docs = fq_store_table("documents")
+        chunks_tbl = fq_store_table("chunks")
+        mu = fq_store_table("memory_units")
+        arch = fq_store_table("invalidated_memory_units")
+        rows = await conn.fetch(
+            f"""
+            SELECT id, bank_id
+            FROM {docs}
+            WHERE content_hash IS DISTINCT FROM '__pending__'
+              AND COALESCE(updated_at, created_at) < $1
+            ORDER BY COALESCE(updated_at, created_at) ASC, bank_id ASC, id ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            """,
+            cutoff,
+            batch_size,
+        )
+        if not rows:
+            return 0
+        doc_ids = [r["id"] for r in rows]
+        bank_ids = [r["bank_id"] for r in rows]
+        await conn.execute(
+            f"""
+            UPDATE {mu} AS m
+            SET document_id = NULL,
+                chunk_id = NULL
+            FROM UNNEST($1::text[], $2::text[]) AS t(d_id, b_id)
+            WHERE m.document_id = t.d_id
+              AND m.bank_id = t.b_id
+            """,
+            doc_ids,
+            bank_ids,
+        )
+        await conn.execute(
+            f"""
+            UPDATE {arch} AS a
+            SET document_id = NULL,
+                chunk_id = NULL
+            FROM UNNEST($1::text[], $2::text[]) AS t(d_id, b_id)
+            WHERE a.document_id = t.d_id
+              AND a.bank_id = t.b_id
+            """,
+            doc_ids,
+            bank_ids,
+        )
+        await conn.execute(
+            f"""
+            DELETE FROM {chunks_tbl} AS c
+            USING UNNEST($1::text[], $2::text[]) AS t(d_id, b_id)
+            WHERE c.document_id = t.d_id
+              AND c.bank_id = t.b_id
+            """,
+            doc_ids,
+            bank_ids,
+        )
+        await conn.execute(
+            f"""
+            DELETE FROM {docs} AS d
+            USING UNNEST($1::text[], $2::text[]) AS t(d_id, b_id)
+            WHERE d.id = t.d_id
+              AND d.bank_id = t.b_id
+            """,
+            doc_ids,
+            bank_ids,
+        )
+        return len(rows)
+
+    async def prune_expired_invalidated_memories(
+        self,
+        *,
+        conn,
+        cutoff: datetime,
+        batch_size: int = 500,
+    ) -> int:
+        """Delete archived rows in ``invalidated_memory_units`` with ``invalidated_at < cutoff``."""
+        arch = fq_store_table("invalidated_memory_units")
+        removed = await conn.fetchval(
+            f"""
+            WITH expired AS (
+                SELECT id, bank_id
+                FROM {arch}
+                WHERE invalidated_at < $1
+                ORDER BY invalidated_at ASC, bank_id ASC, id ASC
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+            ), removed AS (
+                DELETE FROM {arch} t
+                USING expired e
+                WHERE t.id = e.id AND t.bank_id = e.bank_id
+                RETURNING 1
+            )
+            SELECT count(*) FROM removed
+            """,
+            cutoff,
+            batch_size,
+        )
+        return int(removed or 0)
 
     async def relabel_document_memories(
         self,
@@ -1917,7 +2051,15 @@ class PostgresMemories(MemoriesExtension):
             payload=payload,
         )
 
-    async def sync_delete_document(self, *, conn, schema: str, bank_id: str, document_id: str) -> None:
+    async def sync_delete_document(
+        self,
+        *,
+        conn,
+        schema: str,
+        bank_id: str,
+        document_id: str,
+        preserve_unit_ids: set[str] | None = None,
+    ) -> None:
         """Delete one synced document aggregate from ``schema``."""
         from ..schema import fq_table_explicit
 
@@ -1928,6 +2070,7 @@ class PostgresMemories(MemoriesExtension):
             fq_non_store_table=lambda t: fq_table_explicit(t, schema),
             bank_id=bank_id,
             document_id=document_id,
+            preserve_unit_ids=preserve_unit_ids,
         )
 
     async def sync_export_memory_unit(self, *, conn, schema: str, bank_id: str, unit_id: str) -> dict[str, Any] | None:
@@ -2005,6 +2148,16 @@ class PostgresMemories(MemoriesExtension):
             fq_non_store_table=lambda t: fq_table_explicit(t, schema),
             bank_id=bank_id,
             observation_id=observation_id,
+        )
+
+    async def sync_rebuild_entity_indexes(self, *, conn, schema: str, bank_id: str) -> None:
+        """Repair derived entity indexes after a PostgreSQL object-sync batch."""
+        from .pg.entity_statistics import rebuild_entity_indexes
+
+        await rebuild_entity_indexes(
+            conn=conn,
+            fq_table=lambda t: fq_store_table_explicit(t, schema),
+            bank_id=bank_id,
         )
 
     async def sync_apply_bank_stub(self, *, conn, schema: str | None, bank_id: str) -> None:

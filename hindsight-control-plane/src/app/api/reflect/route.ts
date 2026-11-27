@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
     exclude_mental_models,
     exclude_mental_model_ids,
     response_schema,
+    reasoning_effort,
     reflect_search_observations_max_tokens,
     reflect_search_observations_include_entities,
     reflect_search_mental_models_max_tokens,
@@ -49,6 +50,7 @@ export async function POST(request: NextRequest) {
     exclude_mental_models: exclude_mental_models || undefined,
     exclude_mental_model_ids: exclude_mental_model_ids || undefined,
     response_schema: response_schema || undefined,
+    reasoning_effort: reasoning_effort || undefined,
     reflect_search_observations_max_tokens: reflect_search_observations_max_tokens || undefined,
     reflect_search_observations_include_entities:
       reflect_search_observations_include_entities ?? undefined,

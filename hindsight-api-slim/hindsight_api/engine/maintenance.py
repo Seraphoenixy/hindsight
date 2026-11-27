@@ -220,10 +220,21 @@ class MaintenanceLoop:
         sweep_on = cfg.retention_sweep_interval_seconds > 0
         audit_on = sweep_on and cfg.audit_log_retention_days > 0
         llm_on = sweep_on and cfg.llm_trace_enabled and cfg.llm_trace_retention_days > 0
+        doc_aging_on = sweep_on and getattr(cfg, "document_text_retention_days", 0) > 0
+        inv_memory_on = sweep_on and getattr(cfg, "invalidated_memory_retention_days", 0) > 0
         mm_refresh_on = cfg.mental_model_refresh_tick_seconds > 0
         op_cleanup_on = cfg.operation_cleanup_interval_seconds > 0 and cfg.operation_retention_days > 0
         attachment_sweep_on = cfg.attachment_sweep_interval_seconds > 0
-        return reconcile_on or audit_on or llm_on or mm_refresh_on or op_cleanup_on or attachment_sweep_on
+        return (
+            reconcile_on
+            or audit_on
+            or llm_on
+            or doc_aging_on
+            or inv_memory_on
+            or mm_refresh_on
+            or op_cleanup_on
+            or attachment_sweep_on
+        )
 
     # ── loop ───────────────────────────────────────────────────────────────
 
@@ -315,6 +326,98 @@ class MaintenanceLoop:
             await self._purge_expired("audit_log", "started_at", cfg.audit_log_retention_days)
         if cfg.llm_trace_enabled and cfg.llm_trace_retention_days > 0:
             await self._purge_expired("llm_requests", "started_at", cfg.llm_trace_retention_days)
+        doc_days = getattr(cfg, "document_text_retention_days", 0)
+        if doc_days > 0:
+            await self._run_document_text_aging(doc_days)
+        inv_days = getattr(cfg, "invalidated_memory_retention_days", 0)
+        if inv_days > 0:
+            await self._run_invalidated_memory_cleanup(inv_days)
+
+    async def _run_document_text_aging(self, days: int, batch_size: int = 200) -> int:
+        """Prune ``original_text`` and ``chunks`` for documents older than ``days`` across tenants."""
+        from .memories import get_memories
+
+        engine = self._engine
+        backend = engine._backend
+        try:
+            tenants = await engine._tenant_extension.list_tenants()
+        except Exception as e:
+            logger.warning(f"Document aging tenant discovery failed: {e}")
+            return 0
+        schemas = list(dict.fromkeys([*(t.schema for t in tenants), get_config().database_schema]))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        memories = get_memories()
+        pruned_total = 0
+
+        for schema in schemas:
+            token = _current_schema.set(schema)
+            try:
+                async with acquire_with_retry(backend, max_retries=1) as conn:
+                    async with conn.transaction():
+                        pruned = await memories.prune_expired_document_text(
+                            conn=conn,
+                            cutoff=cutoff,
+                            batch_size=batch_size,
+                        )
+                if pruned:
+                    pruned_total += pruned
+                    logger.info(f"Document aging pruned raw text for {pruned} documents in {schema}")
+            except Exception as e:
+                logger.warning(f"Document aging failed for schema {schema}: {e}")
+            finally:
+                _current_schema.reset(token)
+        if pruned_total:
+            notifier = getattr(engine, "notify_sync_local_write", None)
+            if notifier is not None:
+                notifier()
+        return pruned_total
+
+    async def _run_invalidated_memory_cleanup(self, days: int, batch_size: int = 500) -> int:
+        """Delete archived rows in ``invalidated_memory_units`` older than ``days`` across tenants."""
+        from .memories import get_memories
+
+        engine = self._engine
+        backend = engine._backend
+        try:
+            tenants = await engine._tenant_extension.list_tenants()
+        except Exception as e:
+            logger.warning(f"Archived memory cleanup tenant discovery failed: {e}")
+            return 0
+        schemas = list(dict.fromkeys([*(t.schema for t in tenants), get_config().database_schema]))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        memories = get_memories()
+        pruned_total = 0
+
+        for schema in schemas:
+            token = _current_schema.set(schema)
+            try:
+                schema_pruned = 0
+                for batch in range(_RETENTION_MAX_BATCHES):
+                    if self._stop.is_set():
+                        break
+                    if batch:
+                        await asyncio.sleep(_RETENTION_BATCH_PAUSE_SECONDS)
+                    async with acquire_with_retry(backend, max_retries=1) as conn, conn.transaction():
+                        pruned = await memories.prune_expired_invalidated_memories(
+                            conn=conn,
+                            cutoff=cutoff,
+                            batch_size=batch_size,
+                        )
+                    schema_pruned += pruned
+                    if pruned < batch_size:
+                        break
+                if schema_pruned:
+                    pruned_total += schema_pruned
+                    logger.info(f"Archived memory cleanup deleted {schema_pruned} expired rows in {schema}")
+            except Exception as e:
+                logger.warning(f"Archived memory cleanup failed for schema {schema}: {e}")
+            finally:
+                _current_schema.reset(token)
+        if pruned_total:
+            notifier = getattr(engine, "notify_sync_local_write", None)
+            if notifier is not None:
+                notifier()
+        return pruned_total
 
     async def _purge_expired(self, table: str, ts_col: str, days: int) -> int:
         """Delete rows older than ``days`` from ``table`` across every tenant schema.

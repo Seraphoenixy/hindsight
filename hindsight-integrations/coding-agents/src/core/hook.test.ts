@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
 import { buildHookOutput, runHook } from "./hook";
 import { diagFilePath, readHookEvent } from "./diag";
+import { readActiveWorkspace } from "./session-cache";
 import { journalPath, readJournalTranscript } from "./turn-journal";
 
 let root: string;
@@ -367,6 +368,39 @@ describe("buildHookOutput", () => {
     expect((recallObservations.mock.calls.at(-1)![0] as string).length).toBe(1000);
   });
 
+  it("injectQueryMaxChars caps what pages and recall search with, never the reflect goal (#5089)", async () => {
+    const recallObservations = vi.fn(
+      async (_q: string, _o: { timeoutMs: number }) => [] as string[]
+    );
+    const searchPages = vi.fn(
+      async (_q: string, _o?: { timeoutMs?: number }) =>
+        [] as { id: string; name: string; snippet: string }[]
+    );
+    const client = makeClient({ recallObservations, searchPages });
+    const prompt = "🧠".repeat(10) + "word ".repeat(400);
+    const run = async (raw: Parameters<typeof resolveConfig>[0]) => {
+      rmSync(cacheFile, { force: true });
+      await buildHookOutput({
+        harness: "claude-code",
+        prompt,
+        cfg: resolveConfig(raw),
+        client,
+        cacheFile,
+      });
+    };
+    await run({ autoInject: "recall", injectQueryMaxChars: 5 });
+    // Code points, so the emoji pair is never split.
+    expect(recallObservations.mock.calls.at(-1)![0]).toBe("🧠".repeat(5));
+    await run({ autoInject: "pages", injectQueryMaxChars: 30 });
+    expect(searchPages.mock.calls.at(-1)![0]).toBe(Array.from(prompt).slice(0, 30).join(""));
+    // A cap above the built-in bounds changes nothing.
+    await run({ autoInject: "pages", injectQueryMaxChars: 100_000 });
+    expect(searchPages.mock.calls.at(-1)![0]).toBe(prompt.slice(0, 500));
+    // Unset = today's query.
+    await run({ autoInject: "pages" });
+    expect(searchPages.mock.calls.at(-1)![0]).toBe(prompt.slice(0, 500));
+  });
+
   it("autoInject recall: injects recalled observations, never reflects or searches pages", async () => {
     const client = makeClient({
       recallObservations: vi.fn(async () => ["Uploads retry 3 times."]),
@@ -697,6 +731,11 @@ describe("runHook prompt cleaning (#6488)", () => {
     const recovered = await run("why does upload retry fail again?");
     expect(recovered.recallObservations).toHaveBeenCalledOnce();
     expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("records the active workspace for MCP fallback resolution", async () => {
+    await run("check active workspace recording");
+    expect(readActiveWorkspace(spec.harness)).toBe(root);
   });
 });
 

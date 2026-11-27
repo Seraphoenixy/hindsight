@@ -422,6 +422,7 @@ class SQLDialect(ABC):
         pg_search_tokenizer: str = "",
         max_query_terms: int = 0,
         extra_where: str = "",
+        has_cjk: bool = False,
     ) -> str:
         """Build a BM25/full-text search subquery arm.
 

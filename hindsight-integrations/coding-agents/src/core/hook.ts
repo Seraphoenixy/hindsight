@@ -44,6 +44,7 @@ import type { PageRef } from "./page-injection";
 import { buildRosterRefresh, parsePageList } from "./page-injection";
 import {
   readSessionCache,
+  recordActiveWorkspace,
   sessionCacheFile,
   sessionRootDir,
   sessionRetainBlocked,
@@ -248,6 +249,8 @@ export async function buildHookOutput(args: {
   // answer is not a failure: a source can legitimately have nothing to say on a sparse bank.
   let injectionFailed = false;
   const deferInitialInjection = cached.deferInitialReflect === true;
+  const max = cfg.injectQueryMaxChars;
+  const query = max === undefined ? prompt : Array.from(prompt).slice(0, max).join("");
   if (deferInitialInjection) {
     // A new bank has no useful history yet. Skip prompt one; this marker is deliberately consumed
     // below so prompt two remains eligible.
@@ -257,7 +260,7 @@ export async function buildHookOutput(args: {
     injectionAttempts++;
     const got = await injectPages(
       harness,
-      prompt,
+      query,
       client,
       cfg.injectTimeoutMs,
       "inject_pages",
@@ -271,7 +274,7 @@ export async function buildHookOutput(args: {
     injectionAttempts++;
     const got = await injectRecall(
       harness,
-      prompt,
+      query,
       client,
       cfg.injectTimeoutMs,
       "inject_recall",
@@ -422,6 +425,7 @@ export async function runHook(
   const sessionRoot = sessionRootDir(spec.harness, sessionId, cwd);
   const derived = deriveBankIdOrSkip(cfg, cwd, spec.harness, sessionRoot);
   if (derived === null) return; // repository unidentifiable: stay silent rather than invent a bank
+  recordActiveWorkspace(spec.harness, sessionRoot);
   const resolved = applyBankConfig(cfg, derived, cwd, sessionRoot);
   cfg = resolved.cfg;
   const bankId = resolved.bankId;
@@ -438,6 +442,7 @@ export async function runHook(
   const client = makeClient({
     apiUrl: cfg.apiUrl,
     apiToken: cfg.apiToken,
+    headers: cfg.apiHeaders,
     bank: bankId,
     projectScope: cfg.projectScope,
     maxParallelRetains: cfg.maxParallelRetains,
@@ -461,7 +466,6 @@ export async function runHook(
     cfg,
     client,
     cacheFile,
-    cwd,
   });
   // Mid-session heal: a bank with ZERO pages means the engine never built it (e.g. the session
   // predates the install, so no SessionStart and the first-prompt net already passed). Fire the

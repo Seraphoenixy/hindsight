@@ -369,6 +369,7 @@ class PostgreSQLDialect(SQLDialect):
         pg_search_tokenizer: str = "",
         max_query_terms: int = 0,
         extra_where: str = "",
+        has_cjk: bool = False,
     ) -> str:
         # Whether the branch's own WHERE enforces ``bm25_min_score``. Branches that
         # cannot (their score is only valid in the target list, or re-evaluating it
@@ -428,6 +429,29 @@ class PostgreSQLDialect(SQLDialect):
                 pg_search_function_schema, ("text", "text_signals"), text_param, pg_search_tokenizer, max_query_terms
             )
             bm25_where_filter = f"AND id @@@ {pg_search_function_schema}.boolean(should => {should})"
+        elif has_cjk:
+            # PostgreSQL native tsvector ('english') does not segment CJK text;
+            # score phrase + bigram matches via ILIKE over pipe-delimited terms in text_param.
+            # Quadratic length weighting (length^2) strongly prefers full-phrase matches over
+            # single 2-char bigrams, and for 3+ term queries requires score >= 8.0 (a 3+ char
+            # phrase or at least two 2-char bigrams) to suppress single-bigram noise.
+            bm25_score_expr = (
+                f"(SELECT COALESCE(SUM("
+                f"CASE WHEN text ILIKE '%' || replace(replace(t.term, '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\' "
+                f"THEN power(length(t.term)::float, 2) ELSE 0.0 END + "
+                f"CASE WHEN COALESCE(context, '') ILIKE '%' || replace(replace(t.term, '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\' "
+                f"THEN power(length(t.term)::float, 2) * 0.5 ELSE 0.0 END"
+                f"), 0.0) FROM unnest(string_to_array({text_param}, '|')) AS t(term) WHERE t.term <> '')"
+            )
+            bm25_order_by = f"{bm25_score_expr} DESC, id"
+            bm25_where_filter = (
+                f"AND EXISTS (SELECT 1 FROM unnest(string_to_array({text_param}, '|')) AS t(term) "
+                f"WHERE t.term <> '' AND ("
+                f"text ILIKE '%' || replace(replace(t.term, '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\' OR "
+                f"COALESCE(context, '') ILIKE '%' || replace(replace(t.term, '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'"
+                f")) "
+                f"AND (COALESCE(array_length(string_to_array({text_param}, '|'), 1), 0) < 3 OR {bm25_score_expr} >= 8.0)"
+            )
         else:  # native tsvector
             # bm25_language is validated as a PG identifier in HindsightConfig.validate(),
             # so embedding it as a SQL literal here is safe.

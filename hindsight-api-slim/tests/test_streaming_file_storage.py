@@ -8,6 +8,8 @@ import zlib
 from collections.abc import AsyncIterator
 
 import pytest
+
+pytest.importorskip("obstore", reason="cloud extra (obstore) not installed")
 from obstore.store import MemoryStore
 from starlette.responses import StreamingResponse
 

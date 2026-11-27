@@ -31,6 +31,7 @@ Caveats, by design:
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from hindsight_api.schema_context import get_current_schema
@@ -171,3 +172,43 @@ async def build_bm25_query_text(
         text_search_extension=text_search_extension,
         max_query_terms=max_query_terms,
     )
+
+
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+")
+_ASCII_TERM_RE = re.compile(r"[a-zA-Z0-9_.-]{2,}")
+
+
+def contains_cjk(text: str) -> bool:
+    """Return True if ``text`` contains any CJK characters."""
+    return bool(text and _CJK_RUN_RE.search(text))
+
+
+def build_cjk_ilike_terms(query_text: str, tokens: list[str], *, max_terms: int = 24) -> list[str]:
+    """Extract CJK phrases, bigrams, and non-CJK tokens for native PostgreSQL fallback."""
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add(term: str) -> None:
+        cleaned = term.strip().replace("|", "")
+        if not cleaned or cleaned.lower() in seen:
+            return
+        seen.add(cleaned.lower())
+        terms.append(cleaned)
+
+    for run in _CJK_RUN_RE.findall(query_text or ""):
+        if len(run) >= 2:
+            _add(run)
+            if len(run) > 2:
+                for i in range(len(run) - 1):
+                    _add(run[i : i + 2])
+        else:
+            _add(run)
+
+    for ascii_term in _ASCII_TERM_RE.findall(query_text or ""):
+        _add(ascii_term)
+
+    for tok in tokens:
+        if not _CJK_RUN_RE.search(tok) and len(tok) >= 2:
+            _add(tok)
+
+    return terms[:max_terms]

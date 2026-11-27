@@ -963,7 +963,7 @@ def test_operation_retention_defaults(monkeypatch):
 
     config = HindsightConfig.from_env()
 
-    assert config.operation_retention_days == 0
+    assert config.operation_retention_days == 7
     assert config.operation_cleanup_batch_size == 1000
     assert "operation_retention_days" in HindsightConfig.get_static_fields()
     assert "operation_cleanup_batch_size" in HindsightConfig.get_static_fields()
@@ -1016,6 +1016,7 @@ def test_worker_reserved_slots_parse(monkeypatch):
     from hindsight_api.config import HindsightConfig
 
     monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
+    monkeypatch.setenv("HINDSIGHT_API_WORKER_MAX_SLOTS", "6")
     monkeypatch.setenv("HINDSIGHT_API_WORKER_RETAIN_RESERVED_SLOTS", "2")
     monkeypatch.setenv("HINDSIGHT_API_WORKER_KNOWLEDGE_INGEST_RESERVED_SLOTS", "1")
 

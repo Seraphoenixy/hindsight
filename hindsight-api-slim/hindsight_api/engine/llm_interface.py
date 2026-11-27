@@ -9,6 +9,7 @@ import hashlib
 import logging
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -17,6 +18,23 @@ from typing import Any, Callable, Self
 from .response_models import BatchRequest, BatchResult, BatchStatus, BatchSubmission, LLMCallResult
 
 logger = logging.getLogger(__name__)
+
+_reasoning_effort_ctx: ContextVar[str | None] = ContextVar("llm_reasoning_effort_override", default=None)
+
+
+def get_reasoning_effort_override() -> str | None:
+    """Return the per-request reasoning effort override for the current async context."""
+    return _reasoning_effort_ctx.get()
+
+
+def set_reasoning_effort_override(effort: str | None) -> Token[str | None]:
+    """Bind a per-request reasoning effort override for the current async context."""
+    return _reasoning_effort_ctx.set(effort)
+
+
+def reset_reasoning_effort_override(token: Token[str | None]) -> None:
+    """Restore the previous per-request reasoning effort override."""
+    _reasoning_effort_ctx.reset(token)
 
 
 def merge_extra_body(params: dict[str, Any], extra_body: dict[str, Any]) -> dict[str, Any]:

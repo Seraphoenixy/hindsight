@@ -193,6 +193,33 @@ class TestService:
         paths.log.write_text("守护进程\n", encoding="utf-8")
         assert service.tail_log("").content == "守护进程"
 
+    def test_tail_log_daemon_only_reads_from_startup_offset(self, temp_hindsight_dir):
+        from hindsight_embed.profile_manager import write_daemon_log_offset
+
+        paths = service.ProfileManager().resolve_profile_paths("")
+        paths.log.parent.mkdir(parents=True, exist_ok=True)
+        old_run = "old-startup-line-1\nold-startup-line-2\n"
+        paths.log.write_text(old_run, encoding="utf-8")
+        write_daemon_log_offset(paths.log, paths.log.stat().st_size)
+
+        # No new output from the current startup yet.
+        assert service.tail_log("", source="daemon").content == ""
+
+        # Current startup writes new lines; previous run stays hidden.
+        with paths.log.open("a", encoding="utf-8") as handle:
+            handle.write("new-startup-line-1\nnew-startup-line-2\n")
+        assert service.tail_log("", source="daemon").content == "new-startup-line-1\nnew-startup-line-2"
+
+    def test_tail_log_daemon_falls_back_when_offset_exceeds_size(self, temp_hindsight_dir):
+        from hindsight_embed.profile_manager import write_daemon_log_offset
+
+        paths = service.ProfileManager().resolve_profile_paths("")
+        paths.log.parent.mkdir(parents=True, exist_ok=True)
+        paths.log.write_text("rotated-line\n", encoding="utf-8")
+        write_daemon_log_offset(paths.log, 99999)
+
+        assert service.tail_log("", source="daemon").content == "rotated-line"
+
     def test_delete_named_profile(self, temp_hindsight_dir, stopped):
         service.save_llm_config("gone", "openai", "sk-key1234567890", "m", "")
         result = service.delete_profile("gone")

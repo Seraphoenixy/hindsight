@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from urllib.parse import unquote, urlsplit
 
 import pytest
+
+pytest.importorskip("obstore", reason="cloud extra (obstore) not installed")
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 

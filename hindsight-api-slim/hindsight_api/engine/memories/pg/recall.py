@@ -186,17 +186,24 @@ async def retrieve_semantic_bm25_combined_sql(
     # --- BM25 UNION ALL arms (one per fact_type, only when tokens present) ---
     if _include_bm25:
         text_ext = config.text_search_extension
-        # Shared with page search (search_pages) so the two BM25
-        # paths cannot drift apart on query shape again — see build_bm25_query_text.
-        bm25_text_param: str = await build_bm25_query_text(
-            conn,
-            dialect,
-            tokens=tokens,
-            query_text=query_text,
-            table="memory_units",
-            language=config.text_search_extension_native_language,
-            config=config,
-        )
+        from ...search.bm25_term_selection import build_cjk_ilike_terms, contains_cjk
+
+        has_cjk = text_ext == "native" and contains_cjk(query_text)
+        if has_cjk:
+            cjk_terms = build_cjk_ilike_terms(query_text, tokens)
+            bm25_text_param = "|".join(cjk_terms) if cjk_terms else query_text
+        else:
+            # Shared with page search (search_pages) so the two BM25
+            # paths cannot drift apart on query shape again — see build_bm25_query_text.
+            bm25_text_param = await build_bm25_query_text(
+                conn,
+                dialect,
+                tokens=tokens,
+                query_text=query_text,
+                table="memory_units",
+                language=config.text_search_extension_native_language,
+                config=config,
+            )
         for i, ft in enumerate(fact_types):
             arms.append(
                 dialect.build_bm25_arm(
@@ -216,6 +223,7 @@ async def retrieve_semantic_bm25_combined_sql(
                     pg_search_tokenizer=config.text_search_extension_pg_search_tokenizer,
                     max_query_terms=config.bm25_max_query_terms,
                     extra_where=updated_range_clause,
+                    has_cjk=has_cjk,
                 )
             )
 

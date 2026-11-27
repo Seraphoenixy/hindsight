@@ -775,6 +775,7 @@ export class ControlPlaneClient {
     exclude_mental_models?: boolean;
     exclude_mental_model_ids?: string[];
     response_schema?: Record<string, unknown>;
+    reasoning_effort?: string;
     reflect_search_observations_max_tokens?: number;
     reflect_search_observations_include_entities?: boolean;
     reflect_search_mental_models_max_tokens?: number;
@@ -1450,6 +1451,36 @@ export class ControlPlaneClient {
     return this.fetchApi(memoryApi(memoryId, bankId), {
       method: "PATCH",
       body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Permanently delete an invalidated memory unit from the curation archive.
+   */
+  async deleteMemory(
+    memoryId: string,
+    bankId: string
+  ): Promise<{ deleted: boolean; memory_id: string }> {
+    return this.fetchApi(memoryApi(memoryId, bankId), {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Permanently delete all (or older-than-cutoff) invalidated memories for a bank.
+   */
+  async clearInvalidatedMemories(
+    bankId: string,
+    params?: { before?: string; factType?: string }
+  ): Promise<{ deleted: number }> {
+    const qs = new URLSearchParams();
+    if (params?.before) qs.set("before", params.before);
+    if (params?.factType) qs.set("fact_type", params.factType);
+    const suffix = qs.toString()
+      ? `/memories/invalidated?${qs.toString()}`
+      : "/memories/invalidated";
+    return this.fetchApi(bankApi(bankId, suffix), {
+      method: "DELETE",
     });
   }
 
@@ -2841,6 +2872,19 @@ export class ControlPlaneClient {
     const query = params.toString();
     return this.fetchApi<AuditStatsResponse>(
       bankApi(bankId, `/audit-logs/stats${query ? `?${query}` : ""}`)
+    );
+  }
+
+  async clearAuditLogs(
+    bankId: string,
+    options?: { before?: string }
+  ): Promise<{ deleted_count: number }> {
+    const params = new URLSearchParams();
+    if (options?.before) params.append("before", options.before);
+    const query = params.toString();
+    return this.fetchApi<{ deleted_count: number }>(
+      bankApi(bankId, `/audit-logs${query ? `?${query}` : ""}`),
+      { method: "DELETE" }
     );
   }
 

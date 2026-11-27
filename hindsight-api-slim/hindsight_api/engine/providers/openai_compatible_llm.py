@@ -50,6 +50,7 @@ from hindsight_api.engine.llm_interface import (
     OutputTooLongError,
     ProviderContentPolicyError,
     ProviderRateLimitResetError,
+    get_reasoning_effort_override,
 )
 from hindsight_api.engine.llm_trace import LLMResponseUsage, current_response_usage, stash_response_usage
 from hindsight_api.engine.llm_transport import (
@@ -1191,9 +1192,9 @@ class OpenAICompatibleLLM(LLMInterface):
         """
         model_lower = self.model.lower()
         if "deepseek" in model_lower:
-            # DeepSeek v4-flash is the non-thinking route. Treating every
-            # DeepSeek model as a reasoning model injects reasoning_effort,
-            # which conflicts with thinking-disabled flash calls.
+            # This heuristic controls request shape, not whether a proxy really
+            # disables thinking. For example, Trae CN advertises V4-Flash as a
+            # reasoning-only route even when the caller requests effort="none".
             return any(x in model_lower for x in ["v4-pro", "reasoner", "r1", "thinking"])
         return any(x in model_lower for x in ["gpt-5", "gpt-6", "o1", "o3"])
 
@@ -1245,6 +1246,125 @@ class OpenAICompatibleLLM(LLMInterface):
             # M3.1 always thinks: ``thinking.type="disabled"`` is an HTTP 400 there (#5718).
             thinking = "adaptive" if "m3.1" in self.model.lower() else "disabled"
             extra_body.setdefault("thinking", {"type": thinking})
+
+    @staticmethod
+    def _chunk_has_progress(chunk: Any) -> bool:
+        """Return True when a stream chunk carries meaningful model progress (not an empty keep-alive)."""
+        if getattr(chunk, "usage", None) is not None or getattr(chunk, "error", None) is not None:
+            return True
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return False
+        choice = choices[0]
+        if getattr(choice, "finish_reason", None) is not None or getattr(choice, "error", None) is not None:
+            return True
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            return False
+        return bool(
+            getattr(delta, "content", None)
+            or getattr(delta, "refusal", None)
+            or getattr(delta, "reasoning_content", None)
+            or getattr(delta, "reasoning", None)
+            or getattr(delta, "tool_calls", None)
+        )
+
+    async def _create_chat_completion(self, call_params: dict[str, Any]) -> Any:
+        """Call ``chat.completions.create`` with streaming enabled and assemble a response.
+
+        Applies ``self.timeout`` as an idle/stall deadline (reset whenever a meaningful
+        chunk arrives) plus a generous wall-clock safety cap so actively streaming
+        responses are not killed prematurely while stalled streams still fail fast.
+        """
+        stream_params = {**call_params, "stream": True}
+        stream_params.setdefault("stream_options", {"include_usage": True})
+        idle_timeout = float(self.timeout) if self.timeout else None
+        create_coro = self._request_client().chat.completions.create(**stream_params)
+        stream_or_response = (
+            await asyncio.wait_for(create_coro, timeout=idle_timeout) if idle_timeout else await create_coro
+        )
+        if getattr(stream_or_response, "choices", None) is not None or not hasattr(stream_or_response, "__aiter__"):
+            return stream_or_response
+
+        content_parts: list[str] = []
+        refusal_parts: list[str] = []
+        finish_reason: str | None = None
+        usage: Any = None
+        error: Any = None
+        provider_name: Any = None
+        wall_deadline = time.monotonic() + max(idle_timeout * 4.0, 300.0) if idle_timeout else None
+        last_progress = time.monotonic()
+        stream_iter = aiter(stream_or_response)
+        try:
+            while True:
+                if idle_timeout is not None and wall_deadline is not None:
+                    now = time.monotonic()
+                    step_timeout = min(idle_timeout - (now - last_progress), wall_deadline - now)
+                    if step_timeout <= 0:
+                        raise asyncio.TimeoutError
+                    try:
+                        chunk = await asyncio.wait_for(anext(stream_iter), timeout=step_timeout)
+                    except StopAsyncIteration:
+                        break
+                else:
+                    try:
+                        chunk = await anext(stream_iter)
+                    except StopAsyncIteration:
+                        break
+
+                if self._chunk_has_progress(chunk):
+                    last_progress = time.monotonic()
+
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                chunk_error = getattr(chunk, "error", None)
+                if chunk_error is not None:
+                    error = chunk_error
+                chunk_provider = getattr(chunk, "provider", None)
+                if chunk_provider is not None:
+                    provider_name = chunk_provider
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                choice_finish = getattr(choice, "finish_reason", None)
+                if choice_finish is not None:
+                    finish_reason = choice_finish
+                choice_error = getattr(choice, "error", None)
+                if choice_error is not None and error is None:
+                    error = choice_error
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                delta_content = getattr(delta, "content", None)
+                if isinstance(delta_content, str) and delta_content:
+                    content_parts.append(delta_content)
+                delta_refusal = getattr(delta, "refusal", None)
+                if isinstance(delta_refusal, str) and delta_refusal:
+                    refusal_parts.append(delta_refusal)
+        finally:
+            close = getattr(stream_or_response, "close", None) or getattr(stream_or_response, "aclose", None)
+            if callable(close):
+                res = close()
+                if asyncio.iscoroutine(res):
+                    await res
+
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=finish_reason,
+                    message=SimpleNamespace(
+                        content="".join(content_parts) if content_parts else None,
+                        tool_calls=None,
+                        refusal="".join(refusal_parts) if refusal_parts else None,
+                    ),
+                )
+            ],
+            usage=usage,
+            error=error,
+            provider=provider_name,
+        )
 
     async def call(
         self,
@@ -1335,8 +1455,9 @@ class OpenAICompatibleLLM(LLMInterface):
             call_params["temperature"] = temperature
 
         # Set reasoning_effort when configured, or for models recognised as reasoning models
-        if self._sends_reasoning_effort():
-            call_params["reasoning_effort"] = self.reasoning_effort
+        effective_reasoning_effort = get_reasoning_effort_override() or self.reasoning_effort
+        if effective_reasoning_effort is not None and not self._rejects_reasoning_effort():
+            call_params["reasoning_effort"] = effective_reasoning_effort
 
         # Provider-specific parameters
         extra_body: dict[str, Any] = {**self._config_extra_body}
@@ -1433,12 +1554,7 @@ class OpenAICompatibleLLM(LLMInterface):
                 if response_format is not None:
                     async with attempt_context() if attempt_context is not None else nullcontext():
                         set_stage(f"llm.{self.provider}.{scope}.attempt={attempt + 1}/{max_retries + 1}")
-                        # Wall-clock cap: the SDK's timeout is per phase and its read timeout restarts
-                        # on every byte, so an upstream trickling keep-alive whitespace never trips it
-                        # and the call pins its worker slot forever (#4763).
-                        response = await asyncio.wait_for(
-                            self._request_client().chat.completions.create(**call_params), timeout=self.timeout
-                        )
+                        response = await self._create_chat_completion(call_params)
                     # Stash usage before parse/validate, which may raise locally
                     # even though the provider charged for these tokens (#2387).
                     stash_response_usage(_usage_from_openai_response(response))
@@ -1519,9 +1635,7 @@ class OpenAICompatibleLLM(LLMInterface):
                 else:
                     async with attempt_context() if attempt_context is not None else nullcontext():
                         set_stage(f"llm.{self.provider}.{scope}.attempt={attempt + 1}/{max_retries + 1}")
-                        response = await asyncio.wait_for(
-                            self._request_client().chat.completions.create(**call_params), timeout=self.timeout
-                        )
+                        response = await self._create_chat_completion(call_params)
                     stash_response_usage(_usage_from_openai_response(response))
                     result, first_choice = _content_or_error(
                         response,

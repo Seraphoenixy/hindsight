@@ -1548,6 +1548,7 @@ def build_structured_delta_prompt(
     max_input_tokens: int | None = None,
     document_tokens: int | None = None,
     document_budget: int | None = None,
+    require_complete: bool = False,
 ) -> str:
     """Build the user prompt for a structured-delta mental model refresh.
 
@@ -1653,6 +1654,8 @@ def build_structured_delta_prompt(
     )
     truncation_note = ""
     if fitted.truncated:
+        if require_complete:
+            raise ValueError("Delta input exceeds the refresh context budget; evidence cannot be skipped")
         truncation_note = (
             "\n\n*Note: Document or facts were truncated to fit the model "
             "context window. Prefer minimal, high-leverage operations.*"
@@ -1752,6 +1755,7 @@ def build_structured_retraction_prompt(
     source_query: str,
     max_output_tokens: int | None = None,
     max_input_tokens: int | None = None,
+    require_complete: bool = False,
 ) -> str:
     """Build the user prompt for the retraction ("unsay") pass of a delta refresh.
 
@@ -1808,6 +1812,8 @@ def build_structured_retraction_prompt(
     )
     truncation_note = ""
     if fitted.truncated:
+        if require_complete:
+            raise ValueError("Retraction input exceeds the refresh context budget; evidence cannot be skipped")
         truncation_note = (
             "\n\n*Note: Document or fact lists were truncated to fit the model context "
             "window. Prefer minimal, high-leverage operations, and keep anything you "

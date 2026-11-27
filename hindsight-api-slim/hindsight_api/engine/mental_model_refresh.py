@@ -1,8 +1,8 @@
 """Models describing what a mental model refresh did.
 
-A refresh resolves a scope, picks full-vs-delta, runs reflect over a bounded
-snapshot, and (in delta mode) applies structured operations to the existing
-document. Every one of those steps can quietly produce a document that isn't
+A refresh resolves a scope and picks full-vs-delta. Full refreshes run reflect;
+delta refreshes enumerate a bounded change window and apply structured operations
+to the existing document. Every one of those steps can quietly produce a document that isn't
 what the user expected, and until now the reasoning behind each only ever
 reached a log line.
 

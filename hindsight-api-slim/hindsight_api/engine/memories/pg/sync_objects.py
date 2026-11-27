@@ -145,6 +145,7 @@ async def _export_units_details(
             entity_map[uid_str] = [by_eid[str(eid)] for eid in (r["entity_ids"] or []) if str(eid) in by_eid]
 
     causal_map: dict[str, list[dict[str, Any]]] = {}
+    derived_links_map: dict[str, list[dict[str, Any]]] = {}
     if not archived:
         lrows = await conn.fetch(
             f"""
@@ -152,20 +153,22 @@ async def _export_units_details(
             FROM {ml}
             WHERE bank_id = $1
               AND from_unit_id = ANY($2::uuid[])
-              AND link_type IN ('causes', 'caused_by', 'enables', 'prevents')
+              AND link_type IN ('causes', 'caused_by', 'enables', 'prevents', 'temporal', 'semantic')
             ORDER BY from_unit_id, to_unit_id, link_type
             """,
             bank_id,
             unit_ids,
         )
         for lr in lrows:
-            causal_map.setdefault(lr["from_id"], []).append(
-                {
-                    "to_unit_id": lr["to_id"],
-                    "link_type": lr["link_type"],
-                    "weight": float(lr["weight"]),
-                }
-            )
+            entry = {
+                "to_unit_id": lr["to_id"],
+                "link_type": lr["link_type"],
+                "weight": float(lr["weight"]),
+            }
+            if lr["link_type"] in ("temporal", "semantic"):
+                derived_links_map.setdefault(lr["from_id"], []).append(entry)
+            else:
+                causal_map.setdefault(lr["from_id"], []).append(entry)
 
     out: list[dict[str, Any]] = []
     for r in unit_rows:
@@ -199,10 +202,12 @@ async def _export_units_details(
         if not archived:
             item["embedding"] = _embedding_literal(r["embedding_text"])
             item["causal_links"] = causal_map.get(uid, [])
+            item["links"] = derived_links_map.get(uid, [])
         else:
             item["invalidation_reason"] = r["invalidation_reason"]
             item["invalidated_at"] = _iso(r["invalidated_at"])
             item["causal_links"] = _parse_json(conn, r["causal_links"]) or []
+            item["links"] = []
         out.append(item)
     return out
 
@@ -429,6 +434,54 @@ async def _resolve_entities_on_conn(
     return resolved
 
 
+async def _insert_synced_links(
+    *,
+    conn: Any,
+    fq_table: Callable[[str], str],
+    bank_id: str,
+    from_uid: uuid.UUID,
+    links: list[dict[str, Any]],
+) -> None:
+    if not links:
+        return
+    mu = fq_table("memory_units")
+    ml = fq_table("memory_links")
+    for link in links:
+        to_uid = uuid.UUID(str(link["to_unit_id"]))
+        exists_to = await conn.fetchval(f"SELECT 1 FROM {mu} WHERE id = $1 AND bank_id = $2", to_uid, bank_id)
+        if not exists_to:
+            continue
+        ltype = link["link_type"]
+        weight = float(link.get("weight", 1.0))
+        await conn.execute(
+            f"""
+            INSERT INTO {ml} (from_unit_id, to_unit_id, link_type, bank_id, weight)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT DO NOTHING
+            """,
+            from_uid,
+            to_uid,
+            ltype,
+            bank_id,
+            weight,
+        )
+        if ltype in ("temporal", "semantic"):
+            # Symmetric derived edges: ensure reverse edge lands even if the peer unit
+            # was applied earlier in the batch before `from_uid` existed.
+            await conn.execute(
+                f"""
+                INSERT INTO {ml} (from_unit_id, to_unit_id, link_type, bank_id, weight)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT DO NOTHING
+                """,
+                to_uid,
+                from_uid,
+                ltype,
+                bank_id,
+                weight,
+            )
+
+
 async def _apply_unit_facts(
     *,
     conn: Any,
@@ -442,7 +495,6 @@ async def _apply_unit_facts(
     mu = fq_table("memory_units")
     arch = fq_table("invalidated_memory_units")
     ue = fq_table("unit_entities")
-    ml = fq_table("memory_links")
 
     all_entities = [e for f in [*facts, *archived_facts] for e in (f.get("entities") or [])]
     entity_ids_by_lower = await _resolve_entities_on_conn(
@@ -529,22 +581,13 @@ async def _apply_unit_facts(
                     uid,
                     eid,
                 )
-        for link in fact.get("causal_links") or []:
-            to_uid = uuid.UUID(str(link["to_unit_id"]))
-            exists_to = await conn.fetchval(f"SELECT 1 FROM {mu} WHERE id = $1 AND bank_id = $2", to_uid, bank_id)
-            if exists_to:
-                await conn.execute(
-                    f"""
-                    INSERT INTO {ml} (from_unit_id, to_unit_id, link_type, bank_id, weight)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    uid,
-                    to_uid,
-                    link["link_type"],
-                    bank_id,
-                    float(link.get("weight", 1.0)),
-                )
+        await _insert_synced_links(
+            conn=conn,
+            fq_table=fq_table,
+            bank_id=bank_id,
+            from_uid=uid,
+            links=[*(fact.get("causal_links") or []), *(fact.get("links") or [])],
+        )
 
     for af in archived_facts:
         uid = uuid.UUID(str(af["id"]))
@@ -640,7 +683,12 @@ async def apply_document_payload(
     )
     old_unit_ids = [r["id"] for r in old_units]
     if old_unit_ids:
-        await delete_stale_observations(conn=conn, ops=ops, fq_table=fq_table, bank_id=bank_id, fact_ids=old_unit_ids)
+        incoming_live_fact_ids = {str(f["id"]) for f in (payload.get("facts") or [])}
+        removed_unit_ids = [uid for uid in old_unit_ids if uid not in incoming_live_fact_ids]
+        if removed_unit_ids:
+            await delete_stale_observations(
+                conn=conn, ops=ops, fq_table=fq_table, bank_id=bank_id, fact_ids=removed_unit_ids
+            )
         if ops is not None:
             await ops.delete_unit_links(conn, fq_table("memory_links"), bank_id, old_unit_ids)
         await conn.execute(f"DELETE FROM {mu} WHERE document_id = $1 AND bank_id = $2", document_id, bank_id)
@@ -743,6 +791,7 @@ async def delete_document_payload(
     fq_non_store_table: Callable[[str], str],
     bank_id: str,
     document_id: str,
+    preserve_unit_ids: set[str] | None = None,
 ) -> None:
     """Delete a synced document and its dependent chunks, facts, and attachment edges."""
     docs = fq_table("documents")
@@ -757,7 +806,12 @@ async def delete_document_payload(
     )
     old_unit_ids = [r["id"] for r in old_units]
     if old_unit_ids:
-        await delete_stale_observations(conn=conn, ops=ops, fq_table=fq_table, bank_id=bank_id, fact_ids=old_unit_ids)
+        preserved = preserve_unit_ids or set()
+        stale_fact_ids = [uid for uid in old_unit_ids if uid not in preserved]
+        if stale_fact_ids:
+            await delete_stale_observations(
+                conn=conn, ops=ops, fq_table=fq_table, bank_id=bank_id, fact_ids=stale_fact_ids
+            )
         if ops is not None:
             await ops.delete_unit_links(conn, fq_table("memory_links"), bank_id, old_unit_ids)
         await conn.execute(f"DELETE FROM {mu} WHERE document_id = $1 AND bank_id = $2", document_id, bank_id)
@@ -832,6 +886,9 @@ async def apply_standalone_unit_payload(
     arch = fq_table("invalidated_memory_units")
     uid = uuid.UUID(unit_id)
     if payload.get("archived"):
+        await delete_stale_observations(conn=conn, ops=ops, fq_table=fq_table, bank_id=bank_id, fact_ids=[unit_id])
+        if ops is not None:
+            await ops.delete_unit_links(conn, fq_table("memory_links"), bank_id, [unit_id])
         await conn.execute(f"DELETE FROM {mu} WHERE id = $1 AND bank_id = $2", uid, bank_id)
         await _apply_unit_facts(
             conn=conn,
@@ -902,6 +959,16 @@ async def export_observation_payload(
         uid,
         bank_id,
     )
+    lrows = await conn.fetch(
+        f"""
+        SELECT to_unit_id::text AS to_id, link_type, weight
+        FROM {fq_table("memory_links")}
+        WHERE bank_id = $1 AND from_unit_id = $2 AND link_type IN ('temporal', 'semantic')
+        ORDER BY to_unit_id, link_type
+        """,
+        bank_id,
+        uid,
+    )
     return {
         "id": str(row["id"]),
         "bank_id": row["bank_id"],
@@ -919,6 +986,9 @@ async def export_observation_payload(
         "updated_at": _iso(row["updated_at"]),
         "history": [
             {"content": _parse_json(conn, hr["content"]), "changed_at": _iso(hr["changed_at"])} for hr in hrows
+        ],
+        "links": [
+            {"to_unit_id": lr["to_id"], "link_type": lr["link_type"], "weight": float(lr["weight"])} for lr in lrows
         ],
     }
 
@@ -1009,6 +1079,13 @@ async def apply_observation_payload(
             json.dumps(hist.get("content") or {}),
             _dt(hist.get("changed_at")) or datetime.now(timezone.utc),
         )
+    await _insert_synced_links(
+        conn=conn,
+        fq_table=fq_table,
+        bank_id=bank_id,
+        from_uid=uid,
+        links=list(payload.get("links") or []),
+    )
 
 
 async def delete_observation_payload(

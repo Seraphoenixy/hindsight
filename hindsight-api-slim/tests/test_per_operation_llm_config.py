@@ -478,7 +478,7 @@ class TestPerOperationReasoningEffort:
             clear_config_cache()
 
     def test_per_operation_reasoning_effort_fallback_to_global(self):
-        """Unset per-operation reasoning_effort stays None (falls back at runtime)."""
+        """Reflect defaults to 'none' and consolidation defaults to 'medium'; retain falls back to global."""
         from hindsight_api.config import clear_config_cache, get_config
 
         os.environ["HINDSIGHT_API_LLM_REASONING_EFFORT"] = "medium"
@@ -491,8 +491,8 @@ class TestPerOperationReasoningEffort:
             config = get_config()
 
             assert config.retain_llm_reasoning_effort is None
-            assert config.reflect_llm_reasoning_effort is None
-            assert config.consolidation_llm_reasoning_effort is None
+            assert config.reflect_llm_reasoning_effort == "none"
+            assert config.consolidation_llm_reasoning_effort == "medium"
             assert config.llm_reasoning_effort == "medium"
         finally:
             self._clear_reasoning_effort_env()
@@ -500,13 +500,13 @@ class TestPerOperationReasoningEffort:
 
     def test_memory_engine_applies_per_operation_reasoning_effort(self):
         """The engine threads each per-operation override into its LLM config,
-        and unset operations fall back to the global value."""
+        with reflect defaulting to 'none' and consolidation defaulting to 'medium'."""
         from hindsight_api import MemoryEngine
         from hindsight_api.config import clear_config_cache
 
         os.environ["HINDSIGHT_API_LLM_REASONING_EFFORT"] = "low"
-        os.environ["HINDSIGHT_API_REFLECT_LLM_REASONING_EFFORT"] = "none"
-        # retain/consolidation intentionally unset -> fall back to global "low".
+        os.environ.pop("HINDSIGHT_API_REFLECT_LLM_REASONING_EFFORT", None)
+        os.environ.pop("HINDSIGHT_API_CONSOLIDATION_LLM_REASONING_EFFORT", None)
 
         try:
             clear_config_cache()
@@ -515,7 +515,7 @@ class TestPerOperationReasoningEffort:
             assert engine._llm_config.reasoning_effort == "low"
             assert engine._reflect_llm_config.reasoning_effort == "none"
             assert engine._retain_llm_config.reasoning_effort == "low"
-            assert engine._consolidation_llm_config.reasoning_effort == "low"
+            assert engine._consolidation_llm_config.reasoning_effort == "medium"
         finally:
             self._clear_reasoning_effort_env()
             clear_config_cache()

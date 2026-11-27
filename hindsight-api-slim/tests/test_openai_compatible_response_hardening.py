@@ -661,3 +661,90 @@ async def test_content_filter_is_a_content_policy_refusal_and_not_retried():
             )
 
     assert create.await_count == 1
+
+
+class _AsyncChunkStream:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.closed = False
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_call_streams_chat_completion_chunks_and_usage():
+    llm = _llm()
+    stream = _AsyncChunkStream(
+        [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ok": '), finish_reason=None)],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="true}"), finish_reason="stop")],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[],
+                usage=SimpleNamespace(
+                    prompt_tokens=12,
+                    completion_tokens=6,
+                    total_tokens=18,
+                    prompt_tokens_details=None,
+                    completion_tokens_details=None,
+                ),
+            ),
+        ]
+    )
+    create = AsyncMock(return_value=stream)
+    llm._client.chat.completions.create = create
+
+    with patch("hindsight_api.engine.providers.openai_compatible_llm.get_metrics_collector"):
+        result = await llm.call(
+            messages=[{"role": "user", "content": "x"}],
+            response_format=SimpleJsonResponse,
+            max_retries=0,
+        )
+
+    assert create.await_args.kwargs["stream"] is True
+    assert create.await_args.kwargs["stream_options"] == {"include_usage": True}
+    assert stream.closed is True
+    assert result.content == SimpleJsonResponse(ok=True)
+    assert result.usage.input_tokens == 12
+    assert result.usage.output_tokens == 6
+
+
+@pytest.mark.asyncio
+async def test_call_retries_when_chat_stream_truncates_mid_json():
+    llm = _llm()
+    truncated_stream = _AsyncChunkStream(
+        [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ok": '), finish_reason=None)])]
+    )
+    ok_stream = _AsyncChunkStream(
+        [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ok": true}'), finish_reason="stop")]
+            )
+        ]
+    )
+    create = AsyncMock(side_effect=[truncated_stream, ok_stream])
+    llm._client.chat.completions.create = create
+
+    with patch("hindsight_api.engine.providers.openai_compatible_llm.get_metrics_collector"):
+        result = await llm.call(
+            messages=[{"role": "user", "content": "x"}],
+            response_format=SimpleJsonResponse,
+            max_retries=1,
+            initial_backoff=0,
+        )
+
+    assert create.await_count == 2
+    assert result.content == SimpleJsonResponse(ok=True)

@@ -45,6 +45,7 @@ from hindsight_api.engine.llm_interface import (
     LLMInterface,
     OutputTooLongError,
     ProviderContentPolicyError,
+    get_reasoning_effort_override,
     merge_extra_body,
 )
 from hindsight_api.engine.llm_trace import LLMResponseUsage, stash_response_usage
@@ -249,6 +250,11 @@ class OpenAIResponsesLLM(LLMInterface):
         model_lower = self.model.lower()
         return any(x in model_lower for x in ["gpt-5", "gpt-6", "o1", "o3"])
 
+    def _rejects_reasoning_effort(self) -> bool:
+        """Whether the model is a known non-reasoning OpenAI model that rejects ``reasoning``."""
+        model_lower = self.model.lower()
+        return any(x in model_lower for x in ["gpt-4o", "gpt-4.1", "gpt-4-", "gpt-3.5"])
+
     def supports_vision(self) -> bool:
         """OpenAI's own Responses API — every model it serves reads images."""
         return True
@@ -350,13 +356,95 @@ class OpenAIResponsesLLM(LLMInterface):
             thoughts_tokens=usage.thoughts_tokens,
         )
 
+    @staticmethod
+    def _event_has_progress(event: Any) -> bool:
+        """Return True when a Responses stream event represents meaningful model progress."""
+        event_type = getattr(event, "type", None)
+        if event_type in ("response.completed", "response.incomplete", "response.failed", "error"):
+            return True
+        if isinstance(event_type, str) and event_type.endswith(".delta"):
+            delta = getattr(event, "delta", None)
+            return isinstance(delta, str) and len(delta) > 0
+        return event_type in (
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.content_part.added",
+            "response.content_part.done",
+        )
+
     async def _create_response(self, params: dict[str, Any]) -> Any:
-        """Send one Responses request and return the final response object.
+        """Send one Responses request with streaming and return the final response object.
 
         The hook subclasses override to change transport (``chatgpt`` streams
         and swaps the bearer token per call); everything around it stays shared.
         """
-        return await self._client.responses.create(**params)
+        idle_timeout = float(self.timeout) if self.timeout else None
+        create_coro = self._client.responses.create(**{**params, "stream": True})
+        stream_or_response = (
+            await asyncio.wait_for(create_coro, timeout=idle_timeout) if idle_timeout else await create_coro
+        )
+        if (
+            getattr(stream_or_response, "output", None) is not None
+            or getattr(stream_or_response, "output_text", None) is not None
+            or not hasattr(stream_or_response, "__aiter__")
+        ):
+            return stream_or_response
+
+        completed_response: Any = None
+        text_deltas: list[str] = []
+        wall_deadline = time.monotonic() + max(idle_timeout * 4.0, 300.0) if idle_timeout else None
+        last_progress = time.monotonic()
+        stream_iter = aiter(stream_or_response)
+        try:
+            while True:
+                if idle_timeout is not None and wall_deadline is not None:
+                    now = time.monotonic()
+                    step_timeout = min(idle_timeout - (now - last_progress), wall_deadline - now)
+                    if step_timeout <= 0:
+                        raise asyncio.TimeoutError
+                    try:
+                        event = await asyncio.wait_for(anext(stream_iter), timeout=step_timeout)
+                    except StopAsyncIteration:
+                        break
+                else:
+                    try:
+                        event = await anext(stream_iter)
+                    except StopAsyncIteration:
+                        break
+
+                if self._event_has_progress(event):
+                    last_progress = time.monotonic()
+
+                event_type = getattr(event, "type", None)
+                if event_type in ("response.completed", "response.incomplete"):
+                    completed_response = getattr(event, "response", None)
+                elif event_type == "response.output_text.delta":
+                    delta = getattr(event, "delta", None)
+                    if isinstance(delta, str) and delta:
+                        text_deltas.append(delta)
+                elif event_type == "response.failed":
+                    failed_resp = getattr(event, "response", None)
+                    err = getattr(failed_resp, "error", None)
+                    msg = getattr(err, "message", None) or str(err or "Responses stream failed")
+                    raise RetryableResponsesError(msg)
+                elif event_type == "error":
+                    msg = getattr(event, "message", None) or str(event)
+                    raise RetryableResponsesError(msg)
+        finally:
+            close = getattr(stream_or_response, "close", None) or getattr(stream_or_response, "aclose", None)
+            if callable(close):
+                res = close()
+                if asyncio.iscoroutine(res):
+                    await res
+
+        if completed_response is None:
+            raise RetryableResponsesError("Responses stream ended before response.completed")
+        if not getattr(completed_response, "output_text", None) and not getattr(completed_response, "output", None):
+            if text_deltas:
+                completed_response.output_text = "".join(text_deltas)
+        return completed_response
 
     async def _run_with_retries(
         self,
@@ -383,10 +471,10 @@ class OpenAIResponsesLLM(LLMInterface):
             try:
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.{self.provider}.{scope}.attempt={attempt + 1}/{max_retries + 1}")
-                    # Wall-clock cap: the SDK's timeout is per phase and its read timeout restarts
-                    # on every byte, so an upstream trickling keep-alive whitespace never trips it
-                    # and the call pins its worker slot forever (#4763).
-                    response = await asyncio.wait_for(self._create_response(params), timeout=self.timeout)
+                    if type(self)._create_response is OpenAIResponsesLLM._create_response:
+                        response = await self._create_response(params)
+                    else:
+                        response = await asyncio.wait_for(self._create_response(params), timeout=self.timeout)
                 usage = self._extract_usage(response)
                 stash_response_usage(
                     LLMResponseUsage(
@@ -489,10 +577,11 @@ class OpenAIResponsesLLM(LLMInterface):
             params["max_output_tokens"] = max_completion_tokens
         if temperature is not None and not is_reasoning_model:
             params["temperature"] = temperature
-        # Only when the operator configured a level: unset means the model runs at the
-        # Responses API's own default effort rather than one Hindsight picked.
-        if is_reasoning_model and self.reasoning_effort is not None:
-            params["reasoning"] = {"effort": self.reasoning_effort}
+        # Only when the operator configured a level (and the model doesn't reject it):
+        # unset means the model runs at the Responses API's own default effort.
+        effective_reasoning_effort = get_reasoning_effort_override() or self.reasoning_effort
+        if effective_reasoning_effort is not None and not self._rejects_reasoning_effort():
+            params["reasoning"] = {"effort": effective_reasoning_effort}
         if self.openai_service_tier:
             params["service_tier"] = self.openai_service_tier
         # Structured output: strict grammar-enforced schema, or the soft

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
 import { executeProcessRequest, publishProcessState, type ProcessRequest } from "./magpie-process";
+import { sessionRetainBlocked } from "./session-cache";
 import {
   ensureControlPlaneStarted,
   isControlPlaneHealthy,
@@ -45,7 +46,7 @@ beforeEach(() => {
   file = join(state.home, "runtime-state.js");
   vi.mocked(isControlPlaneHealthy).mockImplementation(async () => state.running);
   vi.mocked(isServerHealthy).mockResolvedValue(true);
-  vi.mocked(runEmbedOps).mockResolvedValue({ ok: true });
+  vi.mocked(runEmbedOps).mockResolvedValue(JSON.stringify({ ok: true }));
   vi.mocked(inspectMagpieLlm).mockResolvedValue({
     status: "synced",
     mode: "follow",
@@ -178,7 +179,9 @@ it.each(["daemon-start", "daemon-stop", "daemon-restart"] as const)(
   "controls the memory daemon with %s without touching the UI lifecycle",
   async (action) => {
     await executeProcessRequest(cfg, 19100, request(action), file);
-    expect(runEmbedOps).toHaveBeenCalledWith(cfg, [action, "--profile", "coding-agent"]);
+    expect(runEmbedOps).toHaveBeenCalledWith(cfg, [action, "--profile", "coding-agent"], {
+      timeoutMs: 120_000,
+    });
     expect(ensureControlPlaneStarted).not.toHaveBeenCalled();
     expect(stopControlPlane).not.toHaveBeenCalled();
     expect((await publishProcessState(cfg, 19100, file, request(action))).operation).toMatchObject({
@@ -187,7 +190,7 @@ it.each(["daemon-start", "daemon-stop", "daemon-restart"] as const)(
   }
 );
 it("reports memory daemon errors from ops", async () => {
-  vi.mocked(runEmbedOps).mockResolvedValue({ ok: false, message_zh: "启动失败" });
+  vi.mocked(runEmbedOps).mockResolvedValue(JSON.stringify({ ok: false, message_zh: "启动失败" }));
   await executeProcessRequest(cfg, 19100, request("daemon-start"), file);
   expect(
     (await publishProcessState(cfg, 19100, file, request("daemon-start"))).operation
@@ -288,4 +291,29 @@ it("toggles global host injection in coding-agent.json while preserving existing
     if (prevConfigEnv === undefined) delete process.env.HINDSIGHT_CONFIG;
     else process.env.HINDSIGHT_CONFIG = prevConfigEnv;
   }
+});
+
+it("clears retain-blocked markers when re-enabling global or per-host injection", async () => {
+  const sid = "retain-block-test-" + Date.now();
+  sessionRetainBlocked("antigravity-cli", sid, true);
+  sessionRetainBlocked("codex", sid, true);
+  expect(sessionRetainBlocked("antigravity-cli", sid)).toBe(true);
+  expect(sessionRetainBlocked("codex", sid)).toBe(true);
+
+  await executeProcessRequest(
+    cfg,
+    19100,
+    { id: "1795380000007-abcdefghij", action: "host-enable", host: "antigravity-cli" },
+    file
+  );
+  expect(sessionRetainBlocked("antigravity-cli", sid)).toBe(false);
+  expect(sessionRetainBlocked("codex", sid)).toBe(true);
+
+  await executeProcessRequest(
+    cfg,
+    19100,
+    { id: "1795380000008-abcdefghij", action: "injection-enable" },
+    file
+  );
+  expect(sessionRetainBlocked("codex", sid)).toBe(false);
 });

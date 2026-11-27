@@ -477,6 +477,41 @@ async def set_invalidation_reason(*, conn, fq_table, bank_id: str, unit_id: str,
     )
 
 
+async def delete_archived_memory(*, conn, fq_table, bank_id: str, unit_id: str) -> bool:
+    """Permanently delete a single row from ``invalidated_memory_units``."""
+    deleted = await conn.fetchval(
+        f"DELETE FROM {fq_table('invalidated_memory_units')} WHERE id = $1 AND bank_id = $2 RETURNING id",
+        str(unit_id),
+        bank_id,
+    )
+    return deleted is not None
+
+
+async def clear_archived_memories(
+    *,
+    conn,
+    fq_table,
+    bank_id: str,
+    before: datetime | None = None,
+    fact_type: str | None = None,
+) -> list[tuple[str, str | None]]:
+    """Permanently delete rows from ``invalidated_memory_units`` for ``bank_id`` and return ``(id, document_id)``."""
+    conditions = ["bank_id = $1"]
+    params: list[Any] = [bank_id]
+    if before is not None:
+        params.append(before)
+        conditions.append(f"invalidated_at < ${len(params)}")
+    if fact_type is not None:
+        params.append(fact_type)
+        conditions.append(f"fact_type = ${len(params)}")
+    where = " AND ".join(conditions)
+    rows = await conn.fetch(
+        f"DELETE FROM {fq_table('invalidated_memory_units')} WHERE {where} RETURNING id::text AS id, document_id",
+        *params,
+    )
+    return [(r["id"], r["document_id"]) for r in rows]
+
+
 async def restore_memory(*, conn, fq_table, bank_id: str, unit_id: str) -> StoredMemory | None:
     mu = fq_table("memory_units")
     arch = fq_table("invalidated_memory_units")

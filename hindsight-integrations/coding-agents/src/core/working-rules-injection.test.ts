@@ -11,8 +11,6 @@ describe("working-rules-injection", () => {
         {
           content: "Use strict typing",
           importance: "critical",
-          pinned: true,
-          scope: "global",
         },
       ],
       total_active_entries: 1,

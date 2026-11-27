@@ -98,7 +98,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { withBasePath } from "@/lib/base-path";
+import { StandaloneShell } from "@/components/standalone-shell";
 import { countLogLevels, parseLogLines, type LogLevel, type ParsedLogLine } from "@/lib/log-levels";
 
 type Tab = "quick" | "settings" | "config" | "files" | "logs";
@@ -1688,50 +1688,18 @@ function Loaded({ token }: { token: string }) {
   );
 }
 
-/** Page chrome: brand, title, theme toggle and language picker. */
+/** Page chrome: shared standalone shell with navigation, theme toggle and language picker. */
 function Shell({ children }: { children: React.ReactNode }) {
   const t = useTranslations("local");
-  const tNav = useTranslations("nav");
-  const { theme, toggleTheme } = useTheme();
-
   return (
-    <div className="min-h-dvh bg-background text-foreground">
-      <header className="sticky top-0 z-30 border-b border-border/80 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-14 w-full max-w-[1360px] items-center gap-2 px-4 sm:px-6 lg:px-8">
-          <Link
-            href="/dashboard"
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{t("openMemory")}</span>
-          </Link>
-          <div className="mx-1 h-4 w-px bg-border" aria-hidden />
-          {/* The mark alone, at its own ratio: `logo.png` is the 529×139 lockup,
-              and forcing it into a square box squashed both the mark and the
-              wordmark. `w-auto` keeps the mark undistorted. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={withBasePath("/favicon.png")} alt="" className="h-7 w-auto" />
-          <div className="flex min-w-0 items-baseline gap-2">
-            <span className="text-[13px] font-semibold tracking-tight">Hindsight</span>
-            <span className="text-[11px] text-muted-foreground">/</span>
-            <span className="truncate text-[13px] text-muted-foreground">{t("title")}</span>
-          </div>
-          <span className="ml-auto flex items-center gap-1">
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-8 w-8 text-muted-foreground"
-              onClick={toggleTheme}
-              aria-label={theme === "light" ? tNav("darkMode") : tNav("lightMode")}
-            >
-              {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-            </Button>
-            <LanguageSwitcher />
-          </span>
-        </div>
-      </header>
+    <StandaloneShell
+      section="local"
+      title={t("title")}
+      backLabel={t("openMemory")}
+      maxWidthClass="max-w-[1360px]"
+    >
       {children}
-    </div>
+    </StandaloneShell>
   );
 }
 

@@ -260,7 +260,7 @@ export function BanksOverview() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
+    <div className="mx-auto w-full max-w-[1024px] xl:max-w-[1280px] 2xl:max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8">
       {knowledgeBanksEnabled && (
         <div className="mb-4">
           <BankKindSwitch

@@ -1683,6 +1683,10 @@ class ReflectRequest(ReflectDefaultOptions):
         deprecated=True,
     )
     max_tokens: int = Field(default=4096, description="Maximum tokens for the response")
+    reasoning_effort: str | None = Field(
+        default=None,
+        description="Optional reasoning effort override for this reflect request (e.g. 'none', 'low', 'medium', 'high').",
+    )
     include: ReflectIncludeOptions = Field(
         default_factory=ReflectIncludeOptions, description="Options for including additional data (disabled by default)"
     )
@@ -3230,6 +3234,17 @@ class BankStatsResponse(BaseModel):
                 "failed_consolidation": 0,
                 "total_observations": 45,
                 "paused_mental_models": 0,
+                "storage_bytes": 1048576,
+                "storage_by_category": {
+                    "memories": 655360,
+                    "documents": 262144,
+                    "chunks": 65536,
+                    "links": 32768,
+                    "entities": 16384,
+                    "mental_models": 8192,
+                    "operations": 8192,
+                    "audit_logs": 4096,
+                },
             }
         }
     )
@@ -3280,6 +3295,14 @@ class BankStatsResponse(BaseModel):
             "explicit refresh succeeds. Their content stops updating, so alert on this being above 0. "
             "Each model's `last_refresh_failed_at` says which ones, and its history says why."
         ),
+    )
+    storage_bytes: int = Field(
+        default=0,
+        description="Approximate stored byte size of this memory bank's data across core tables.",
+    )
+    storage_by_category: dict[str, int] = Field(
+        default_factory=dict,
+        description="Approximate stored byte size grouped by table category (memories, documents, chunks, links, entities, mental_models, operations, audit_logs).",
     )
 
 
@@ -5553,6 +5576,75 @@ def _register_routes(app: FastAPI):
         except Exception as e:
             raise _internal_error(e, f"PATCH /v1/default/banks/{bank_id}/memories/{memory_id}")
 
+    @app.delete(
+        "/v1/default/banks/{bank_id}/memories/invalidated",
+        summary="Clear invalidated memory units",
+        description="Permanently delete invalidated memory units for a bank, optionally only entries "
+        "invalidated before a cutoff timestamp or matching a fact type.",
+        operation_id="clear_invalidated_memories",
+        tags=["Memory"],
+    )
+    async def api_clear_invalidated_memories(
+        bank_id: str,
+        before: str | None = Query(
+            None,
+            description="Delete entries with invalidated_at strictly before this ISO datetime. Omit to clear all.",
+        ),
+        fact_type: str | None = Query(
+            None,
+            description="Optional fact_type filter ('world' or 'experience').",
+        ),
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Permanently delete invalidated memory units for a bank."""
+        try:
+            return await app.state.memory.clear_invalidated_memories(
+                bank_id=bank_id,
+                before=_parse_iso_datetime(before, "before"),
+                fact_type=fact_type,
+                request_context=request_context,
+            )
+        except OperationValidationError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.reason)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            raise _internal_error(e, f"DELETE /v1/default/banks/{bank_id}/memories/invalidated")
+
+    @app.delete(
+        "/v1/default/banks/{bank_id}/memories/{memory_id}",
+        summary="Delete invalidated memory unit",
+        description="Permanently delete an invalidated memory unit from the curation archive. "
+        "Only invalidated memories can be deleted; live memories must be invalidated first.",
+        operation_id="delete_invalidated_memory",
+        tags=["Memory"],
+    )
+    async def api_delete_invalidated_memory(
+        bank_id: str,
+        memory_id: str,
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Permanently delete a single invalidated memory unit."""
+        try:
+            deleted = await app.state.memory.delete_invalidated_memory_unit(
+                bank_id=bank_id,
+                memory_id=memory_id,
+                request_context=request_context,
+            )
+            if not deleted:
+                raise HTTPException(status_code=404, detail=f"Memory unit '{memory_id}' not found")
+            return {"deleted": True, "memory_id": memory_id}
+        except OperationValidationError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.reason)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            raise _internal_error(e, f"DELETE /v1/default/banks/{bank_id}/memories/{memory_id}")
+
     @app.get(
         "/v1/default/banks/{bank_id}/memories/{memory_id}/history",
         summary="Get observation history",
@@ -5877,6 +5969,7 @@ def _register_routes(app: FastAPI):
                         budget=request.budget,
                         context=None,  # Deprecated, now concatenated with query
                         max_tokens=request.max_tokens,
+                        reasoning_effort=request.reasoning_effort,
                         response_schema=request.response_schema,
                         request_context=request_context,
                         tags=request.tags,
@@ -6102,6 +6195,9 @@ def _register_routes(app: FastAPI):
                 total_observations=stats["total_observations"],
                 # .get(): a row cached by an older build has no paused count.
                 paused_mental_models=stats.get("paused_mental_models", 0),
+                # .get(): a row cached by an older build has no storage_bytes.
+                storage_bytes=stats.get("storage_bytes", 0),
+                storage_by_category=stats.get("storage_by_category", {}),
             )
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
@@ -10411,6 +10507,39 @@ def _register_routes(app: FastAPI):
             raise
         except Exception as e:
             raise _internal_error(e, f"GET /v1/default/banks/{bank_id}/audit-logs/{log_id}")
+
+    @app.delete(
+        "/v1/default/banks/{bank_id}/audit-logs",
+        summary="Clear audit logs",
+        description="Delete audit log entries for a bank, optionally only entries before a cutoff timestamp.",
+        operation_id="clear_audit_logs",
+        tags=["Audit"],
+        responses=_BANK_NOT_FOUND_RESPONSES,
+    )
+    async def api_clear_audit_logs(
+        bank_id: str,
+        before: str | None = Query(
+            None,
+            description="Delete entries with started_at strictly before this ISO datetime. Omit to clear all.",
+        ),
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Clear audit log entries for a bank."""
+        try:
+            result = await app.state.memory.clear_audit_logs(
+                bank_id,
+                request_context=request_context,
+                before=_parse_iso_datetime(before, "before"),
+            )
+            if result is None:
+                raise HTTPException(status_code=404, detail=f"Bank '{bank_id}' not found")
+            return result
+        except OperationValidationError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.reason)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            raise _internal_error(e, f"DELETE /v1/default/banks/{bank_id}/audit-logs")
 
     @app.get(
         "/v1/default/banks/{bank_id}/llm-requests",

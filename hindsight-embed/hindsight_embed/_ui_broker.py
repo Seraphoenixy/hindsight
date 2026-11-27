@@ -24,6 +24,8 @@ class UiLaunch:
     env: dict[str, str]
     log_path: str
     cwd: str
+    append: bool = False
+    pid_path: str | None = None
 
 
 @dataclass
@@ -60,19 +62,22 @@ $result | Select-Object ReturnValue, ProcessId | ConvertTo-Json -Compress
 """
 
 
-def launch_independent_ui(spec: UiLaunch) -> None:
+def launch_independent_process(spec: UiLaunch) -> int | None:
     """Hand a one-use launch document to the OS broker, never credentials in argv."""
     if sys.platform != "win32":
         raise OSError("The WMI UI broker is only used on Windows")
     log_path = Path(spec.log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     # The profile directory already contains private configuration. The helper
-    # deletes this transient environment document before launching the UI.
+    # deletes this transient environment document before launching the process.
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", prefix=".ui-launch-", suffix=".json", dir=log_path.parent, delete=False
     ) as payload:
-        json.dump(asdict(spec), payload)
         payload_path = Path(payload.name)
+        pid_path = Path(spec.pid_path) if spec.pid_path else payload_path.with_suffix(".pid")
+        doc = asdict(spec)
+        doc["pid_path"] = str(pid_path)
+        json.dump(doc, payload)
     python = Path(sys.executable)
     pythonw = python.with_name("pythonw.exe")
     executable = str(pythonw if pythonw.exists() else python)
@@ -100,28 +105,46 @@ def launch_independent_ui(spec: UiLaunch) -> None:
             if time.monotonic() >= deadline:
                 raise OSError("Windows UI launch helper did not accept its launch document")
             time.sleep(0.05)
+        if pid_path.exists():
+            raw_pid = pid_path.read_text(encoding="utf-8").strip()
+            return int(raw_pid) if raw_pid.isdigit() else None
+        return None
     except BaseException:
         payload_path.unlink(missing_ok=True)
         raise
+    finally:
+        if not spec.pid_path:
+            pid_path.unlink(missing_ok=True)
+
+
+def launch_independent_ui(spec: UiLaunch) -> int | None:
+    """Launch the control plane UI outside a Windows caller's kill-on-close job."""
+    return launch_independent_process(spec)
 
 
 def _run(payload_path: Path) -> None:
     try:
         spec = UiLaunch(**json.loads(payload_path.read_text(encoding="utf-8")))
-    finally:
+    except BaseException:
         payload_path.unlink(missing_ok=True)
-    # This helper was created by WMI, so neither it nor the UI belongs to the
+        raise
+    # This helper was created by WMI, so neither it nor the child belongs to the
     # plugin's job. Ordinary hidden-process flags now provide independent life.
     from .daemon_embed_manager import _detach_popen_kwargs
 
-    with open(spec.log_path, "wb") as log:
-        try:
-            subprocess.Popen(spec.command, env=spec.env, cwd=spec.cwd, **_detach_popen_kwargs(log))
-        except Exception:
-            import traceback
+    try:
+        with open(spec.log_path, "ab" if spec.append else "wb") as log:
+            try:
+                proc = subprocess.Popen(spec.command, env=spec.env, cwd=spec.cwd, **_detach_popen_kwargs(log))
+                if spec.pid_path:
+                    Path(spec.pid_path).write_text(str(proc.pid), encoding="utf-8")
+            except Exception:
+                import traceback
 
-            log.write(traceback.format_exc().encode("utf-8"))
-            raise
+                log.write(traceback.format_exc().encode("utf-8"))
+                raise
+    finally:
+        payload_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

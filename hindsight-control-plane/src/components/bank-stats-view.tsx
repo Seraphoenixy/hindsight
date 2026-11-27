@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import Link from "next/link";
 import { useBank } from "@/lib/bank-context";
 import { bankRoute } from "@/lib/bank-url";
+import { formatBytes } from "@/lib/knowledge-banks";
 import { Hint } from "@/components/form-layout";
 import { useFeatures } from "@/lib/features-context";
 import { client, MentalModel } from "@/lib/api";
@@ -23,6 +24,7 @@ import {
   XCircle,
   RefreshCw,
   ExternalLink,
+  HardDrive,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -81,6 +83,8 @@ export interface BankStats {
   pending_consolidation: number;
   failed_consolidation: number;
   total_observations: number;
+  storage_bytes?: number;
+  storage_by_category?: Record<string, number>;
 }
 
 /** What the mental-models card reads: the per-model staleness answer, nothing else.
@@ -321,19 +325,28 @@ export function Distribution({
   title,
   items,
   emptyLabel,
+  formatValue,
+  columns = 3,
 }: {
   title: string;
   items: DistributionItem[];
   emptyLabel: string;
+  formatValue?: (value: number) => string;
+  columns?: 3 | 4;
 }) {
   const total = items.reduce((s, i) => s + i.value, 0);
+  const gridColsClass = columns === 4 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3";
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.08em]">
           {title}
         </h4>
-        <CompactNumber value={total} className="text-xs text-muted-foreground tabular-nums" />
+        {formatValue ? (
+          <span className="text-xs text-muted-foreground tabular-nums">{formatValue(total)}</span>
+        ) : (
+          <CompactNumber value={total} className="text-xs text-muted-foreground tabular-nums" />
+        )}
       </div>
       {total === 0 ? (
         <div className="text-xs text-muted-foreground py-2">{emptyLabel}</div>
@@ -350,11 +363,11 @@ export function Distribution({
                     width: `${(d.value / total) * 100}%`,
                     backgroundColor: d.color,
                   }}
-                  title={`${d.name}: ${d.value.toLocaleString()}`}
+                  title={`${d.name}: ${formatValue ? formatValue(d.value) : d.value.toLocaleString()}`}
                 />
               ))}
           </div>
-          <div className="grid grid-cols-3 gap-3 text-sm">
+          <div className={`grid ${gridColsClass} gap-3 text-sm`}>
             {items.map((d) => {
               const body = (
                 <>
@@ -365,10 +378,16 @@ export function Distribution({
                     </span>
                   </div>
                   <div className="flex items-baseline gap-1.5">
-                    <CompactNumber
-                      value={d.value}
-                      className="text-base font-semibold tabular-nums"
-                    />
+                    {formatValue ? (
+                      <span className="text-base font-semibold tabular-nums">
+                        {formatValue(d.value)}
+                      </span>
+                    ) : (
+                      <CompactNumber
+                        value={d.value}
+                        className="text-base font-semibold tabular-nums"
+                      />
+                    )}
                     <span className="text-[10px] text-muted-foreground tabular-nums">
                       {total > 0 ? `${((d.value / total) * 100).toFixed(0)}%` : "0%"}
                     </span>
@@ -932,14 +951,68 @@ export function MemoryStoreCard({
   observationsEnabled: boolean;
 }) {
   const t = useTranslations("bankStats");
+  const storageCategories = stats.storage_by_category ?? {};
+  const storageItems: DistributionItem[] = [
+    {
+      name: t("memories"),
+      value: storageCategories.memories ?? 0,
+      color: CHART_COLORS.world,
+    },
+    {
+      name: t("storageInvalidatedMemories"),
+      value: storageCategories.invalidated_memories ?? 0,
+      color: CHART_COLORS.warning,
+    },
+    {
+      name: t("documents"),
+      value: storageCategories.documents ?? 0,
+      color: CHART_COLORS.semantic,
+    },
+    {
+      name: t("storageChunks"),
+      value: storageCategories.chunks ?? 0,
+      color: CHART_COLORS.temporal,
+    },
+    {
+      name: t("links"),
+      value: storageCategories.links ?? 0,
+      color: CHART_COLORS.entity,
+    },
+    {
+      name: t("entity"),
+      value: storageCategories.entities ?? 0,
+      color: CHART_COLORS.experience,
+    },
+    {
+      name: t("mentalModels"),
+      value: storageCategories.mental_models ?? 0,
+      color: CHART_COLORS.observation,
+    },
+    {
+      name: t("operations"),
+      value: storageCategories.operations ?? 0,
+      color: CHART_COLORS.mutedFg,
+    },
+    {
+      name: t("storageAuditLogs"),
+      value: storageCategories.audit_logs ?? 0,
+      color: CHART_COLORS.primary,
+    },
+  ].filter((item) => item.value > 0);
   return (
     <Card>
       <CardContent className="p-0">
         {/* Stat strip */}
-        <div className="grid grid-cols-1 md:grid-cols-3 md:divide-x divide-y md:divide-y-0 divide-border/60">
+        <div className="grid grid-cols-1 md:grid-cols-4 md:divide-x divide-y md:divide-y-0 divide-border/60">
           <InlineStat icon={Database} label={t("memories")} value={stats.total_nodes} />
           <InlineStat icon={FolderOpen} label={t("documents")} value={stats.total_documents} />
           <InlineStat icon={Link2} label={t("links")} value={stats.total_links} />
+          <InlineStat
+            icon={HardDrive}
+            label={t("storageSize")}
+            value={stats.storage_bytes ?? 0}
+            display={formatBytes(stats.storage_bytes ?? 0)}
+          />
         </div>
 
         {/* Composition + Link types side by side */}
@@ -997,8 +1070,20 @@ export function MemoryStoreCard({
                 },
               ]}
               emptyLabel={t("noLinksYet")}
+              columns={4}
             />
           </div>
+        </div>
+
+        {/* Storage breakdown */}
+        <div className="p-5 border-t border-border/60">
+          <Distribution
+            title={t("storageBreakdown")}
+            items={storageItems}
+            emptyLabel={t("noStorageYet")}
+            formatValue={formatBytes}
+            columns={4}
+          />
         </div>
       </CardContent>
     </Card>

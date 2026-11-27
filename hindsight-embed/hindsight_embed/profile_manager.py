@@ -322,6 +322,31 @@ class ProfilePaths:
             self.ui_port = self.port + UI_PORT_OFFSET
 
 
+def daemon_log_offset_path(log_path: Path) -> Path:
+    """Return the sidecar path recording the byte offset of the latest daemon startup."""
+    return log_path.with_name(f"{log_path.name}.offset")
+
+
+def write_daemon_log_offset(log_path: Path, offset: int) -> None:
+    """Record the byte offset where the current daemon startup begins writing."""
+    try:
+        daemon_log_offset_path(log_path).write_text(str(max(offset, 0)), encoding="utf-8")
+    except OSError:
+        logger.debug("Could not record daemon log offset for %s", log_path, exc_info=True)
+
+
+def read_daemon_log_offset(log_path: Path) -> int:
+    """Return the recorded startup byte offset, or 0 if unavailable or invalid."""
+    offset_path = daemon_log_offset_path(log_path)
+    if not offset_path.is_file():
+        return 0
+    try:
+        value = int(offset_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
 @dataclass
 class ProfileInfo:
     """Profile information including metadata."""

@@ -61,7 +61,7 @@ def _running_process() -> MagicMock:
 def test_start_timeout_terminates_spawned_daemon_group(tmp_path, monkeypatch):
     manager = _startup_manager(MagicMock(return_value=False))
     process = _running_process()
-    paths = SimpleNamespace(log=tmp_path / "daemon.log", port=9177)
+    paths = SimpleNamespace(config=tmp_path / "embed", log=tmp_path / "daemon.log", port=9177)
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.DAEMON_STARTUP_TIMEOUT", 0)
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.platform.system", lambda: "Linux")
     killpg = MagicMock()
@@ -79,7 +79,7 @@ def test_start_timeout_terminates_spawned_daemon_group(tmp_path, monkeypatch):
 def test_startup_keeps_polling_after_transient_stability_failure(tmp_path, monkeypatch):
     manager = _startup_manager(MagicMock(side_effect=[False, True, False, True, True]))
     process = _running_process()
-    paths = SimpleNamespace(log=tmp_path / "daemon.log", port=9177)
+    paths = SimpleNamespace(config=tmp_path / "embed", log=tmp_path / "daemon.log", port=9177)
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.time.sleep", lambda _seconds: None)
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.time.time", lambda: 0)
 
@@ -94,7 +94,7 @@ def test_startup_fails_fast_when_daemon_exits(tmp_path, monkeypatch):
     manager = _startup_manager(MagicMock(return_value=False))
     process = _running_process()
     process.poll.return_value = 1
-    paths = SimpleNamespace(log=tmp_path / "daemon.log", port=9177)
+    paths = SimpleNamespace(config=tmp_path / "embed", log=tmp_path / "daemon.log", port=9177)
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.time.sleep", MagicMock(side_effect=AssertionError))
 
     with patch("hindsight_embed.daemon_embed_manager.subprocess.Popen", return_value=process):
@@ -107,7 +107,7 @@ def _spawned_env(manager, tmp_path, monkeypatch) -> dict:
     """Run _start_daemon_locked up to the spawn and return the env Popen received."""
     process = _running_process()
     process.poll.return_value = 1  # exit at once so the startup loop ends
-    paths = SimpleNamespace(log=tmp_path / "daemon.log", port=9177)
+    paths = SimpleNamespace(config=tmp_path / "embed", log=tmp_path / "daemon.log", port=9177)
     monkeypatch.setattr("hindsight_embed.daemon_embed_manager.time.sleep", lambda _seconds: None)
     with patch("hindsight_embed.daemon_embed_manager.subprocess.Popen", return_value=process) as popen:
         manager._start_daemon_locked({}, "test", paths)

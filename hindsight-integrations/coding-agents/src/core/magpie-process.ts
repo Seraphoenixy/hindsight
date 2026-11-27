@@ -17,6 +17,7 @@ import {
   VALID_HOST_NAMES,
   type HostInjectionState,
 } from "./magpie-hosts";
+import { clearRetainBlocked } from "./session-cache";
 
 export type ProcessAction =
   | "start"
@@ -220,13 +221,20 @@ export async function publishProcessState(
   return state;
 }
 
+const INSTANT_ACTIONS = new Set<ProcessAction>([
+  "injection-enable",
+  "injection-disable",
+  "host-enable",
+  "host-disable",
+]);
+
 /** Claim persistently: options are replayed when Magpie reloads its plugin host. */
 export async function executeProcessRequest(
   cfg: Config,
   port: number,
   request: ProcessRequest,
   stateFile: string
-): Promise<void> {
+): Promise<boolean> {
   const receipt = receiptPath(request);
   mkdirSync(dirname(receipt), { recursive: true, mode: 0o700 });
   const operation: Operation = {
@@ -238,10 +246,12 @@ export async function executeProcessRequest(
   try {
     writeFileSync(receipt, JSON.stringify(operation), { flag: "wx", mode: 0o600 });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
   }
-  await publishProcessState(cfg, port, stateFile, request);
+  if (!INSTANT_ACTIONS.has(request.action)) {
+    await publishProcessState(cfg, port, stateFile, request);
+  }
   try {
     if (request.action === "sync-llm") {
       const llm = await syncMagpieLlm(cfg, {
@@ -258,12 +268,14 @@ export async function executeProcessRequest(
       request.action === "daemon-stop" ||
       request.action === "daemon-restart"
     ) {
-      const res = (await runEmbedOps(cfg, [request.action, "--profile", cfg.daemonProfile])) as {
-        ok?: boolean;
-        message?: string;
-        message_zh?: string;
-      };
-      if (res && res.ok === false) {
+      // Cold daemon startup + stale-port clearing + pg0 init can exceed the 30s
+      // default ops timeout; match boot.js's 120s operation budget.
+      const stdout = await runEmbedOps(cfg, [request.action, "--profile", cfg.daemonProfile], {
+        timeoutMs: 120_000,
+      });
+      // The CLI can exit successfully while reporting a failed daemon action in its JSON body.
+      const res = JSON.parse(stdout) as { ok: boolean; message?: string; message_zh?: string };
+      if (res.ok === false) {
         throw new Error(res.message_zh || res.message || "记忆服务操作失败");
       }
       operation.message = {
@@ -274,10 +286,12 @@ export async function executeProcessRequest(
     } else if (request.action === "injection-enable" || request.action === "injection-disable") {
       const enabled = request.action === "injection-enable";
       writeInjectionEnabled(enabled);
+      if (enabled) clearRetainBlocked();
       operation.message = enabled ? "已开启宿主注入" : "已暂停宿主注入";
     } else if (request.action === "host-enable" || request.action === "host-disable") {
       const enabled = request.action === "host-enable";
       writeHostEnabled(request.host!, enabled);
+      if (enabled) clearRetainBlocked(request.host!);
       operation.message = `${request.host}: ${enabled ? "已开启注入" : "已暂停注入"}`;
     } else if (request.action === "host-install" || request.action === "host-uninstall") {
       const mode = request.action === "host-install" ? "install" : "uninstall";
@@ -310,4 +324,5 @@ export async function executeProcessRequest(
   }
   writeFileSync(receipt, JSON.stringify(operation), { mode: 0o600 });
   await publishProcessState(cfg, port, stateFile, request);
+  return true;
 }

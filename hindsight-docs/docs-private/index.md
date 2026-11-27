@@ -13,6 +13,7 @@
 | 判断上游改动是否涉及已裁剪目录 | [裁剪边界](maintenance/trimming.md) |
 | 排查 Magpie 加载和进程问题 | [本地管理排障](maintenance/local-management.md) |
 | 排查 Codex Desktop 记不住会话 | [Codex Desktop hook 与记忆写入](maintenance/codex-desktop-hooks.md) |
+| 排查心智模型刷新耗时与 token | [刷新改进实测](maintenance/mental-model-refresh-evaluation-2026-11-27.md) |
 | 部署 Linux 同步中继并同步本地记忆库 | [Linux 记忆库同步服务](maintenance/linux-sync.md) |
 
 ## 给接手的 AI 或维护者

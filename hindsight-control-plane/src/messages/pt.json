@@ -351,7 +351,13 @@
     "hintPagesInSync": "Páginas que leram todas as memórias novas do seu escopo.",
     "hintPagesStale": "Páginas com memórias novas no seu escopo desde a última atualização. Elas se atualizam na próxima vez que forem atualizadas.",
     "hintPagesFailed": "Páginas cuja última atualização falhou. As atualizações automáticas ficam pausadas até você atualizá-las manualmente.",
-    "hintPagesLast": "A atualização mais recente de qualquer página."
+    "hintPagesLast": "A atualização mais recente de qualquer página.",
+    "noStorageYet": "Nenhum armazenamento usado ainda",
+    "storageAuditLogs": "Registros de auditoria",
+    "storageBreakdown": "Detalhamento de armazenamento",
+    "storageChunks": "Fragmentos",
+    "storageSize": "Armazenamento",
+    "storageInvalidatedMemories": "Memórias invalidadas"
   },
   "bankConfig": {
     "noBankSelected": "Nenhum banco selecionado",
@@ -876,7 +882,15 @@
     "scopeNoResults": "Nenhum escopo encontrado",
     "filterActive": "Ativas",
     "filterInvalidated": "Invalidadas",
-    "invalidatedHint": "As memórias invalidadas são arquivadas — ocultas de recall e reflect, mas mantidas para auditoria."
+    "invalidatedHint": "As memórias invalidadas são arquivadas — ocultas de recall e reflect, mas mantidas para auditoria.",
+    "clearInvalidatedButton": "Limpar tudo",
+    "clearInvalidatedCancel": "Cancelar",
+    "clearInvalidatedConfirm": "Excluir permanentemente",
+    "clearInvalidatedDialogDescription": "Excluir permanentemente memórias invalidadas do arquivo. Esta ação não pode ser desfeita.",
+    "clearInvalidatedDialogTitle": "Limpar memórias invalidadas",
+    "clearInvalidatedScope30d": "Mais de 30 dias",
+    "clearInvalidatedScope7d": "Mais de 7 dias",
+    "clearInvalidatedScopeAll": "Todas as memórias invalidadas"
   },
   "documentsView": {
     "loadingDocuments": "Carregando documentos...",
@@ -1308,7 +1322,9 @@
     "observationTagsField": "Tags",
     "observationSourceMemoriesField": "Memórias de Origem ({count})",
     "observationIdField": "ID",
-    "structuredOutputTitle": "Saída estruturada"
+    "structuredOutputTitle": "Saída estruturada",
+    "helpReasoning": "Ativar raciocínio do modelo para síntese mais profunda (desativado por padrão para respostas mais rápidas).",
+    "reasoningLabel": "Raciocínio"
   },
   "searchDebug": {
     "noBankSelected": "Nenhum Banco Selecionado",
@@ -1390,7 +1406,9 @@
     "temporalWindowTo": "até",
     "temporalWindowClear": "Limpar",
     "temporalWindowHint": "Ignora a extração de datas da consulta e prioriza memórias datadas neste intervalo. Não oculta as que ficam de fora. As horas são lidas como UTC; defina as duas pontas para aplicar.",
-    "temporalWindowReversed": "O fim do intervalo é anterior ao seu início."
+    "temporalWindowReversed": "O fim do intervalo é anterior ao seu início.",
+    "helpReasoning": "Ativar raciocínio do modelo para síntese mais profunda (desativado por padrão para respostas mais rápidas).",
+    "reasoningLabel": "Raciocínio"
   },
   "webhooksView": {
     "title": "Webhooks",
@@ -1565,7 +1583,15 @@
     "detailRequest": "Requisição",
     "detailResponse": "Resposta",
     "detailMetadata": "Metadados",
-    "entryCount": "{count, plural, one {# entrada} other {# entradas}}"
+    "entryCount": "{count, plural, one {# entrada} other {# entradas}}",
+    "clearButton": "Limpar registros",
+    "clearCancel": "Cancelar",
+    "clearConfirm": "Excluir",
+    "clearDialogDescription": "Excluir entradas do registro de auditoria deste banco de memória. Esta ação não pode ser desfeita.",
+    "clearDialogTitle": "Limpar registros de auditoria",
+    "clearScope30d": "Mais de 30 dias",
+    "clearScope7d": "Mais de 7 dias",
+    "clearScopeAll": "Todos os registros de auditoria"
   },
   "llmRequestsView": {
     "metricCalls": "Chamadas",
@@ -1806,7 +1832,8 @@
     "editFieldMentionedAt": "Mencionado",
     "editFieldOccurredEnd": "Data de término",
     "editFieldOccurredStart": "Data de início",
-    "editFieldType": "Tipo"
+    "editFieldType": "Tipo",
+    "curationDelete": "Excluir"
   },
   "documentChunkModal": {
     "documentTitle": "Detalhes do Documento",
@@ -2221,7 +2248,8 @@
       "auditLogs": {
         "list": "Falha ao listar registros de auditoria",
         "stats": "Falha ao buscar estatísticas dos registros de auditoria",
-        "get": "Falha ao buscar a entrada do registro de auditoria"
+        "get": "Falha ao buscar a entrada do registro de auditoria",
+        "clear": "Falha ao limpar registros de auditoria"
       },
       "llmRequests": {
         "list": "Falha ao listar requisições LLM",

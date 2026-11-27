@@ -223,6 +223,16 @@ class RefreshMentalModelOutcomeMetadata:
     # Why the refresh refused to write, on the failing outcomes only. Finer than
     # ``outcome``: it is the same value persisted as ``reflect_response.refresh_skipped``.
     failure_reason: "RefreshFailureReason | None" = None
+    # Kept on each operation, because a later refresh replaces the page's trace.
+    refresh_mode: str | None = None
+    mode_fallback_reason: str | None = None
+    refresh_duration_ms: int = 0
+    llm_call_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    thoughts_tokens: int = 0
+    delta_batches: int = 0
+    usage_complete: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization, omitting an unrecorded outcome.

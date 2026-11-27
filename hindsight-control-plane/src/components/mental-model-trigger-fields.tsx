@@ -56,7 +56,7 @@ export function triggerFormFromTrigger(trigger?: Partial<MentalModelTrigger> | n
       : trigger?.refresh_after_consolidation
         ? "auto"
         : "manual",
-    mode: trigger?.mode || "full",
+    mode: trigger?.mode || "delta",
     refreshCron: trigger?.refresh_cron || "",
     fullRefreshEnabled: Boolean(trigger?.full_refresh_cron),
     fullRefreshCron: trigger?.full_refresh_cron || "",

@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ...search.tags import TagsMatch, build_tag_filter_clause, tag_filter_active
+from ...search.tags import TagsMatch, build_tag_filter_clause
 from ..base import BankContentCounts, MemoryLocation, StoredMemory, TypedMemoryScope
 from .curation import visible_entity_mentions_sql, visible_entity_stats_sql
 from .graph import _ops_for
@@ -293,7 +293,7 @@ class _EntityNode:
     mention_count: int
 
 
-async def _tag_filtered_entity_graph_edges(
+async def _entity_graph_edges(
     *,
     conn,
     fq_table: Callable[[str], str],
@@ -309,7 +309,7 @@ async def _tag_filtered_entity_graph_edges(
     ``entity_cooccurrences`` counts every memory in the bank and carries no tags,
     so it is recomputed here: one pair per two entities named by the same matching
     memory, the node counts from the same memories. Costs a self-join over the
-    bank's postings, which is why only a tag-filtered read pays it.
+    bank's postings; unfiltered reads deliberately share this authoritative path.
 
     The tag clause filters an unaliased subquery for the reason given on
     :func:`visible_entity_mentions_sql` (the Oracle rewriter needs a bare column),
@@ -371,45 +371,20 @@ async def entity_graph(
 ) -> dict[str, Any]:
     """The entity co-occurrence graph from ``entity_cooccurrences``, strongest edges first.
 
-    With a tag filter the materialized table cannot be used — it has no tags — so
-    edges and node mention counts are recomputed from the matching memories.
-    Keeping the stored edges and only dropping hidden nodes would still leak how
-    often visible entities appear together out of scope (#5031).
+    Edges and counts always cover the same visible memories, including inherited
+    observation mentions. Cached counters are not authoritative after sync.
     """
-    if tag_filter_active(tags, tags_match, tag_groups):
-        edge_rows = await _tag_filtered_entity_graph_edges(
-            conn=conn,
-            fq_table=fq_table,
-            bank_id=bank_id,
-            limit=limit,
-            min_count=min_count,
-            tags=tags,
-            tags_match=tags_match,
-            tag_groups=tag_groups,
-        )
-        return _render_entity_graph(edge_rows, limit)
-    edge_rows = await conn.fetch(
-        f"""
-        SELECT ec.entity_id_1,
-               ec.entity_id_2,
-               ec.cooccurrence_count,
-               ec.last_cooccurred,
-               e1.canonical_name AS name_1,
-               e1.mention_count  AS mention_count_1,
-               e2.canonical_name AS name_2,
-               e2.mention_count  AS mention_count_2
-        FROM {fq_table("entity_cooccurrences")} ec
-        JOIN {fq_table("entities")} e1 ON e1.id = ec.entity_id_1
-        JOIN {fq_table("entities")} e2 ON e2.id = ec.entity_id_2
-        WHERE e1.bank_id = $1
-          AND e2.bank_id = $1
-          AND ec.cooccurrence_count >= $2
-        ORDER BY ec.cooccurrence_count DESC, ec.last_cooccurred DESC
-        LIMIT $3
-        """,
-        bank_id,
-        min_count,
-        limit,
+    # Always derive edges and counts from the same live mention set. Sync imports
+    # do not reliably maintain the historical co-occurrence cache.
+    edge_rows = await _entity_graph_edges(
+        conn=conn,
+        fq_table=fq_table,
+        bank_id=bank_id,
+        limit=limit,
+        min_count=min_count,
+        tags=tags,
+        tags_match=tags_match,
+        tag_groups=tag_groups,
     )
     return _render_entity_graph(edge_rows, limit)
 
@@ -487,35 +462,24 @@ async def get_entity_detail(
 ) -> dict[str, Any] | None:
     """One entity's registry row, rendered for the entity detail view; None if absent.
 
-    With a tag filter the counts and dates come from the matching memories, and an
-    entity no matching memory mentions is None — the same answer as an unknown id,
-    so a scoped reader cannot tell it exists elsewhere (#5031).
+    Counts and dates always come from visible live memories, including inherited
+    observations. An entity without a visible mention is None, so a scoped reader
+    cannot tell it exists elsewhere (#5031).
     """
-    if tag_filter_active(tags, tags_match, tag_groups):
-        built = build_tag_filter_clause(tags, tags_match, tag_groups, param_offset=2)
-        entity_id_param = f"${len(built.params) + 2}"
-        # Inner join on the stats: no matching memory, no row.
-        entity_row = await conn.fetchrow(
-            f"""
-            SELECT e.id, e.canonical_name, s.mention_count, s.first_seen, s.last_seen, e.metadata
-            FROM {fq_table("entities")} e
-            JOIN ({visible_entity_stats_sql(fq_table, _ops_for(conn), built.sql, entity_id_param)}) s ON s.entity_id = e.id
-            WHERE e.bank_id = $1 AND e.id = {entity_id_param}
-            """,
-            bank_id,
-            *built.params,
-            entity_id,
-        )
-    else:
-        entity_row = await conn.fetchrow(
-            f"""
-            SELECT id, canonical_name, mention_count, first_seen, last_seen, metadata
-            FROM {fq_table("entities")}
-            WHERE bank_id = $1 AND id = $2
-            """,
-            bank_id,
-            entity_id,
-        )
+    built = build_tag_filter_clause(tags, tags_match, tag_groups, param_offset=2)
+    entity_id_param = f"${len(built.params) + 2}"
+    # Inner join on the stats: no matching memory, no row.
+    entity_row = await conn.fetchrow(
+        f"""
+        SELECT e.id, e.canonical_name, s.mention_count, s.first_seen, s.last_seen, e.metadata
+        FROM {fq_table("entities")} e
+        JOIN ({visible_entity_stats_sql(fq_table, _ops_for(conn), built.sql, entity_id_param)}) s ON s.entity_id = e.id
+        WHERE e.bank_id = $1 AND e.id = {entity_id_param}
+        """,
+        bank_id,
+        *built.params,
+        entity_id,
+    )
     if not entity_row:
         return None
     return {

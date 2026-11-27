@@ -13,6 +13,7 @@ killing the caller mid-request. Its lifecycle belongs to whoever launched it:
 ``hindsight-embed ui start`` or the coding-agents host half.
 """
 
+import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -25,6 +26,7 @@ from ..profile_manager import (
     ProfileManager,
     lock_profile_env,
     parse_env_file,
+    read_daemon_log_offset,
     write_profile_env,
 )
 from . import local_models, models, settings
@@ -825,17 +827,24 @@ def get_profile_paths(name: str) -> ProfilePathsView:
 def tail_log(name: str, lines: int = 200, source: str = "daemon") -> LogTailView:
     """Return the last ``lines`` lines of the profile's daemon or control-plane log.
 
-    ``source`` is "daemon" (the API daemon log) or "ui" (the control-plane log,
-    so you can see why the UI failed to start).
+    ``source`` is "daemon" (the current startup of the API daemon log) or "ui"
+    (the control-plane log, so you can see why the UI failed to start).
     """
     name = normalize_profile(name)
     paths = ProfileManager().resolve_profile_paths(name)
     path = paths.ui_log if source == "ui" else paths.log
     if not path.exists():
         return LogTailView(path=str(path), exists=False, content="")
-    # Small logs — reading then slicing is simpler than seeking and is fine for
-    # the interactive tail in the UI.
-    tail = path.read_text(encoding="utf-8", errors="replace").splitlines()[-max(lines, 1) :]
+    if source == "ui":
+        text = path.read_text(encoding="utf-8", errors="replace")
+    else:
+        offset = read_daemon_log_offset(path)
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(offset if 0 < offset <= size else 0)
+            text = handle.read().decode("utf-8", errors="replace")
+    tail = text.splitlines()[-max(lines, 1) :]
     return LogTailView(path=str(path), exists=True, content="\n".join(tail))
 
 

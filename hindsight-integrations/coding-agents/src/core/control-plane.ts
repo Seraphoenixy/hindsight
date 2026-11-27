@@ -66,8 +66,13 @@ export async function isControlPlaneHealthy(port: number): Promise<boolean> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), CONTROL_HEALTH_TIMEOUT_MS);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: ctrl.signal });
-    return res.ok;
+    // Probe /api/liveness first so a down or slow dataplane does not make /api/health
+    // exceed CONTROL_HEALTH_TIMEOUT_MS and falsely report the UI itself as down.
+    const liveness = await fetch(`http://127.0.0.1:${port}/api/liveness`, { signal: ctrl.signal });
+    if (liveness.ok) return true;
+    if (liveness.status !== 404) return false;
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: ctrl.signal });
+    return health.ok;
   } catch {
     return false;
   } finally {

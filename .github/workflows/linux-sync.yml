@@ -3,8 +3,8 @@ name: Linux sync server
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
-  pull_request:
+    branches:
+      - private
     paths:
       - 'hindsight-sync-server/**'
       - 'scripts/linux-sync/**'
@@ -12,6 +12,19 @@ on:
       - 'hindsight-api-slim/hindsight_api/engine/**'
       - 'hindsight-api-slim/hindsight_api/api/**'
       - 'hindsight-api-slim/hindsight_api/alembic/**'
+      - 'hindsight-api-slim/hindsight_api/config.py'
+      - '.github/workflows/linux-sync.yml'
+  pull_request:
+    branches:
+      - private
+    paths:
+      - 'hindsight-sync-server/**'
+      - 'scripts/linux-sync/**'
+      - 'hindsight-api-slim/hindsight_api/admin/**'
+      - 'hindsight-api-slim/hindsight_api/engine/**'
+      - 'hindsight-api-slim/hindsight_api/api/**'
+      - 'hindsight-api-slim/hindsight_api/alembic/**'
+      - 'hindsight-api-slim/hindsight_api/config.py'
       - '.github/workflows/linux-sync.yml'
 
 permissions:

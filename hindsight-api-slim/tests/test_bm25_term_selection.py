@@ -15,7 +15,11 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from hindsight_api.engine.search.bm25_term_selection import select_selective_bm25_tokens
+from hindsight_api.engine.search.bm25_term_selection import (
+    build_cjk_ilike_terms,
+    contains_cjk,
+    select_selective_bm25_tokens,
+)
 
 
 class _RaisingConn:
@@ -172,3 +176,25 @@ async def test_selects_rare_term_from_real_pg_stats(pg0_db_url):
     finally:
         await conn.execute(f'DROP TABLE IF EXISTS public."{table}"')
         await conn.close()
+
+
+def test_contains_cjk_detects_cjk_characters():
+    assert contains_cjk("文档老化") is True
+    assert contains_cjk("magpie插件") is True
+    assert contains_cjk("pure ascii query") is False
+    assert contains_cjk("") is False
+
+
+def test_build_cjk_ilike_terms_extracts_phrases_bigrams_and_ascii():
+    terms = build_cjk_ilike_terms("magpie插件 与 文档老化", ["magpie", "a"])
+    assert "文档老化" in terms
+    assert "文档" in terms
+    assert "档老" in terms
+    assert "老化" in terms
+    assert "插件" in terms
+    assert "magpie" in terms
+    assert "a" not in terms  # single-char non-CJK token skipped
+    assert len(terms) == len({t.lower() for t in terms})
+
+    capped = build_cjk_ilike_terms("一二三四五六七八九十", [], max_terms=4)
+    assert len(capped) == 4

@@ -358,6 +358,14 @@ class StoredMemory:
     attachment_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class MemoryUpdateCursor:
+    """Stable position in a refresh window, including rows sharing a write timestamp."""
+
+    updated_at: datetime
+    unit_id: str
+
+
 @dataclass
 class MemoryPatch:
     """A partial update to one memory. Unset fields are left alone.
@@ -2322,6 +2330,7 @@ class MemoriesExtension(Extension, ABC):
         until: datetime,
         since: datetime,
         limit: int,
+        after: MemoryUpdateCursor | None = None,
         fact_types: list[str] | None = None,
         tags: list[str] | None = None,
         tags_match: TagsMatch = "any",
@@ -2329,8 +2338,9 @@ class MemoriesExtension(Extension, ABC):
     ) -> list[StoredMemory] | None:
         """The memories in :meth:`newest_memory_updated_at`'s scope and window, oldest first.
 
-        A delta page refresh reads them to ask a decision model which could
-        change the page, instead of searching for them. None means this store cannot
+        A delta page refresh consumes every page directly, without ranked retrieval.
+        ``after`` is a keyset cursor, so equal timestamps do not lose rows and a
+        concurrent deletion cannot shift the next page. None means this store cannot
         list them, and the refresh searches as it always has.
         """
         return None
@@ -3626,6 +3636,20 @@ class MemoriesExtension(Extension, ABC):
         Postgres counts its ``documents`` table on the caller's connection."""
         return await self.count_documents(bank_id=bank_id)
 
+    async def bank_storage_bytes(self, *, conn, fq_table, bank_id: str) -> dict[str, int]:
+        """Approximate stored byte size of this bank's data, total and by category."""
+        return {
+            "total": 0,
+            "memories": 0,
+            "documents": 0,
+            "chunks": 0,
+            "links": 0,
+            "entities": 0,
+            "mental_models": 0,
+            "operations": 0,
+            "audit_logs": 0,
+        }
+
     async def get_entity_detail(
         self,
         *,
@@ -3813,6 +3837,32 @@ class MemoriesExtension(Extension, ABC):
     ) -> None:
         """Insert or update the SQL document row. A no-op here: the retain path writes the
         document through :meth:`put_document`, and there is no SQL row."""
+
+    async def prune_expired_document_text(
+        self,
+        *,
+        conn,
+        cutoff: datetime,
+        batch_size: int = 200,
+    ) -> int:
+        """Prune ``original_text`` and ``chunks`` for documents older than ``cutoff``.
+
+        Non-SQL stores that manage documents externally default to a no-op.
+        """
+        return 0
+
+    async def prune_expired_invalidated_memories(
+        self,
+        *,
+        conn,
+        cutoff: datetime,
+        batch_size: int = 500,
+    ) -> int:
+        """Delete archived rows in ``invalidated_memory_units`` older than ``cutoff``.
+
+        Non-SQL stores default to a no-op.
+        """
+        return 0
 
     async def relabel_document_memories(
         self,

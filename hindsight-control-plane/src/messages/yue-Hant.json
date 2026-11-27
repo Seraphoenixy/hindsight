@@ -351,7 +351,13 @@
     "hintPagesInSync": "已經讀晒範圍內所有新記憶嘅頁面。",
     "hintPagesStale": "上次更新之後範圍內有新記憶嘅頁面。下次更新時會追返。",
     "hintPagesFailed": "上次更新失敗嘅頁面。手動更新之前，自動更新會暫停。",
-    "hintPagesLast": "所有頁面之中最近一次更新嘅時間。"
+    "hintPagesLast": "所有頁面之中最近一次更新嘅時間。",
+    "noStorageYet": "暫時未有儲存空間使用記錄",
+    "storageAuditLogs": "審計日誌",
+    "storageBreakdown": "儲存空間分佈",
+    "storageChunks": "分塊",
+    "storageSize": "儲存空間",
+    "storageInvalidatedMemories": "已失效記憶"
   },
   "bankConfig": {
     "noBankSelected": "未選擇記憶庫",
@@ -876,7 +882,15 @@
     "scopeNoResults": "搵唔到範圍",
     "filterActive": "有效",
     "filterInvalidated": "已失效",
-    "invalidatedHint": "失效咗嘅記憶會封存——唔會喺 recall 同 reflect 度出現，但會保留以供稽核。"
+    "invalidatedHint": "失效咗嘅記憶會封存——唔會喺 recall 同 reflect 度出現，但會保留以供稽核。",
+    "clearInvalidatedButton": "全部清空",
+    "clearInvalidatedCancel": "取消",
+    "clearInvalidatedConfirm": "永久刪除",
+    "clearInvalidatedDialogDescription": "從封存中永久刪除已失效嘅記憶。此操作無法還原。",
+    "clearInvalidatedDialogTitle": "清空已失效記憶",
+    "clearInvalidatedScope30d": "30 日以前",
+    "clearInvalidatedScope7d": "7 日以前",
+    "clearInvalidatedScopeAll": "全部已失效記憶"
   },
   "documentsView": {
     "loadingDocuments": "載入文件中...",
@@ -1308,7 +1322,9 @@
     "observationTagsField": "標籤",
     "observationSourceMemoriesField": "來源記憶（{count}）",
     "observationIdField": "ID",
-    "structuredOutputTitle": "結構化輸出"
+    "structuredOutputTitle": "結構化輸出",
+    "helpReasoning": "啟用模型推理以進行更深入嘅綜合分析（預設關閉以加快回應速度）。",
+    "reasoningLabel": "推理"
   },
   "searchDebug": {
     "noBankSelected": "未選擇記憶庫",
@@ -1390,7 +1406,9 @@
     "temporalWindowTo": "至",
     "temporalWindowClear": "清除",
     "temporalWindowHint": "唔會喺查詢度抽日期，而係將呢個範圍內嘅記憶排前啲。範圍以外嘅記憶唔會收埋。時間當 UTC 睇；兩頭都填咗先會生效。",
-    "temporalWindowReversed": "範圍嘅結束時間早過開始時間。"
+    "temporalWindowReversed": "範圍嘅結束時間早過開始時間。",
+    "helpReasoning": "啟用模型推理以進行更深入嘅綜合分析（預設關閉以加快回應速度）。",
+    "reasoningLabel": "推理"
   },
   "webhooksView": {
     "title": "Webhooks",
@@ -1565,7 +1583,15 @@
     "detailRequest": "請求",
     "detailResponse": "回應",
     "detailMetadata": "中繼資料",
-    "entryCount": "{count, plural, other {# 條記錄}}"
+    "entryCount": "{count, plural, other {# 條記錄}}",
+    "clearButton": "清除日誌",
+    "clearCancel": "取消",
+    "clearConfirm": "刪除",
+    "clearDialogDescription": "刪除此記憶庫嘅審計日誌記錄。此操作無法還原。",
+    "clearDialogTitle": "清除審計日誌",
+    "clearScope30d": "30 日以前",
+    "clearScope7d": "7 日以前",
+    "clearScopeAll": "全部審計日誌"
   },
   "llmRequestsView": {
     "metricCalls": "呼叫",
@@ -1806,7 +1832,8 @@
     "editFieldMentionedAt": "提及日期",
     "editFieldOccurredEnd": "結束日期",
     "editFieldOccurredStart": "開始日期",
-    "editFieldType": "類型"
+    "editFieldType": "類型",
+    "curationDelete": "刪除"
   },
   "documentChunkModal": {
     "documentTitle": "文件詳情",
@@ -2221,7 +2248,8 @@
       "auditLogs": {
         "list": "未能列出稽核記錄",
         "stats": "未能載入稽核記錄統計",
-        "get": "未能載入稽核記錄項目"
+        "get": "未能載入稽核記錄項目",
+        "clear": "清除審計日誌失敗"
       },
       "llmRequests": {
         "list": "未能列出 LLM 請求",

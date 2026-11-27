@@ -17,6 +17,7 @@
 | [ADR-011：本地设置页读路径](decisions/011-local-read-path.md) | 2026-11-26 | 已采纳；`ops snapshot` 分组读取，诊断后置 |
 | [ADR-012：多端同步设置独立成页](decisions/012-sync-settings-page.md) | 2026-11-26 | 已采纳；同步配置从 `/local` 迁至 `/sync` |
 | [ADR-013：Agent 召回不经过子 LLM](decisions/013-agent-recall-without-sub-llm.md) | 2026-11-26 | 已采纳；hook 默认注入改为 `recall`，移除自动 reflect |
+| [ADR-014：心智模型直接消费增量事实](decisions/014-direct-delta-refresh.md) | 2026-11-27 | 已采纳；delta 分页读取变更并生成补丁，默认合并自动刷新 |
 
 ## 新增决策的格式
 

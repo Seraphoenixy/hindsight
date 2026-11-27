@@ -19,6 +19,7 @@ from hindsight_api import RequestContext
 from hindsight_api.engine.memories.pg import curation
 from hindsight_api.engine.memory_engine import MemoryEngine
 from hindsight_api.engine.search.tags import TagGroupLeaf, TagGroupNot, build_tag_filter_clause, tag_filter_active
+from tests.refresh_support import cross_encoder, embeddings  # noqa: F401 -- deterministic module fixtures
 
 # Seeds `entities` / `unit_entities` / `memory_units` with raw INSERTs, so a store
 # that keeps its entity registry outside SQL has nothing here to read.
@@ -130,11 +131,11 @@ async def test_list_shows_only_entities_the_matching_memories_mention(
 
 
 @pytest.mark.asyncio
-async def test_unfiltered_list_keeps_the_stored_counters(
+async def test_unfiltered_list_counts_current_memories(
     memory: MemoryEngine, request_context: RequestContext, scoped_bank
 ):
     listing = await memory.list_entities(scoped_bank["bank_id"], request_context=request_context)
-    assert set(_counts(listing).values()) == {STORED_COUNT}
+    assert _counts(listing) == {"Alice": 3, "Bob": 1, "Kate": 1, "billing service": 1, "Zed": 1}
     assert listing["total"] == 5
 
 
@@ -157,7 +158,7 @@ async def test_detail_is_a_miss_outside_the_scope(memory: MemoryEngine, request_
 
     unfiltered = await memory.get_entity(bank_id, str(scoped_bank["kate"]), request_context=request_context)
     assert unfiltered is not None
-    assert unfiltered["mention_count"] == STORED_COUNT
+    assert unfiltered["mention_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -232,6 +233,66 @@ async def test_observations_lend_their_sources_entities_under_a_filter(
     graph = await memory.get_entity_graph(bank_id, **both)
     assert {n["data"]["label"] for n in graph["nodes"]} == {"Carol", "Dave"}
     assert len(graph["edges"]) == 1
+
+    # Unfiltered counts, detail and timeline share the same inherited mentions.
+    unfiltered = await memory.list_entities(bank_id, request_context=request_context)
+    assert _counts(unfiltered) == {"Carol": 3, "Dave": 2}
+    for scope, expected in (({}, 3), ({"tags": ["team:a", "team:b"], "tags_match": "all_strict"}, 1)):
+        timeline = await memory.list_memory_units(
+            bank_id=bank_id, entity_id=str(carol), request_context=request_context, **scope
+        )
+        assert timeline["total"] == expected
+        assert len({m["id"] for m in timeline["items"]}) == expected
+
+
+async def test_unfiltered_reads_ignore_corrupt_counters_and_hide_orphans(memory, request_context, scoped_bank):
+    bank_id = scoped_bank["bank_id"]
+    async with memory._pool.acquire() as conn:
+        orphan = await _entity(conn, bank_id, "orphan")
+    listing = await memory.list_entities(bank_id, request_context=request_context)
+    assert _counts(listing) == {"Alice": 3, "Bob": 1, "Kate": 1, "billing service": 1, "Zed": 1}
+    assert listing["total"] == 5
+    assert await memory.get_entity(bank_id, str(orphan), request_context=request_context) is None
+    page = await memory.list_entities(bank_id, limit=1, offset=20, request_context=request_context)
+    assert page["items"] == [] and page["total"] == 5
+    graph = await memory.get_entity_graph(bank_id, request_context=request_context)
+    assert len(graph["edges"]) == 4, "live postings have edges even when the co-occurrence cache is empty"
+    counts = {n["data"]["label"]: n["data"]["mentionCount"] for n in graph["nodes"]}
+    assert counts["Alice"] == 3
+
+
+async def test_rebuild_derived_entity_indexes_is_idempotent_and_bank_scoped(memory, request_context, scoped_bank):
+    from hindsight_api.engine.memories import sql_memories
+
+    bank_id = scoped_bank["bank_id"]
+    other_bank = f"entity-repair-other-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=other_bank, request_context=request_context)
+    async with memory._pool.acquire() as conn:
+        other = await _entity(conn, other_bank, "Alice")
+        async with conn.transaction():
+            await sql_memories().sync_rebuild_entity_indexes(conn=conn, schema="public", bank_id=bank_id)
+            await sql_memories().sync_rebuild_entity_indexes(conn=conn, schema="public", bank_id=bank_id)
+        assert await conn.fetchval("SELECT mention_count FROM entities WHERE id=$1", scoped_bank["alice"]) == 3
+        assert await conn.fetchval("SELECT mention_count FROM entities WHERE id=$1", other) == STORED_COUNT
+        a, b = sorted([scoped_bank["alice"], scoped_bank["bob"]])
+        assert (
+            await conn.fetchval(
+                "SELECT cooccurrence_count FROM entity_cooccurrences WHERE entity_id_1=$1 AND entity_id_2=$2", a, b
+            )
+            == 1
+        )
+
+        # A later sync edit removes Bob's postings; its cached edge/count must go.
+        async with conn.transaction():
+            await conn.execute("DELETE FROM unit_entities WHERE entity_id=$1", scoped_bank["bob"])
+            await sql_memories().sync_rebuild_entity_indexes(conn=conn, schema="public", bank_id=bank_id)
+        assert await conn.fetchval("SELECT mention_count FROM entities WHERE id=$1", scoped_bank["bob"]) == 0
+        assert (
+            await conn.fetchval(
+                "SELECT COUNT(*) FROM entity_cooccurrences WHERE entity_id_1=$1 AND entity_id_2=$2", a, b
+            )
+            == 0
+        )
 
 
 @pytest.mark.asyncio

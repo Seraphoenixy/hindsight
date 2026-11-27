@@ -1,0 +1,144 @@
+name: Private Multi-Platform Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create/update GitHub Release (requires tag or release_tag)"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag name when running via workflow_dispatch (e.g. v1.2.3-private.1)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-python-packages:
+    name: Build Python Packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Build all workspace Python packages
+        run: uv build --all-packages --out-dir dist/python
+      - uses: actions/upload-artifact@v6
+        with:
+          name: python-packages
+          path: dist/python/*
+          if-no-files-found: error
+
+  build-linux-sync:
+    name: Build Linux Sync Server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: hindsight-sync-server/go.mod
+          cache: false
+      - name: Build linux-x64 and linux-arm64 packages
+        run: |
+          bash scripts/linux-sync/build.sh amd64 dist/sync
+          bash scripts/linux-sync/build.sh arm64 dist/sync
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-sync-packages
+          path: dist/sync/hindsight-sync-server-linux-*.tar.gz
+          if-no-files-found: error
+
+  build-node-packages:
+    name: Build Node Packages (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            is_primary: true
+          - os: windows-latest
+            platform: win32-x64
+            is_primary: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install root workspace dependencies
+        run: npm ci
+      - name: Build client & Control Plane standalone
+        run: |
+          npm run build -w @vectorize-io/hindsight-client
+          npm run build -w @vectorize-io/hindsight-control-plane
+      - name: Package Control Plane standalone (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/node
+          tar -C hindsight-control-plane -czf "dist/node/hindsight-control-plane-${{ matrix.platform }}.tar.gz" \
+            bin standalone public package.json
+      - name: Package Control Plane standalone (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/node | Out-Null
+          Compress-Archive -Path `
+            hindsight-control-plane/bin, `
+            hindsight-control-plane/standalone, `
+            hindsight-control-plane/public, `
+            hindsight-control-plane/package.json `
+            -DestinationPath "dist/node/hindsight-control-plane-${{ matrix.platform }}.zip" -Force
+      - name: Build and pack npm packages (primary)
+        if: matrix.is_primary
+        run: |
+          mkdir -p dist/node
+          npm pack -w @vectorize-io/hindsight-client --pack-destination dist/node
+          (cd hindsight-integrations/coding-agents && npm ci && npm run prepublishOnly && npm pack --pack-destination ../../dist/node)
+          npm pack ./hindsight-integrations/magpie --pack-destination dist/node
+      - uses: actions/upload-artifact@v6
+        with:
+          name: node-packages-${{ matrix.platform }}
+          path: dist/node/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - build-python-packages
+      - build-linux-sync
+      - build-node-packages
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.create_release && inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SHA256SUMS.txt
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS.txt
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/* \
+              --target "${{ github.sha }}" \
+              --title "$TAG_NAME" \
+              --generate-notes
+          fi

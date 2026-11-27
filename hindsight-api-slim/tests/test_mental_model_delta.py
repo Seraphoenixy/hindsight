@@ -33,6 +33,7 @@ from hindsight_api.engine.maintenance import MaintenanceLoop
 from hindsight_api.engine.response_models import LLMCallResult, ReflectResult, TokenUsage
 from hindsight_api.engine.retain import embedding_utils
 from tests.conftest import stub_refresh_has_sources
+from tests.refresh_support import cross_encoder, embeddings  # noqa: F401 — module fixtures avoid optional ML
 
 
 def _canned_reflect_result(text: str, facts: list[dict] | None = None) -> ReflectResult:
@@ -72,6 +73,9 @@ def patch_reflect(monkeypatch):
             return result
 
         monkeypatch.setattr(memory, "reflect_async", fake_reflect_async)
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(memory, "_read_delta_refresh", AsyncMock(return_value=None))
         stub_refresh_has_sources(monkeypatch, memory)
         return calls
 

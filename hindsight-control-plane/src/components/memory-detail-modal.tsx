@@ -17,6 +17,7 @@ import {
   RotateCcw,
   Pencil,
   Braces,
+  Trash2,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -151,6 +152,22 @@ export function MemoryDetailModal({
       onChanged?.();
     } catch (err) {
       console.error("Failed to curate memory:", err);
+    } finally {
+      setCurating(false);
+    }
+  };
+
+  // Permanently delete an invalidated fact from the curation archive.
+  const handleDelete = async () => {
+    if (!memory || !currentBank || curating) return;
+    setCurating(true);
+    try {
+      await client.deleteMemory(memory.id, currentBank);
+      invalidateGraphCache(currentBank);
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      console.error("Failed to delete invalidated memory:", err);
     } finally {
       setCurating(false);
     }
@@ -590,6 +607,15 @@ export function MemoryDetailModal({
                                   >
                                     <RotateCcw className="h-4 w-4 mr-1.5" />
                                     {tCuration("curationRevert")}
+                                  </Button>
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    disabled={curating}
+                                    onClick={handleDelete}
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-1.5" />
+                                    {tCuration("curationDelete")}
                                   </Button>
                                   <span className="inline-flex items-center rounded-full bg-muted text-muted-foreground px-2 py-0.5 text-xs font-medium">
                                     {tCuration("curationStateInvalidated")}

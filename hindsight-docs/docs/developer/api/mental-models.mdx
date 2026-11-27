@@ -113,7 +113,7 @@ Mental models can be configured to **automatically refresh** when observations a
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `mode` | `"full"` \| `"delta"` | `"full"` | Refresh strategy. See [Refresh Mode](#refresh-mode) below. |
+| `mode` | `"full"` \| `"delta"` | `"delta"` | Refresh strategy. See [Refresh Mode](#refresh-mode) below. |
 | `refresh_after_consolidation` | bool | false | Automatically refresh after observations consolidation |
 | `refresh_cron` | string \| null | null | UTC 5-field cron expression for scheduled refreshes, such as `"0 3 * * *"` for daily at 03:00 UTC |
 | `full_refresh_cron` | string \| null | null | UTC 5-field cron expression for a scheduled **full** refresh of a delta model, such as `"0 3 * * 0"` for Sundays at 03:00 UTC. Works alongside either trigger above. See [Scheduled Full Refresh](#scheduled-full-refresh). |
@@ -233,9 +233,9 @@ Listing does not cost one query per model — the whole page is answered togethe
 
 Two strategies are available for how a refresh produces the new content:
 
-- **`full`** *(default)* — every refresh regenerates the entire content from scratch. Simple and predictable: the LLM synthesises a fresh document from the retrieved memories. Best when the document is short, when you want every refresh to potentially restructure the output, or when you're not yet sure what the final shape should be.
+- **`full`** — every refresh regenerates the entire content from scratch. Simple and predictable: the LLM synthesises a fresh document from the retrieved memories. Best when the document is short, when you want every refresh to potentially restructure the output, or when you're not yet sure what the final shape should be.
 
-- **`delta`** — refresh emits a list of typed *operations* (add a section, append a bullet, replace a block, remove a stale paragraph) against the document's existing structure, then renders the result. Sections that aren't targeted by any operation are copied through **byte-identical** — no paraphrasing, no whitespace drift, no list-style normalisation. Best for long-lived "playbook"–style mental models where you want stability across refreshes and only the genuinely changed parts to move.
+- **`delta`** *(default)* — refresh emits a list of typed *operations* (add a section, append a bullet, replace a block, remove a stale paragraph) against the document's existing structure, then renders the result. Sections that aren't targeted by any operation are copied through **byte-identical** — no paraphrasing, no whitespace drift, no list-style normalisation. Best for long-lived "playbook"–style mental models where you want stability across refreshes and only the genuinely changed parts to move.
 
 <Figure doc={refreshModes} />
 
@@ -254,6 +254,8 @@ Hindsight keeps an authoritative **structured** representation of the document �
 Anything no operation mentions is copied through untouched, so unchanged prose is preserved rather than regenerated and checked. This matters because "preserve the unchanged content" is only a soft constraint on an LLM — generating the next token from a gestalt of the input is what it intrinsically does, so instructed-to-preserve prose drifts over many refreshes.
 
 Sections and blocks are addressed by id, never by position, so an operation cannot land on the wrong one by miscounting. Failure modes are conservative by design: an operation referencing a section or block that doesn't exist — or a block that lives in a different section than the one it names — is **dropped** rather than guessed at, and the rest of the operations still apply. When *every* operation points at something missing, the model is asked once more, shown the ids it got wrong and the sections the document actually has. The refresh records which ones were dropped and why, so you can see that part of that round's new information didn't make it into the document.
+
+Delta refreshes enumerate changed memories directly, without a decision model or a reflect synthesis. Changes are paginated by write time and ID, then edited in batches of at most 200 memories and approximately 4096 fact tokens. Every batch edits the preceding result; content and the watermark are saved only after the whole run succeeds. An unchanged window makes no LLM call. Stores that cannot enumerate changes retain the reflect fallback.
 
 Delta mode falls back to a full regeneration automatically in two cases:
 1. The mental model has no existing content yet (nothing to anchor edits on).

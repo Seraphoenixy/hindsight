@@ -490,6 +490,19 @@ describe("HindsightClient credential refresh", () => {
     expect(ua).toMatch(/^hindsight-coding-agents\/\d+\.\d+\.\d+/);
   });
 
+  it("sends the configured extra headers, keeping its own Authorization (#6651)", async () => {
+    const { fetchMock } = server(() => "key");
+    await new HindsightClient({
+      apiUrl: "http://x",
+      bank: "b",
+      apiToken: "key",
+      headers: { "CF-Access-Client-Id": "id.access", authorization: "Bearer other" },
+    }).req("GET", "http://x/thing");
+    const sent = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(sent.get("CF-Access-Client-Id")).toBe("id.access");
+    expect(sent.get("Authorization")).toBe("Bearer key");
+  });
+
   it("recovers from a rotated credential without restarting the host", async () => {
     const { calls } = server(() => "new-key");
     let onDisk = "old-key";
@@ -630,7 +643,7 @@ describe("every memory write goes through the one call site that scopes it", () 
   });
 });
 
-describe("every client-building entrypoint forwards observationScopes", () => {
+describe("every client-building entrypoint forwards observationScopes and apiHeaders", () => {
   const SRC = fileURLToPath(new URL("..", import.meta.url));
 
   function sourceFiles(dir: string, prefix = ""): string[] {
@@ -652,9 +665,47 @@ describe("every client-building entrypoint forwards observationScopes", () => {
     });
     expect(dropped).toEqual([]);
   });
+
+  // A site that drops `headers` fails HARD for its user — behind Cloudflare Access every request
+  // from it is refused at the edge — but only on the one path that forgot (#6651).
+  it("has no client construction without the configured apiHeaders", () => {
+    const dropped = sourceFiles(SRC).filter((rel) => {
+      const src = readFileSync(join(SRC, rel), "utf8");
+      // A call opens its options on the same line; the doc comments that name it write `({...})`.
+      const builds = (src.match(/(new HindsightClient|makeClient)\(\{\n/g) ?? []).length;
+      return builds > 0 && (src.match(/headers: cfg\.apiHeaders/g) ?? []).length < builds;
+    });
+    expect(dropped).toEqual([]);
+  });
 });
 
 describe("HindsightClient.reflect failures", () => {
+  it("disables Bun's socket idle timeout when the request has its own deadline (#6431)", async () => {
+    vi.stubGlobal("Bun", {});
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      jsonResponse(200, { text: "answer" })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+
+    await expect(client.reflect("why?", { timeoutMs: 900_000 })).resolves.toBe("answer");
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ timeout: false });
+    expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("leaves fetch's own timeout alone outside Bun (#6431)", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      jsonResponse(200, { text: "answer" })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+
+    await expect(client.reflect("why?", { timeoutMs: 900_000 })).resolves.toBe("answer");
+
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("timeout");
+  });
+
   it("keeps the server's error body, not just the status", async () => {
     vi.stubGlobal(
       "fetch",

@@ -18,6 +18,19 @@
   let pending = null;
   let loading = false;
   let llmTouched = false;
+  let fastPollTimer = null;
+  const scheduleFastPoll = () => {
+    if (fastPollTimer) return;
+    fastPollTimer = setTimeout(() => {
+      fastPollTimer = null;
+      refresh();
+    }, 350);
+  };
+  const clearFastPoll = () => {
+    if (!fastPollTimer) return;
+    clearTimeout(fastPollTimer);
+    fastPollTimer = null;
+  };
   const setText = (id, text) => {
     const target = element(id);
     if (target) target.textContent = text;
@@ -92,6 +105,9 @@
             `<button type="button" data-host-action="host-disable" data-host="${hostName}" ${
               lockButtons || host.harnessDisabled ? "disabled" : ""
             }>暂停</button>` +
+            `<button type="button" data-host-action="host-install" data-host="${hostName}" ${
+              lockButtons ? "disabled" : ""
+            }>更新</button>` +
             `<button type="button" data-host-action="host-uninstall" data-host="${hostName}" ${
               lockButtons ? "disabled" : ""
             }>卸载</button>`
@@ -117,7 +133,11 @@
     const button = element("syncLlm");
     if (!select || !button) return;
     if (!llm) {
-      element("llmStatus").textContent = "未上报";
+      const llmStatusEl = element("llmStatus");
+      if (llmStatusEl) {
+        llmStatusEl.textContent = "未上报";
+        llmStatusEl.dataset.status = "stale";
+      }
       element("llmHost").textContent = "—";
       element("llmConfigured").textContent = "—";
       element("llmMode").textContent = "—";
@@ -134,7 +154,11 @@
       unavailable: "不可用",
       error: "错误",
     };
-    element("llmStatus").textContent = fresh ? labels[llm.status] || llm.status : "状态未更新";
+    const llmStatusEl = element("llmStatus");
+    if (llmStatusEl) {
+      llmStatusEl.textContent = fresh ? labels[llm.status] || llm.status : "状态未更新";
+      llmStatusEl.dataset.status = fresh ? llm.status : "stale";
+    }
     element("llmHost").textContent = llm.hostModel || "—";
     element("llmConfigured").textContent = llm.configuredModel || "—";
     element("llmMode").textContent = llm.mode === "fixed" ? "固定模型" : "跟随 Magpie";
@@ -222,8 +246,10 @@
     renderHosts(state, true, Boolean(busy));
     if (busy) {
       status.textContent = "正在执行，请稍候…";
+      scheduleFastPoll();
       return;
     }
+    clearFastPoll();
     setDisabled("start", state.running);
     setDisabled("stop", !state.running);
     setDisabled("restart", !state.running);

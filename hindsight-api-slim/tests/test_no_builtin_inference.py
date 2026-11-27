@@ -34,6 +34,7 @@ def test_defaults_match_upstream_local_experience():
 
 
 def test_openai_embeddings_allows_local_base_url_without_api_key(monkeypatch):
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
     monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_PROVIDER", "openai")
     monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL", "http://127.0.0.1:8080/v1")
     monkeypatch.delenv("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY", raising=False)

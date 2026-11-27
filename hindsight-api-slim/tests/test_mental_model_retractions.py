@@ -30,6 +30,7 @@ from hindsight_api.engine.reflect.retractions import (
 from hindsight_api.engine.reflect.structured_doc import render_document, split_markdown
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.schema import fq_store_table
+from tests.refresh_support import cross_encoder, embeddings  # noqa: F401 — module fixtures avoid optional ML
 
 # ---------------------------------------------------------------------------
 # Pure helpers — no DB, no LLM

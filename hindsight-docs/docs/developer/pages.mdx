@@ -64,17 +64,17 @@ This is a different path from [recall](./retrieval), which searches individual m
 
 ---
 
-## Cheaper Refreshes With a Decision Model {#decision-model-refresh}
+## Direct Incremental Refreshes {#decision-model-refresh}
 
-Because a page refreshes incrementally, most refreshes only have a handful of new memories to consider. When a [decision model](./decision-models) is set up for reflect, a refresh uses that:
+A delta refresh reads changed memories directly instead of running a multi-turn reflect and synthesizing a candidate document that the editor does not need.
 
-1. It reads the memories added since the page's last refresh.
-2. For each one, it asks the decision model whether it could change the page.
-3. Only those reach the LLM that edits the page, together with the bank's directives. When none could, there is no LLM call at all.
+1. Read all changes in the page's scope and snapshot window, paginating by write timestamp and memory ID.
+2. Split them into complete batches of at most 200 memories and approximately 4096 fact tokens. Include the bank's directives in every batch.
+3. Apply each batch's structured edits to the preceding result. Save the document and watermark only after the entire refresh succeeds.
 
-A memory it drops is not offered again. Above 200 new memories ([`HINDSIGHT_API_MENTAL_MODEL_DELTA_GATE_MAX_MEMORIES`](./configuration#reflect)), or when the decision model fails, the refresh runs reflect as before. On the refresh cost eval this took a 20-memory refresh from 3 LLM calls to 1 and cut its input tokens by about 70%.
+An empty window makes no LLM call, except when deleted evidence requires a retraction check. Larger windows remain incremental; they no longer fall back to reflect at 200 memories. A store that cannot enumerate changes retains the legacy reflect fallback.
 
-The same applies to any [mental model](./api/mental-models#refresh-mode) in `delta` mode. Only the `hindsight` and `typesafe` providers are supported for now. Turn it off for one bank with [`mental_model_delta_use_decision_model: false`](./configuration#reflect).
+This applies to any [mental model](./api/mental-models#refresh-mode) in `delta` mode. No decision model is required. The old `mental_model_delta_use_decision_model` switch is retained for configuration compatibility but no longer changes the refresh path. [`HINDSIGHT_API_MENTAL_MODEL_DELTA_GATE_MAX_MEMORIES`](./configuration#reflect) now controls page and batch size.
 
 ---
 

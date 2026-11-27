@@ -28,6 +28,11 @@ const MODELS = {
       magpie_label: "GLM-5.3-Flash",
       native_endpoints: ["/v1/chat/completions"],
     },
+    {
+      id: "codex/gpt-6.2-sol",
+      magpie_label: "GPT-6.2-Sol",
+      native_endpoints: ["/v1/responses"],
+    },
   ],
 };
 
@@ -100,7 +105,7 @@ describe("discoverMagpieLlm", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.llm).toMatchObject({
-      provider: "openai-responses",
+      provider: "openai",
       baseUrl: "http://127.0.0.1:3425/v1",
       apiKey: "magpie",
       model: "codearts/deepseek-v4.1-flash-1017",
@@ -109,7 +114,15 @@ describe("discoverMagpieLlm", () => {
     expect(result.llm.models).toEqual([
       "codearts/deepseek-v4.1-flash-1017",
       "codearts/glm-5.3-flash",
+      "codex/gpt-6.2-sol",
     ]);
+  });
+
+  it("uses openai-responses when the model natively supports /v1/responses", async () => {
+    const result = await discoverMagpieLlm(discoveryOptions({ model: "codex/gpt-6.2-sol" }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.llm.provider).toBe("openai-responses");
   });
 
   it("derives the gateway from Codex's older openai_base_url shape", async () => {
@@ -214,14 +227,14 @@ describe("profile and sync", () => {
     expect(runOps).toHaveBeenCalledWith(cfg, ["save-settings", "--profile", "coding-agent"], {
       input: {
         values: {
-          HINDSIGHT_API_LLM_PROVIDER: "openai-responses",
+          HINDSIGHT_API_LLM_PROVIDER: "openai",
           HINDSIGHT_API_LLM_BASE_URL: "http://127.0.0.1:3425/v1",
           HINDSIGHT_API_LLM_API_KEY: "magpie",
           HINDSIGHT_API_LLM_MODEL: "codearts/deepseek-v4.1-flash-1017",
         },
       },
     });
-    expect(readProfileLlm("coding-agent", env).provider).toBe("openai-responses");
+    expect(readProfileLlm("coding-agent", env).provider).toBe("openai");
     const state = JSON.parse(readFileSync(managedStatePath(env), "utf8"));
     expect(state.profiles["coding-agent"].mode).toBe("follow");
   });
@@ -282,7 +295,7 @@ describe("profile and sync", () => {
       healthy: async () => false,
     });
     expect(result.status).toBe("updated");
-    expect(readProfileLlm("coding-agent", env).provider).toBe("openai-responses");
+    expect(readProfileLlm("coding-agent", env).provider).toBe("openai");
     const state = JSON.parse(readFileSync(managedStatePath(env), "utf8"));
     expect(state.profiles["coding-agent"].adoptedFrom).toMatchObject({
       provider: "openai-codex",
@@ -333,7 +346,7 @@ describe("profile and sync", () => {
 
   it("reports synced when the profile already matches the host", async () => {
     writeProfile({
-      HINDSIGHT_API_LLM_PROVIDER: "openai-responses",
+      HINDSIGHT_API_LLM_PROVIDER: "openai",
       HINDSIGHT_API_LLM_BASE_URL: "http://127.0.0.1:3425/v1",
       HINDSIGHT_API_LLM_API_KEY: "magpie",
       HINDSIGHT_API_LLM_MODEL: "codearts/deepseek-v4.1-flash-1017",
@@ -341,5 +354,55 @@ describe("profile and sync", () => {
     const state = await inspectMagpieLlm(cfg, { ...discoveryOptions(), daemonHealthy: false });
     expect(state.status).toBe("synced");
     expect(state.configuredModel).toBe("codearts/deepseek-v4.1-flash-1017");
+  });
+
+  it("migrates a managed chat-only model from openai-responses to openai", async () => {
+    writeFileSync(
+      configPath,
+      readFileSync(configPath, "utf8").replace(
+        'model = "codearts/deepseek-v4.1-flash-1017"',
+        'model = "codex/gpt-6.2-sol"'
+      )
+    );
+    writeProfile({
+      HINDSIGHT_API_LLM_PROVIDER: "openai-responses",
+      HINDSIGHT_API_LLM_BASE_URL: "http://127.0.0.1:3425/v1",
+      HINDSIGHT_API_LLM_API_KEY: "magpie",
+      HINDSIGHT_API_LLM_MODEL: "codearts/deepseek-v4.1-flash-1017",
+    });
+    mkdirSync(join(root, ".hindsight", "magpie"), { recursive: true });
+    writeFileSync(
+      managedStatePath(env),
+      JSON.stringify({
+        version: 1,
+        profiles: {
+          "coding-agent": {
+            profile: "coding-agent",
+            provider: "openai-responses",
+            baseUrl: "http://127.0.0.1:3425/v1",
+            model: "codearts/deepseek-v4.1-flash-1017",
+            mode: "fixed",
+            appliedAt: "2026-11-26T00:00:00.000Z",
+            restartRequired: false,
+          },
+        },
+      })
+    );
+    const runOps = vi.fn(async (_cfg, _args, options) => {
+      if (options?.input) {
+        const values = (options.input as { values: Record<string, string> }).values;
+        writeProfile(values);
+      }
+      return "{}";
+    }) as unknown as typeof runEmbedOps;
+
+    const result = await syncMagpieLlm(cfg, {
+      ...discoveryOptions(),
+      runOps,
+      healthy: async () => true,
+    });
+    expect(result.status).toBe("updated");
+    expect(result.provider).toBe("openai");
+    expect(readProfileLlm("coding-agent", env).provider).toBe("openai");
   });
 });

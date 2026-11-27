@@ -57,10 +57,8 @@ export function EntitiesView() {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<EntityDetail | null>(null);
-  // Per-entity timeline: every memory linked to the entity (reverse lookup via
-  // the entity_id filter). We intentionally do NOT filter to observations —
-  // entity links live on the source world/experience facts (which carry the
-  // occurred dates the timeline plots); derived observations aren't entity-linked.
+  // Per-entity timeline uses the same direct and inherited observation mentions
+  // as entity counts. Page through all results so large entities aren't truncated.
   const [entityMemories, setEntityMemories] = useState<MemoryRow[]>([]);
   const [loadingMemories, setLoadingMemories] = useState(false);
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
@@ -131,13 +129,22 @@ export function EntitiesView() {
       // Independent of the detail fetch above.
       try {
         // Same tag filter as the entity, so the timeline matches its mention count.
-        const memories = await client.listMemories(currentBank, {
-          entityId,
-          tags: tagFilter.tags,
-          tagsMatch: tagFilter.tags_match,
-          limit: 500,
-        });
-        setEntityMemories(memories.items || []);
+        const allMemories: MemoryRow[] = [];
+        let totalMemories = Infinity;
+        while (allMemories.length < totalMemories) {
+          const memories = await client.listMemories(currentBank, {
+            entityId,
+            tags: tagFilter.tags,
+            tagsMatch: tagFilter.tags_match,
+            limit: 500,
+            offset: allMemories.length,
+          });
+          const items = memories.items || [];
+          allMemories.push(...items);
+          totalMemories = memories.total;
+          if (items.length === 0) break;
+        }
+        setEntityMemories(allMemories);
       } catch {
         // Error toast is shown automatically by the API client interceptor
         setEntityMemories([]);

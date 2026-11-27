@@ -1,24 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import {
   Archive,
-  ArrowLeft,
   ArrowUpRight,
   Check,
   Copy,
   Download,
   FileText,
-  Moon,
   PencilLine,
   Plus,
   RotateCcw,
   ScrollText,
   Sparkles,
-  Sun,
   Trash2,
 } from "lucide-react";
 import {
@@ -34,8 +30,8 @@ type BankOption = {
   bank_id: string;
   name?: string | null;
 };
-import { LanguageSwitcher } from "@/components/language-switcher";
-import { useTheme } from "@/lib/theme-context";
+import { MemoryPageHeader } from "@/components/memory-page-header";
+import { StandaloneShell } from "@/components/standalone-shell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -95,9 +91,7 @@ function parseCsvList(raw: string): string[] {
 
 export function WorkingRulesView() {
   const t = useTranslations("workingRules");
-  const tNav = useTranslations("nav");
   const tCommon = useTranslations("common");
-  const { theme, toggleTheme } = useTheme();
 
   const [tab, setTab] = useState<ViewTab>("active");
   const [searchQuery, setSearchQuery] = useState("");
@@ -357,50 +351,25 @@ export function WorkingRulesView() {
       : 0;
 
   return (
-    <div className="min-h-dvh bg-background text-foreground">
-      <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3 lg:px-8">
-        <Link
-          href="/"
-          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          aria-label={tNav("home")}
-        >
-          <ArrowLeft className="h-4 w-4" />
-          <span>{tCommon("back")}</span>
-        </Link>
-        <div className="flex items-center gap-2 font-semibold">
-          <ScrollText className="h-5 w-5 text-primary" />
-          <span>{t("title")}</span>
-        </div>
-        <span className="ml-auto flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={toggleTheme}
-            aria-label={theme === "light" ? tNav("darkMode") : tNav("lightMode")}
-          >
-            {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-          </Button>
-          <LanguageSwitcher />
-        </span>
-      </header>
-
-      <main className="mx-auto max-w-5xl space-y-6 px-4 py-6 lg:px-8">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={handleOpenExport}>
-              <FileText className="mr-1.5 h-4 w-4" />
-              {t("exportMarkdown")}
-            </Button>
-            <Button size="sm" onClick={openCreateDialog}>
-              <Plus className="mr-1.5 h-4 w-4" />
-              {t("addRule")}
-            </Button>
-          </div>
-        </div>
+    <StandaloneShell section="working-rules" title={t("title")} backHref="/">
+      <main className="mx-auto w-full max-w-[1024px] xl:max-w-[1280px] 2xl:max-w-[1440px] flex-1 space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+        <MemoryPageHeader
+          icon={ScrollText}
+          title={t("title")}
+          description={t("subtitle")}
+          actions={
+            <>
+              <Button variant="outline" size="sm" onClick={handleOpenExport}>
+                <FileText className="mr-1.5 h-4 w-4" />
+                {t("exportMarkdown")}
+              </Button>
+              <Button variant="gradient" size="sm" onClick={openCreateDialog}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                {t("addRule")}
+              </Button>
+            </>
+          }
+        />
 
         {usage && (
           <Card>
@@ -866,6 +835,6 @@ export function WorkingRulesView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </StandaloneShell>
   );
 }

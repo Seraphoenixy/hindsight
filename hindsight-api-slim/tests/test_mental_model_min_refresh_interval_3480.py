@@ -31,6 +31,7 @@ import pytest
 
 from hindsight_api.engine.memory_engine import _REFRESH_AUTOMATIC_KEY, MemoryEngine
 from hindsight_api.worker.exceptions import DeferOperation
+from tests.refresh_support import cross_encoder, embeddings  # noqa: F401 — module fixtures avoid optional ML
 
 INTERVAL = 1800
 
@@ -115,9 +116,9 @@ def test_absent_per_model_value_falls_back_to_the_bank_setting(memory: MemoryEng
     )
 
 
-def test_nothing_configured_anywhere_means_no_floor(memory: MemoryEngine):
-    """The default is backwards compatible: every trigger refreshes at once."""
-    assert memory._resolve_min_refresh_interval(None, {}) == 0
+def test_nothing_configured_anywhere_coalesces_for_five_minutes(memory: MemoryEngine):
+    """The default coalesces a burst; explicit zero still opts out."""
+    assert memory._resolve_min_refresh_interval(None, {}) == 300
 
 
 def test_a_json_string_trigger_is_parsed(memory: MemoryEngine):
@@ -189,16 +190,17 @@ async def test_manual_refresh_ignores_the_floor(memory: MemoryEngine, request_co
 
 
 @pytest.mark.asyncio
-async def test_no_interval_configured_never_parks(memory: MemoryEngine, request_context, monkeypatch):
-    """Regression guard for the default: a model refreshed a second ago still refreshes."""
+async def test_default_interval_parks_recent_automatic_refresh(memory: MemoryEngine, request_context, monkeypatch):
+    """The default holds a recent automatic refresh and coalesces later triggers."""
     bank = await _make_bank(memory, request_context)
     async with memory._pool.acquire() as conn:
         mm_id = await _insert_mm(conn, bank, trigger={"refresh_after_consolidation": True}, refreshed_seconds_ago=1)
     refreshed = _stub_refresh(memory, monkeypatch)
 
-    await memory._handle_refresh_mental_model(_task(bank, mm_id, automatic=True))
+    with pytest.raises(DeferOperation):
+        await memory._handle_refresh_mental_model(_task(bank, mm_id, automatic=True))
 
-    assert refreshed == [mm_id]
+    assert refreshed == []
 
 
 @pytest.mark.asyncio
@@ -327,7 +329,7 @@ def test_a_malformed_stored_value_is_ignored_not_raised(memory: MemoryEngine):
     The API validates this field, so only a direct column write produces one — and
     raising here would fail the operation on every retry forever.
     """
-    assert memory._resolve_min_refresh_interval({"min_refresh_interval_seconds": "soon"}, {}) == 0
+    assert memory._resolve_min_refresh_interval({"min_refresh_interval_seconds": "soon"}, {}) == 300
     assert (
         memory._resolve_min_refresh_interval(
             {"min_refresh_interval_seconds": "soon"},
@@ -389,7 +391,7 @@ def test_env_var_reads_and_tolerates_an_unfilled_value(monkeypatch):
     assert HindsightConfig.from_env().mental_model_min_refresh_interval_seconds == 1800
 
     monkeypatch.setenv(ENV_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS, "")
-    assert HindsightConfig.from_env().mental_model_min_refresh_interval_seconds == 0
+    assert HindsightConfig.from_env().mental_model_min_refresh_interval_seconds == 300
 
     monkeypatch.setenv(ENV_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS, "-60")
     assert HindsightConfig.from_env().mental_model_min_refresh_interval_seconds == 0

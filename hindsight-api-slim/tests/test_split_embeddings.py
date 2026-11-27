@@ -14,7 +14,6 @@ import pytest
 from hindsight_api.config import HindsightConfig, clear_config_cache
 from hindsight_api.engine.embeddings import (
     Embeddings,
-    OnnxEmbeddings,
     OpenAIEmbeddings,
     RemoteTEIEmbeddings,
     SplitEmbeddings,
@@ -62,20 +61,18 @@ def test_query_base_url_only_overrides_the_url(env: pytest.MonkeyPatch) -> None:
     assert split.query.api_key == "sk-shared"
 
 
-def test_one_side_local_and_the_other_remote(env: pytest.MonkeyPatch) -> None:
-    """Constella: documents from a remote Stella, queries from a small in-process model."""
+def test_one_side_tei_and_the_other_openai(env: pytest.MonkeyPatch) -> None:
+    """Documents from TEI, queries from OpenAI with independent concurrency."""
     env.setenv("HINDSIGHT_API_EMBEDDINGS_PROVIDER", "tei")
     env.setenv("HINDSIGHT_API_EMBEDDINGS_TEI_URL", "http://stella")
-    env.setenv("HINDSIGHT_API_QUERY_EMBEDDINGS_PROVIDER", "onnx")
-    env.setenv("HINDSIGHT_API_QUERY_EMBEDDINGS_ONNX_MODEL_ID", "Qdrant/constella-nano")
+    env.setenv("HINDSIGHT_API_QUERY_EMBEDDINGS_PROVIDER", "openai")
+    env.setenv("HINDSIGHT_API_QUERY_EMBEDDINGS_OPENAI_API_KEY", "sk-query")
+    env.setenv("HINDSIGHT_API_QUERY_EMBEDDINGS_OPENAI_MODEL", "text-embedding-3-small")
 
     split = _split(create_embeddings_from_env())
-    assert isinstance(split.query, OnnxEmbeddings)
-    assert split.query.model_id == "Qdrant/constella-nano"
+    assert isinstance(split.query, OpenAIEmbeddings)
+    assert split.query.model == "text-embedding-3-small"
     assert isinstance(split.passage, RemoteTEIEmbeddings)
-    # In-process backends keep the sequential default; the remote side gets the bound.
-    assert split.query.max_concurrent_requests == 1
-    assert split.passage.max_concurrent_requests > 1
 
 
 def test_both_sides_can_be_specialized(env: pytest.MonkeyPatch) -> None:

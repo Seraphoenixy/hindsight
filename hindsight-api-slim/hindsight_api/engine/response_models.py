@@ -1056,10 +1056,10 @@ class MentalModelTrigger(BaseModel):
     )
 
     mode: Literal["full", "delta"] = Field(
-        default="full",
+        default="delta",
         description=(
-            "Refresh mode. 'full' (default) regenerates the mental model content from scratch on each refresh. "
-            "'delta' performs surgical edits against the existing content: unchanged sections are preserved "
+            "Refresh mode. 'full' regenerates the mental model content from scratch on each refresh. "
+            "'delta' (default) performs surgical edits against the existing content: unchanged sections are preserved "
             "byte-for-byte, stale content is removed, new content is added. If the mental model has no existing "
             "content, or if the source_query has changed since the last refresh, delta mode falls back to a full "
             "regeneration automatically."
@@ -1103,8 +1103,8 @@ class MentalModelTrigger(BaseModel):
             "so a burst of retains costs one refresh instead of one per retain. Applies to every "
             "automatic trigger: refresh_after_consolidation, refresh_cron and full_refresh_cron. Explicit refreshes (API, MCP, control "
             "plane) ignore it and run immediately. 0 disables the floor for this model; null falls "
-            "back to the bank/global mental_model_min_refresh_interval_seconds setting (itself 0 by "
-            "default, i.e. no floor)."
+            "back to the bank/global mental_model_min_refresh_interval_seconds setting (itself 300 by "
+            "default)."
         ),
     )
     fact_types: list[Literal["world", "experience", "observation"]] | None = Field(

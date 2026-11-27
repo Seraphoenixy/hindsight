@@ -367,6 +367,19 @@ interface OpsEnvFile {
   exists: boolean;
 }
 
+interface OpsPaths {
+  name: string;
+  display_name: string;
+  port: number;
+  config_path: string;
+  log_path: string;
+  lock_path: string;
+  database_url: string;
+  database_path: string | null;
+  daemon_url: string;
+  ui_url: string;
+}
+
 interface OpsHealth {
   api_ok: boolean;
   api_detail: string;

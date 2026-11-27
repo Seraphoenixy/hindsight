@@ -52,6 +52,8 @@
 
 配置的事实来源为 `hindsight-api-slim/hindsight_api/config.py`；Provider 行为以 `engine/embeddings.py`、`engine/cross_encoder.py` 和 `engine/providers/` 为准。Profile 环境变量可覆盖默认值。
 
+心智模型默认 delta：直接分页读取上次水位之后的事实，按批生成结构化编辑，跳过多轮 reflect 与候选正文生成。自动刷新默认合并间隔为 300 秒，显式刷新立即执行；首次生成与 full 模式仍运行 reflect。见 [ADR-014](decisions/014-direct-delta-refresh.md)。
+
 本地设置可选 Antigravity 作为 API 的 LLM 后端。服务进程通过同一系统用户已登录的 `agy` 执行模型调用。Antigravity 编码代理的记忆 hook 仍走 Coding Agents 集成。
 
 HTTP MCP 通过 `HINDSIGHT_API_MCP_ENABLED=true` 启用；知识库工具还需 `HINDSIGHT_API_ENABLE_KB=true`。每库 `mcp_server_instructions` 配置连接初始化说明（最多 4000 字符），知识库搜索可通过 `enable_reranking` 覆盖服务端默认值。
@@ -62,9 +64,11 @@ Coding Agents 默认使用按项目隔离的共享库。项目身份取自主仓
 标签和文档 ID 使用 URI 编码），不含本地路径短校验。同名工作区跨机器共用项目身份；用户负责
 为不等价的工作区命名不同名称。Linked worktree 仍取主仓库名。项目页面文件夹只显示归一化名称。
 既有带路径短码的标签、文档 ID 和页面目录不会自动重写，其内容仍可通过跨项目查询或管理界面访问。
-对话写入只保存有来源的工程结论，
-允许普通任务产出零条。`hindsight_ingest_document` 从显式提交的文档提取有依据的知识。默认关闭后台代码巡检、
-Git 历史导入和历史会话导入。事实经服务端提取，再以 `engineering-record` 策略保存筛选后的结论。
+对话写入通过 `conversation` 策略由服务端提取有来源的工程结论，允许普通任务产出零条。
+项目决策、约束和具体修复归为世界事实。同一次排障中，已验证且能指导后续诊断、验证或改用替代方案的方法
+可以另存为经历，记录适用条件、方法和验证依据。同一结论只保留一次。
+`hindsight_ingest_document` 从显式提交的文档提取有依据的知识。默认关闭后台代码巡检、
+Git 历史导入和历史会话导入。
 
 共享模式下，宿主 Stop Hook 通过现有异步 retain API 提交已完成的对话片段并立即返回。服务端把
 提取和写入登记为后台 retain 操作，供 worker 执行。模型较慢时不再占用 Hook 的 30 秒时限；
@@ -81,6 +85,11 @@ Coding Agents 的自动注入只走检索路径：`autoInject` 默认 `recall`�
 召回工具与自动注入均透传。会话写回保留各轮来源时间，提取按来源支持的精度记录已确认决策、
 变更和验证事件；未知时间保留为空，不以入库时间补齐。明确的旧值、新值、适用范围与替代时间
 保存在结论中；发生时间不等于规则有效期，也不凭较新的记录时间自动归档旧事实。
+
+实体列表、详情、关系图和实体时间线统一从当前可见记忆统计：包含直接关联的事实，以及通过
+来源事实继承实体的 Observation。没有可见关联的注册实体不计入页面总数。对象同步拉取、
+重建基线、冲突应用和冲突恢复会在事务内按每批受影响库重建本地实体计数与共现缓存；
+这些内部缓存保留直接 postings 的口径，页面不再将缓存当作实时统计。
 
 工程共享库默认启用按结论合并 Observation。后台合并在当前项目范围内比较已有结论，
 把支持同一决策、约束或排障经验的事实合成一条，后续同主题补充更新原条目。

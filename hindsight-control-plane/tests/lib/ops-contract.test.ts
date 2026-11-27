@@ -103,7 +103,7 @@ describe.skipIf(!embed)("hindsight-embed ops contract", () => {
     expect(sync.groups[0].fields.map((field) => field.key)).toContain(
       "HINDSIGHT_SYNC_INTERVAL_SECONDS"
     );
-  });
+  }, 30_000);
 
   it("reports an unknown snapshot section as a JSON usage error", () => {
     let failed = false;

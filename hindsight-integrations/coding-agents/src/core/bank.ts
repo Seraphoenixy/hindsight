@@ -220,7 +220,7 @@ export function resolveProjectScope(directory: string, sessionRoot?: string): Pr
 }
 
 /** A configured directory, `~`-expanded and normalised, without a trailing separator. */
-function configuredDir(dir: string): string {
+export function configuredDir(dir: string): string {
   const expanded = dir === "~" || dir.startsWith("~/") ? join(homedir(), dir.slice(1)) : dir;
   return normalize(expanded).replace(new RegExp(`\\${sep}+$`), "");
 }

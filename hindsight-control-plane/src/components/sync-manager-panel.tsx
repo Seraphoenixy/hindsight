@@ -1,7 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, ShieldAlert, ShieldCheck, RotateCcw, KeyRound, Ban } from "lucide-react";
+import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Ban,
+  Clock,
+  KeyRound,
+  RefreshCw,
+  RotateCcw,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
+import { formatRelativeTime } from "@/lib/relative-time";
+import { cn } from "@/lib/utils";
 import {
   client,
   type RelayDeviceInfo,
@@ -47,7 +59,59 @@ function fieldChanges(local: unknown, remote: unknown, path = ""): FieldChange[]
     : [{ path: path || "/", local, remote }];
 }
 
-export function SyncManagerPanel({ preferZh = false }: { preferZh?: boolean }) {
+function authStatusMeta(authStatus: string | undefined, preferZh: boolean) {
+  switch (authStatus) {
+    case "ok":
+      return {
+        label: preferZh ? "已认证" : "Authenticated",
+        tone: "emerald" as const,
+      };
+    case "needs_prefer":
+      return {
+        label: preferZh ? "需首次合并" : "Initial join required",
+        tone: "amber" as const,
+      };
+    case "revoked":
+      return {
+        label: preferZh ? "凭据已撤销" : "Revoked",
+        tone: "red" as const,
+      };
+    case "unconfigured":
+      return {
+        label: preferZh ? "未配置" : "Unconfigured",
+        tone: "muted" as const,
+      };
+    default:
+      return {
+        label: preferZh
+          ? `异常 (${authStatus || "unknown"})`
+          : `Error (${authStatus || "unknown"})`,
+        tone: "red" as const,
+      };
+  }
+}
+
+const BADGE_TONE = {
+  emerald: "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  amber: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  red: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300",
+  muted: "border-border bg-muted/60 text-muted-foreground",
+} as const;
+
+const DOT_TONE = {
+  emerald: "bg-emerald-500",
+  amber: "bg-amber-500",
+  red: "bg-red-500",
+  muted: "bg-muted-foreground/60",
+} as const;
+
+export function SyncManagerPanel({
+  preferZh = false,
+  settingsSlot,
+}: {
+  preferZh?: boolean;
+  settingsSlot?: React.ReactNode;
+}) {
   const [status, setStatus] = useState<SyncStatusSnapshot | null>(null);
   const [conflicts, setConflicts] = useState<SyncObjectConflictRecord[]>([]);
   const [devices, setDevices] = useState<RelayDeviceInfo[]>([]);
@@ -277,67 +341,205 @@ export function SyncManagerPanel({ preferZh = false }: { preferZh?: boolean }) {
         </Alert>
       )}
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-2">
-          <div>
-            <CardTitle className="text-base">{preferZh ? "同步状态" : "Sync Status"}</CardTitle>
-            <CardDescription>
-              {status?.configured
-                ? status.relay_url
+      {(() => {
+        const configured = Boolean(status?.configured);
+        const authMeta = authStatusMeta(status?.auth_status, preferZh);
+        const localHwm = status?.local_high_water ?? 0;
+        const outSeq = status?.out_seq ?? 0;
+        const inSeq = status?.in_seq ?? 0;
+        const relayVer = status?.relay_version ?? 0;
+        const pendingPush = Math.max(0, localHwm - outSeq);
+        const pendingPull = Math.max(0, relayVer - inSeq);
+        const hasError = Boolean(status?.last_error) || authMeta.tone === "red";
+        const overallTone: keyof typeof BADGE_TONE = !configured
+          ? "muted"
+          : hasError
+            ? "red"
+            : authMeta.tone === "amber" || pendingPush > 0 || pendingPull > 0
+              ? "amber"
+              : "emerald";
+        const overallLabel = !configured
+          ? preferZh
+            ? "未配置"
+            : "Not configured"
+          : hasError
+            ? preferZh
+              ? "同步异常"
+              : "Sync issue"
+            : authMeta.tone === "amber"
+              ? authMeta.label
+              : pendingPush > 0 || pendingPull > 0
+                ? preferZh
+                  ? "有待同步变更"
+                  : "Changes pending"
                 : preferZh
-                  ? "同步服务端未配置"
-                  : "Sync server not configured"}
-            </CardDescription>
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy || !status?.configured}
-            onClick={() => void handleTriggerSync()}
-          >
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-            {preferZh ? "立即同步" : "Sync Now"}
-          </Button>
-        </CardHeader>
-        <CardContent className="grid gap-3 text-xs sm:grid-cols-3">
-          <div>
-            <span className="text-muted-foreground">{preferZh ? "设备 ID：" : "Device ID: "}</span>
-            <span className="font-mono">{status?.device_id || "-"}</span>
-          </div>
-          <div>
-            <span className="text-muted-foreground">{preferZh ? "认证状态：" : "Auth: "}</span>
-            <span className="font-medium">{status?.auth_status}</span>
-          </div>
-          <div>
-            <span className="text-muted-foreground">{preferZh ? "检查周期：" : "Interval: "}</span>
-            <span>{status ? `${status.interval_seconds}s` : "-"}</span>
-          </div>
-          <div>
-            <span className="text-muted-foreground">
-              {preferZh ? "本地水位 / 已推：" : "Local HWM / Out: "}
-            </span>
-            <span className="font-mono">
-              {status?.local_high_water ?? 0} / {status?.out_seq ?? 0}
-            </span>
-          </div>
-          <div>
-            <span className="text-muted-foreground">
-              {preferZh ? "已拉取游标：" : "In Seq / Relay: "}
-            </span>
-            <span className="font-mono">
-              {status?.in_seq ?? 0} / v{status?.relay_version ?? 0}
-            </span>
-          </div>
-          <div>
-            <span className="text-muted-foreground">
-              {preferZh ? "最近同步：" : "Last synced: "}
-            </span>
-            <span>
-              {status?.last_synced_at ? new Date(status.last_synced_at).toLocaleString() : "-"}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
+                  ? "已同步"
+                  : "Up to date";
+
+        return (
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle className="text-base">
+                    {preferZh ? "同步状态" : "Sync Status"}
+                  </CardTitle>
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium",
+                      BADGE_TONE[overallTone]
+                    )}
+                  >
+                    <span className={cn("h-1.5 w-1.5 rounded-full", DOT_TONE[overallTone])} />
+                    {overallLabel}
+                  </span>
+                </div>
+                <CardDescription className="truncate font-mono text-xs">
+                  {configured
+                    ? status?.relay_url
+                    : preferZh
+                      ? "同步服务端未配置"
+                      : "Sync server not configured"}
+                </CardDescription>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void refreshAll()}
+                  title={preferZh ? "刷新状态" : "Refresh status"}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="gradient"
+                  disabled={busy || !configured}
+                  onClick={() => void handleTriggerSync()}
+                >
+                  <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", busy && "animate-spin")} />
+                  {preferZh ? "立即同步" : "Sync Now"}
+                </Button>
+              </div>
+            </CardHeader>
+
+            <CardContent className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-xl border border-border/70 bg-background/50 p-3">
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>{preferZh ? "认证与设备" : "Auth & Device"}</span>
+                    <ShieldCheck className="h-3.5 w-3.5 text-primary/80" />
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                        BADGE_TONE[authMeta.tone]
+                      )}
+                    >
+                      {authMeta.label}
+                    </span>
+                  </div>
+                  <div
+                    className="mt-1.5 truncate font-mono text-[11px] text-muted-foreground"
+                    title={status?.device_id || undefined}
+                  >
+                    {preferZh ? "设备：" : "ID: "}
+                    {status?.device_id || "—"}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border/70 bg-background/50 p-3">
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>{preferZh ? "本地推送 (Out)" : "Local Push (Out)"}</span>
+                    <ArrowUpFromLine className="h-3.5 w-3.5 text-primary/80" />
+                  </div>
+                  <div className="mt-1.5 flex items-baseline gap-1.5">
+                    <span className="text-lg font-semibold tabular-nums">{outSeq}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">/ {localHwm}</span>
+                  </div>
+                  <div className="mt-1 text-[11px]">
+                    {pendingPush > 0 ? (
+                      <span className="font-medium text-amber-600 dark:text-amber-300">
+                        {preferZh ? `待推送 ${pendingPush} 条变更` : `${pendingPush} pending push`}
+                      </span>
+                    ) : (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        {preferZh ? "本地变更已全部推送" : "All local changes pushed"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border/70 bg-background/50 p-3">
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>{preferZh ? "远端拉取 (In)" : "Remote Pull (In)"}</span>
+                    <ArrowDownToLine className="h-3.5 w-3.5 text-primary/80" />
+                  </div>
+                  <div className="mt-1.5 flex items-baseline gap-1.5">
+                    <span className="text-lg font-semibold tabular-nums">{inSeq}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      / v{relayVer}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[11px]">
+                    {pendingPull > 0 ? (
+                      <span className="font-medium text-amber-600 dark:text-amber-300">
+                        {preferZh
+                          ? `服务端领先 ${pendingPull} 个版本`
+                          : `${pendingPull} remote version(s) behind`}
+                      </span>
+                    ) : (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        {preferZh ? "已拉取到最新游标" : "Caught up with relay"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border/70 bg-background/50 p-3">
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>{preferZh ? "最近同步" : "Last Synced"}</span>
+                    <Clock className="h-3.5 w-3.5 text-primary/80" />
+                  </div>
+                  <div
+                    className="mt-1.5 truncate text-sm font-medium"
+                    title={
+                      status?.last_synced_at
+                        ? new Date(status.last_synced_at).toLocaleString()
+                        : undefined
+                    }
+                  >
+                    {status?.last_synced_at
+                      ? formatRelativeTime(status.last_synced_at)
+                      : preferZh
+                        ? "尚未同步"
+                        : "Never"}
+                  </div>
+                  <div className="mt-1.5 text-[11px] text-muted-foreground tabular-nums">
+                    {preferZh
+                      ? `自动轮询：每 ${status?.interval_seconds ?? "-"} 秒`
+                      : `Auto interval: ${status?.interval_seconds ?? "-"}s`}
+                  </div>
+                </div>
+              </div>
+
+              {(status?.last_message || status?.last_error) && (
+                <div className="rounded-lg border border-border/60 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+                  {status.last_error ? (
+                    <span className="text-red-600 dark:text-red-400">{status.last_error}</span>
+                  ) : (
+                    <span>{status.last_message}</span>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        );
+      })()}
+
+      {settingsSlot}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2">
